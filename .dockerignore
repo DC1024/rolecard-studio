@@ -9,4 +9,5 @@ data
 .env
 .env.*
 coverage
+release
 *.log
