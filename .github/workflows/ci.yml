@@ -28,10 +28,10 @@ jobs:
         run: |
           if [ -f package.json ]; then
             pnpm install --frozen-lockfile || pnpm install
+            pnpm build
             pnpm typecheck
             pnpm lint
             pnpm test
-            pnpm build
           else
             echo "Baseline docs verified."
           fi

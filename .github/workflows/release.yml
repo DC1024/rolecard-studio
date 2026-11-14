@@ -83,9 +83,9 @@ jobs:
       - name: Install & Build Monorepo
         run: |
           pnpm install --frozen-lockfile || pnpm install
+          pnpm build
           pnpm typecheck
           pnpm test
-          pnpm build
           pnpm bundle
 
       - name: Embed Portable Node.js 22 Runtime (Windows x64)
@@ -142,9 +142,9 @@ jobs:
       - name: Install & Build Monorepo
         run: |
           pnpm install --frozen-lockfile || pnpm install
+          pnpm build
           pnpm typecheck
           pnpm test
-          pnpm build
           pnpm bundle
 
       - name: Embed Portable Node.js 22 Runtime (Linux x64)

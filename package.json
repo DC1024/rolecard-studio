@@ -7,7 +7,7 @@
     "dev": "pnpm --filter @rolecard/server dev",
     "build": "pnpm -r build",
     "bundle": "node scripts/build-bundle.mjs",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm --filter @rolecard/shared --filter @rolecard/core build && pnpm -r typecheck",
     "lint": "eslint packages apps",
     "test": "vitest run",
     "test:watch": "vitest"
