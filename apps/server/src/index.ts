@@ -1,13 +1,30 @@
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { loadOrCreateMasterKey } from '@rolecard/core';
 import { createApp } from './app.js';
 import { createSqliteDatabase, seedInitialState } from './db/client.js';
 
+function resolveWebDistDir(): string | undefined {
+  if (process.env.ROLECARD_WEB_DIST && existsSync(process.env.ROLECARD_WEB_DIST)) {
+    return resolve(process.env.ROLECARD_WEB_DIST);
+  }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, '../../web/dist'),
+    resolve(here, '../public'),
+    resolve(process.cwd(), 'apps/web/dist'),
+    resolve(process.cwd(), 'public'),
+  ];
+  return candidates.find((p) => existsSync(resolve(p, 'index.html')));
+}
+
 async function main(): Promise<void> {
   const dataDir = resolve(process.env.ROLECARD_DATA_DIR ?? './data');
   const port = Number.parseInt(process.env.PORT ?? '3000', 10);
   const hostname = process.env.HOST ?? '0.0.0.0';
+  const webDistDir = resolveWebDistDir();
 
   const masterKey = await loadOrCreateMasterKey(resolve(dataDir, '.master.key'));
   const { db } = createSqliteDatabase(resolve(dataDir, 'rolecard.db'));
@@ -28,6 +45,7 @@ async function main(): Promise<void> {
     masterKey,
     dataDir,
     deploymentMode: process.env.ROLECARD_DEPLOYMENT_MODE === 'cloud' ? 'cloud' : 'local',
+    webDistDir,
   });
 
   serve({

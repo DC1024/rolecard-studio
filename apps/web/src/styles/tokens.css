@@ -1,0 +1,102 @@
+:root,
+[data-theme='light'] {
+  color-scheme: light;
+  --bg-canvas: 248 250 252;
+  --bg-surface: 255 255 255;
+  --bg-elevated: 255 255 255;
+  --bg-subtle: 241 245 249;
+  --bg-hover: 226 232 240;
+  --text-primary: 15 23 42;
+  --text-secondary: 71 85 105;
+  --text-muted: 148 163 184;
+  --text-inverse: 255 255 255;
+  --accent-primary: 37 99 235;
+  --accent-hover: 29 78 216;
+  --accent-secondary: 124 58 237;
+  --border-default: 226 232 240;
+  --border-subtle: 241 245 249;
+  --status-success: 22 163 74;
+  --status-warning: 217 119 6;
+  --status-danger: 220 38 38;
+  --status-info: 2 132 199;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-canvas: 11 15 25;
+  --bg-surface: 19 25 38;
+  --bg-elevated: 27 35 51;
+  --bg-subtle: 26 34 50;
+  --bg-hover: 35 45 66;
+  --text-primary: 241 245 249;
+  --text-secondary: 148 163 184;
+  --text-muted: 100 116 139;
+  --text-inverse: 255 255 255;
+  --accent-primary: 59 130 246;
+  --accent-hover: 96 165 250;
+  --accent-secondary: 167 139 250;
+  --border-default: 36 47 68;
+  --border-subtle: 27 36 54;
+  --status-success: 34 197 94;
+  --status-warning: 245 158 11;
+  --status-danger: 239 68 68;
+  --status-info: 56 189 248;
+}
+
+[data-theme='ocean'] {
+  color-scheme: dark;
+  --bg-canvas: 6 17 26;
+  --bg-surface: 11 27 40;
+  --bg-elevated: 17 37 54;
+  --bg-subtle: 14 33 48;
+  --bg-hover: 22 48 68;
+  --text-primary: 230 244 250;
+  --text-secondary: 143 179 201;
+  --text-muted: 86 120 142;
+  --text-inverse: 4 19 28;
+  --accent-primary: 6 182 212;
+  --accent-hover: 34 211 238;
+  --accent-secondary: 56 189 248;
+  --border-default: 24 53 74;
+  --border-subtle: 18 40 58;
+  --status-success: 16 185 129;
+  --status-warning: 251 191 36;
+  --status-danger: 244 63 94;
+  --status-info: 6 182 212;
+}
+
+[data-theme='parchment'] {
+  color-scheme: light;
+  --bg-canvas: 246 241 231;
+  --bg-surface: 252 249 242;
+  --bg-elevated: 255 253 249;
+  --bg-subtle: 237 229 213;
+  --bg-hover: 228 217 197;
+  --text-primary: 44 34 30;
+  --text-secondary: 99 83 71;
+  --text-muted: 150 133 118;
+  --text-inverse: 255 253 249;
+  --accent-primary: 180 83 9;
+  --accent-hover: 146 64 14;
+  --accent-secondary: 15 118 110;
+  --border-default: 221 210 190;
+  --border-subtle: 232 223 206;
+  --status-success: 21 128 61;
+  --status-warning: 180 83 9;
+  --status-danger: 185 28 28;
+  --status-info: 3 105 161;
+}
+
+.theme-switching,
+.theme-switching * {
+  transition-property: background-color, color, border-color, fill, stroke !important;
+  transition-duration: 180ms !important;
+  transition-timing-function: ease-out !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-switching,
+  .theme-switching * {
+    transition-duration: 0ms !important;
+  }
+}

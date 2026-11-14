@@ -40,6 +40,10 @@ export interface SerializedRoleCard {
   sources: SourceEntry[];
   tokenCount: number;
   imageUrl: string | null;
+  imageSource: string | null;
+  lockedFields: string[];
+  diffSummary: string | null;
+  enableMetaInChat: boolean;
   scheduleEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -62,6 +66,10 @@ export function serializeCardRow(row: typeof roleCards.$inferSelect): Serialized
     sources: safeParseJsonArray<SourceEntry>(row.sourcesJson),
     tokenCount: row.tokenCount,
     imageUrl: row.imageUrl,
+    imageSource: row.imageSource,
+    lockedFields: safeParseJsonArray<string>(row.lockedFieldsJson),
+    diffSummary: row.diffSummary,
+    enableMetaInChat: row.enableMetaInChat,
     scheduleEnabled: row.scheduleEnabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

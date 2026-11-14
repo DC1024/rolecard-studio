@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RoleCard Studio — 智能角色卡工作台</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('rc_theme') || 'system';
+          var valid = ['light', 'dark', 'ocean', 'parchment', 'system'];
+          if (valid.indexOf(saved) === -1) saved = 'system';
+          var resolved =
+            saved === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : saved;
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
+  </head>
+  <body class="bg-canvas text-content-primary antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

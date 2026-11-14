@@ -17,6 +17,8 @@ export interface ServerContext {
   dnsLookup?: DnsLookupPort;
   searchProviderPort?: SearchProviderPort;
   clock?: ClockPort;
+  webDistDir?: string;
+  memoryUploads?: Map<string, { data: Buffer; contentType: string }>;
 }
 
 export function getNow(ctx: ServerContext): Date {

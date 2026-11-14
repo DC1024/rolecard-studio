@@ -3,3 +3,5 @@ export * from './cards.js';
 export * from './config.js';
 export * from './auth.js';
 export * from './token.js';
+export * from './ccv3.js';
+export * from './playtest.js';
