@@ -1,0 +1,36 @@
+# Dependencies & Build
+node_modules/
+.pnpm-store/
+dist/
+build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Local Runtime & Secrets (NEVER COMMIT)
+.env
+.env.*
+data/
+uploads/
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.master.key
+
+# Packaging & Release Artifacts
+release/
+*.exe
+*.msi
+*.deb
+*.rpm
+*.AppImage
+*.tar.gz
+
+# OS & Editor & WorkBuddy internals
+.DS_Store
+Thumbs.db
+.workbuddy/
+.idea/
+.vscode/
+*.log
