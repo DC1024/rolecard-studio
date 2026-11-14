@@ -113,3 +113,31 @@ export const generationLogs = sqliteTable('generation_logs', {
   errorMessage: text('error_message'),
   createdAt: text('created_at').notNull(),
 });
+
+export const lorebooks = sqliteTable('lorebooks', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  worldSummary: text('world_summary').notNull().default(''),
+  scanDepth: integer('scan_depth').notNull().default(4),
+  tokenBudget: integer('token_budget').notNull().default(1500),
+  recursiveScanning: integer('recursive_scanning', { mode: 'boolean' }).notNull().default(false),
+  entriesJson: text('entries_json').notNull().default('[]'),
+  tagsJson: text('tags_json').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const lorebookCharacterLinks = sqliteTable('lorebook_character_links', {
+  id: text('id').primaryKey(),
+  lorebookId: text('lorebook_id')
+    .notNull()
+    .references(() => lorebooks.id, { onDelete: 'cascade' }),
+  cardId: text('card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  entryUid: text('entry_uid').notNull(),
+  relationRole: text('relation_role').notNull().default('核心人物'),
+  createdAt: text('created_at').notNull(),
+});

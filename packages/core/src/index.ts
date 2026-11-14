@@ -8,3 +8,6 @@ export * from './llm/client.js';
 export * from './generator.js';
 export * from './ccv3.js';
 export * from './playtest.js';
+export * from './lorebook.js';
+export * from './card-import.js';
+export * from './plugins.js';

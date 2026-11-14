@@ -621,6 +621,18 @@ export function CardDetailPanel({
               </div>
             )}
           </div>
+
+          {typeof card.content.extensions.trpg === 'object' &&
+            card.content.extensions.trpg !== null && (
+              <div className="rounded-md border border-line-subtle bg-canvas p-3">
+                <div className="mb-1.5 text-xs font-semibold text-content-primary">
+                  TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)
+                </div>
+                <pre className="overflow-x-auto rounded-sm border border-line bg-surface p-2.5 font-mono text-[11px] text-content-secondary">
+                  {JSON.stringify(card.content.extensions.trpg, null, 2)}
+                </pre>
+              </div>
+            )}
         </div>
       )}
 

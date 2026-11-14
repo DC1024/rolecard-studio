@@ -7,19 +7,22 @@ import type {
   MaskedServiceConfig,
   Permission,
 } from '@rolecard/shared';
-import { CheckCircle2, FileText, MessageSquare, Sparkles } from 'lucide-react';
+import { BookOpen, CheckCircle2, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
 import { api, type CommonTagCount, type RoleCardDto } from './api/client';
 import { CardDetailPanel } from './components/CardDetailPanel';
 import { GenerateForm } from './components/GenerateForm';
+import { ImportCardModal } from './components/ImportCardModal';
 import { LoginModal } from './components/LoginModal';
+import { LorebookPanel } from './components/LorebookPanel';
 import { PlaytestPanel } from './components/PlaytestPanel';
+import { PluginPanel } from './components/PluginPanel';
 import { PortraitCropModal } from './components/PortraitCropModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { ThemeProvider } from './hooks/useTheme';
 
-type WorkspaceView = 'generate' | 'detail' | 'playtest';
+type WorkspaceView = 'generate' | 'detail' | 'playtest' | 'lorebooks' | 'plugins';
 
 function StudioApp() {
   const [auth, setAuth] = useState<AuthContextResponse | null>(null);
@@ -48,6 +51,7 @@ function StudioApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [portraitOpen, setPortraitOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const hasPerm = useCallback(
     (perm: Permission): boolean => {
@@ -224,43 +228,80 @@ function StudioApp() {
           <div className="mx-auto max-w-5xl space-y-4">
             {/* Workspace Mode Switcher */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="inline-flex rounded-md border border-line bg-surface p-1 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setView('generate')}
-                  className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                    view === 'generate'
-                      ? 'bg-accent text-content-inverse'
-                      : 'text-content-secondary hover:text-content-primary'
-                  }`}
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  生成新卡
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView('detail')}
-                  className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                    view === 'detail'
-                      ? 'bg-accent text-content-inverse'
-                      : 'text-content-secondary hover:text-content-primary'
-                  }`}
-                >
-                  <FileText className="h-3.5 w-3.5" />
-                  卡片详情{selectedCard ? ` · ${selectedCard.characterName}` : ''}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView('playtest')}
-                  className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                    view === 'playtest'
-                      ? 'bg-accent text-content-inverse'
-                      : 'text-content-secondary hover:text-content-primary'
-                  }`}
-                >
-                  <MessageSquare className="h-3.5 w-3.5" />
-                  快速试聊
-                </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-md border border-line bg-surface p-1 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setView('generate')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'generate'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    生成新卡
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView('detail')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'detail'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    卡片详情{selectedCard ? ` · ${selectedCard.characterName}` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView('playtest')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'playtest'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    快速试聊
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView('lorebooks')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'lorebooks'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    世界书
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView('plugins')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'plugins'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <Puzzle className="h-3.5 w-3.5" />
+                    插件与 MCP
+                  </button>
+                </div>
+
+                {hasPerm('card:create') && (
+                  <button
+                    type="button"
+                    onClick={() => setImportOpen(true)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-3 text-xs font-medium text-content-primary shadow-sm hover:bg-subtle"
+                  >
+                    <FileUp className="h-3.5 w-3.5 text-accent" />
+                    导入旧卡升级
+                  </button>
+                )}
               </div>
 
               {toast && (
@@ -312,9 +353,38 @@ function StudioApp() {
                 onCardUpdated={handleCardUpdated}
               />
             )}
+
+            {view === 'lorebooks' && (
+              <LorebookPanel
+                cards={cards}
+                canCreate={hasPerm('card:create')}
+                canUpdate={hasPerm('card:update')}
+                canDelete={hasPerm('card:delete')}
+                canExport={hasPerm('card:export')}
+                onNotify={showToast}
+              />
+            )}
+
+            {view === 'plugins' && (
+              <PluginPanel
+                selectedCard={selectedCard}
+                canExport={hasPerm('card:export')}
+              />
+            )}
           </div>
         </main>
       </div>
+
+      <ImportCardModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(card, msg) => {
+          setSelectedCard(card);
+          setView('detail');
+          showToast(msg);
+          void refreshCards();
+        }}
+      />
 
       <SettingsModal
         open={settingsOpen}

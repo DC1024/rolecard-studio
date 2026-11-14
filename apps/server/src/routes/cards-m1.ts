@@ -12,6 +12,7 @@ import {
   embedCardIntoPng,
   exportCardToMarkdown,
   isSafeImageUrl,
+  mergeLorebooksToCharacterBook,
   preserveLockedFields,
   refineRoleCard,
   resolveProviderBaseUrl,
@@ -24,6 +25,7 @@ import {
   CardImageUploadSchema,
   estimateCardTokens,
   ExportFormatSchema,
+  type LorebookEntry,
   PlaytestRequestSchema,
   RefineCardRequestSchema,
   UpdateCardContentSchema,
@@ -38,6 +40,7 @@ import { generationLogs, roleCards, userServiceConfigs } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
 import { serializeCardRow } from './cards.js';
 import { loadRuntimeServiceConfig } from './config.js';
+import { loadLinkedLorebooksForCard } from './lorebooks.js';
 
 export const cardM1Routes = new Hono<AppEnv>();
 
@@ -355,8 +358,21 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
     return c.body(md);
   }
 
+  const linkedBookRows = await loadLinkedLorebooksForCard(ctx, id);
+  const characterBook = mergeLorebooksToCharacterBook(
+    linkedBookRows.map((lb) => ({
+      name: lb.name,
+      description: lb.description,
+      scanDepth: lb.scanDepth,
+      tokenBudget: lb.tokenBudget,
+      recursiveScanning: lb.recursiveScanning,
+      entries: parseJsonArray<LorebookEntry>(lb.entriesJson),
+    })),
+  );
+
   const v3Card = toCharaCardV3(content, {
     version: row.version,
+    characterBook,
     sources,
   });
 
@@ -431,10 +447,17 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
       ? null
       : parseMetaSummary(row.metaReputationJson);
 
+  const linkedBookRows = await loadLinkedLorebooksForCard(ctx, id);
+  const playtestLorebooks = linkedBookRows.map((lb) => ({
+    id: lb.id,
+    name: lb.name,
+    entries: parseJsonArray<LorebookEntry>(lb.entriesJson),
+  }));
+
   const turnResult = await runPlaytestTurn(content, input, {
     llmPort,
     llmSlot: effectiveSlot,
-    lorebooks: [],
+    lorebooks: playtestLorebooks,
     enableMetaInChat: row.enableMetaInChat && row.entityType !== 'real_person',
     metaReputationSummary: metaSummary,
   });

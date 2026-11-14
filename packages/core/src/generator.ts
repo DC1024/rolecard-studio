@@ -7,6 +7,7 @@ import {
   type SourceEntry,
 } from '@rolecard/shared';
 import { completeStructuredJson } from './llm/json-repair.js';
+import { applyTrpgPresetFields } from './lorebook.js';
 import {
   clipToTokenBudget,
   fetchUserReferenceUrl,
@@ -176,10 +177,10 @@ export async function generateRoleCard(
     return completionResult;
   }
 
-  const cardContent: RoleCardContent = {
+  const cardContent: RoleCardContent = applyTrpgPresetFields(input.cardType, {
     ...completionResult.value.data,
     tags: mergeCardTags(input.tags, completionResult.value.data.tags),
-  };
+  });
 
   return ok({
     content: cardContent,

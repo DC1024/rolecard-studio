@@ -4,10 +4,15 @@ import type {
   CardImageUploadRequest,
   CardType,
   CreateUserRequest,
+  DeclarativePluginManifest,
   ExportFormat,
   GenerateCardRequest,
   GenerationMode,
+  ImportCardRequest,
+  LinkCharacterToLorebookRequest,
   LlmTestRequest,
+  LorebookDto,
+  LorebookEntry,
   MaskedServiceConfig,
   PlaytestRequest,
   PlaytestResponse,
@@ -16,6 +21,8 @@ import type {
   ServiceConfigInput,
   SourceEntry,
   UpdateCardContentRequest,
+  UpdateLorebookRequest,
+  CreateLorebookRequest,
   UpdateUserPermissionsRequest,
   UserSummary,
 } from '@rolecard/shared';
@@ -363,5 +370,74 @@ export const api = {
 
   getExportUrl(id: string, format: ExportFormat): string {
     return `/api/v1/cards/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+  },
+
+  importCard(input: ImportCardRequest): Promise<{
+    card: RoleCardDto;
+    upgradedFrom: string;
+    importedLorebookId: string | null;
+  }> {
+    return requestJson('/cards/import', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  listLorebooks(): Promise<{ items: LorebookDto[] }> {
+    return requestJson('/lorebooks');
+  },
+
+  createLorebook(input: CreateLorebookRequest): Promise<{ lorebook: LorebookDto }> {
+    return requestJson('/lorebooks', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  updateLorebook(id: string, input: UpdateLorebookRequest): Promise<{ lorebook: LorebookDto }> {
+    return requestJson(`/lorebooks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  deleteLorebook(id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/lorebooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  linkCardToLorebook(
+    lorebookId: string,
+    input: LinkCharacterToLorebookRequest,
+  ): Promise<{ lorebook: LorebookDto; generatedEntry: LorebookEntry }> {
+    return requestJson(`/lorebooks/${encodeURIComponent(lorebookId)}/link-card`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  unlinkCardFromLorebook(lorebookId: string, cardId: string): Promise<{ lorebook: LorebookDto }> {
+    return requestJson(
+      `/lorebooks/${encodeURIComponent(lorebookId)}/links/${encodeURIComponent(cardId)}`,
+      { method: 'DELETE' },
+    );
+  },
+
+  getLorebookExportUrl(id: string): string {
+    return `/api/v1/lorebooks/${encodeURIComponent(id)}/export`;
+  },
+
+  listPlugins(): Promise<{ plugins: DeclarativePluginManifest[] }> {
+    return requestJson('/plugins');
+  },
+
+  validatePlugin(manifest: unknown): Promise<{ valid: boolean; manifest: DeclarativePluginManifest }> {
+    return requestJson('/plugins/validate', {
+      method: 'POST',
+      body: JSON.stringify(manifest),
+    });
+  },
+
+  getPluginExportUrl(pluginId: string, cardId: string): string {
+    return `/api/v1/plugins/${encodeURIComponent(pluginId)}/export/${encodeURIComponent(cardId)}`;
   },
 };

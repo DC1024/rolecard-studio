@@ -5,3 +5,5 @@ export * from './auth.js';
 export * from './token.js';
 export * from './ccv3.js';
 export * from './playtest.js';
+export * from './lorebooks.js';
+export * from './plugins.js';

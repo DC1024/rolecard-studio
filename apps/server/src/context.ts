@@ -18,6 +18,7 @@ export interface ServerContext {
   searchProviderPort?: SearchProviderPort;
   clock?: ClockPort;
   webDistDir?: string;
+  pluginsDir?: string;
   memoryUploads?: Map<string, { data: Buffer; contentType: string }>;
 }
 

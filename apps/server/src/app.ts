@@ -8,10 +8,13 @@ import { attachAuthContext, type AppEnv } from './middleware/auth.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
 import { cardM1Routes } from './routes/cards-m1.js';
+import { cardM2Routes } from './routes/cards-m2.js';
 import { cardRoutes } from './routes/cards.js';
 import { configRoutes } from './routes/config.js';
 import { externalRoutes } from './routes/external.js';
 import { healthRoutes } from './routes/health.js';
+import { lorebookRoutes } from './routes/lorebooks.js';
+import { pluginRoutes } from './routes/plugins.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -40,6 +43,9 @@ export function createApp(ctx: ServerContext): Hono<AppEnv> {
   app.route('/api/v1', configRoutes);
   app.route('/api/v1', cardRoutes);
   app.route('/api/v1', cardM1Routes);
+  app.route('/api/v1', cardM2Routes);
+  app.route('/api/v1', lorebookRoutes);
+  app.route('/api/v1', pluginRoutes);
   app.route('/api/v1', externalRoutes);
 
   // Serve uploaded portrait images safely

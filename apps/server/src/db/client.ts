@@ -185,6 +185,33 @@ function initializeTables(sqlite: DatabaseSync): void {
       error_message TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS lorebooks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      world_summary TEXT NOT NULL DEFAULT '',
+      scan_depth INTEGER NOT NULL DEFAULT 4,
+      token_budget INTEGER NOT NULL DEFAULT 1500,
+      recursive_scanning INTEGER NOT NULL DEFAULT 0,
+      entries_json TEXT NOT NULL DEFAULT '[]',
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS lorebook_character_links (
+      id TEXT PRIMARY KEY,
+      lorebook_id TEXT NOT NULL REFERENCES lorebooks(id) ON DELETE CASCADE,
+      card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      entry_uid TEXT NOT NULL,
+      relation_role TEXT NOT NULL DEFAULT '核心人物',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lorebook_links_card ON lorebook_character_links(card_id);
+    CREATE INDEX IF NOT EXISTS idx_lorebook_links_book ON lorebook_character_links(lorebook_id);
   `);
 }
 
