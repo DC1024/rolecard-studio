@@ -141,3 +141,85 @@ export const lorebookCharacterLinks = sqliteTable('lorebook_character_links', {
   relationRole: text('relation_role').notNull().default('核心人物'),
   createdAt: text('created_at').notNull(),
 });
+
+export const syncSchedules = sqliteTable('sync_schedules', {
+  id: text('id').primaryKey(),
+  cardId: text('card_id')
+    .notNull()
+    .unique()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  intervalDays: integer('interval_days').notNull().default(7),
+  syncScope: text('sync_scope', { enum: ['canon', 'meta_reputation', 'both'] })
+    .notNull()
+    .default('canon'),
+  autoApplyThreshold: text('auto_apply_threshold', { enum: ['manual_review', 'auto_minor'] })
+    .notNull()
+    .default('manual_review'),
+  lastRunAt: text('last_run_at'),
+  nextRunAt: text('next_run_at'),
+  lastSourceHash: text('last_source_hash'),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const impressionEvents = sqliteTable('impression_events', {
+  id: text('id').primaryKey(),
+  cardId: text('card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  eventType: text('event_type').notNull(),
+  diffSummary: text('diff_summary').notNull().default(''),
+  beforeContentJson: text('before_content_json').notNull(),
+  afterContentJson: text('after_content_json').notNull(),
+  sourcesJson: text('sources_json').notNull().default('[]'),
+  metaSummary: text('meta_summary'),
+  status: text('status', { enum: ['pending_review', 'applied', 'rejected'] })
+    .notNull()
+    .default('pending_review'),
+  createdAt: text('created_at').notNull(),
+  resolvedAt: text('resolved_at'),
+});
+
+export const rippleProposals = sqliteTable('ripple_proposals', {
+  id: text('id').primaryKey(),
+  sourceCardId: text('source_card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  targetCardId: text('target_card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  lorebookId: text('lorebook_id'),
+  hop: integer('hop').notNull().default(1),
+  proposedAttitude: text('proposed_attitude').notNull(),
+  reason: text('reason').notNull(),
+  status: text('status', { enum: ['pending_review', 'approved', 'rejected'] })
+    .notNull()
+    .default('pending_review'),
+  createdAt: text('created_at').notNull(),
+  resolvedAt: text('resolved_at'),
+});
+
+export const syncEvents = sqliteTable('sync_events', {
+  cursor: integer('cursor').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull().unique(),
+  eventType: text('event_type', {
+    enum: ['card.updated', 'card.evolved', 'lorebook.updated', 'ripple.approved'],
+  }).notNull(),
+  targetType: text('target_type', { enum: ['card', 'lorebook'] }).notNull(),
+  targetId: text('target_id').notNull(),
+  version: integer('version').notNull().default(1),
+  payloadJson: text('payload_json').notNull().default('{}'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const syncSubscriptions = sqliteTable('sync_subscriptions', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  webhookUrl: text('webhook_url').notNull(),
+  secretEncrypted: text('secret_encrypted').notNull(),
+  eventsJson: text('events_json').notNull().default('["card.updated","card.evolved"]'),
+  isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  lastCursor: integer('last_cursor').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});

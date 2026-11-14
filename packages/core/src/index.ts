@@ -11,3 +11,7 @@ export * from './playtest.js';
 export * from './lorebook.js';
 export * from './card-import.js';
 export * from './plugins.js';
+export * from './evolution.js';
+export * from './sync.js';
+export * from './vision.js';
+

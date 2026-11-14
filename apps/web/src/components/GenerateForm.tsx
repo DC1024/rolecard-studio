@@ -5,7 +5,8 @@ import type {
   GenerateCardRequest,
   GenerationMode,
 } from '@rolecard/shared';
-import { BookOpen, Globe, Layers, Loader2, Sparkles, Upload } from 'lucide-react';
+import { BookOpen, Eye, Globe, Layers, Loader2, Sparkles, Upload } from 'lucide-react';
+import { api } from '../api/client';
 
 interface GenerateFormProps {
   cardType: CardType;
@@ -45,6 +46,55 @@ export function GenerateForm({
   const [tagsText, setTagsText] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
   const [enableSupplementSearch, setEnableSupplementSearch] = useState(false);
+  const [visionDescription, setVisionDescription] = useState('');
+  const [visionUrl, setVisionUrl] = useState('');
+  const [visionBusy, setVisionBusy] = useState(false);
+  const [visionError, setVisionError] = useState<string | null>(null);
+
+  const mergeSuggestedTags = (suggested: string[]) => {
+    if (suggested.length === 0) return;
+    setTagsText((prev) => {
+      const existing = prev
+        .split(/[,，、\s]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const merged = Array.from(new Set([...existing, ...suggested]));
+      return merged.join(', ');
+    });
+  };
+
+  const runVisionAnalysis = async (payload: { imageDataUrl?: string; imageUrl?: string }) => {
+    setVisionBusy(true);
+    setVisionError(null);
+    try {
+      const res = await api.analyzeVision({
+        ...payload,
+        hint: characterName.trim() || workName.trim(),
+      });
+      const combined = res.imagePrompt
+        ? `${res.appearanceDescription}\n\n[Prompt] ${res.imagePrompt}`
+        : res.appearanceDescription;
+      setVisionDescription(combined);
+      mergeSuggestedTags(res.suggestedTags);
+    } catch (err) {
+      setVisionError(err instanceof Error ? err.message : 'Vision 图文反推失败');
+    } finally {
+      setVisionBusy(false);
+    }
+  };
+
+  const handleVisionFile = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        void runVisionAnalysis({ imageDataUrl: reader.result });
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
 
   const handleFileImport = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -73,7 +123,7 @@ export function GenerateForm({
       entityType,
       referenceText: referenceText.trim(),
       referenceUrls,
-      visionDescription: '',
+      visionDescription: visionDescription.trim(),
       enableSupplementSearch: mode === 'C' ? true : enableSupplementSearch,
       tags,
       lorebookIds: [],
@@ -256,6 +306,53 @@ export function GenerateForm({
             )}
           </div>
         )}
+
+        <div className="space-y-2 rounded-md border border-line bg-subtle/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="flex items-center gap-1.5 text-xs font-medium text-content-primary">
+              <Eye className="h-3.5 w-3.5 text-accent" />
+              Vision 参考图反推（可选：提取外貌特征、Tag 与英文绘图 Prompt）
+            </label>
+            <label className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-content-secondary hover:bg-subtle hover:text-content-primary">
+              {visionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Upload className="h-3 w-3" />}
+              <span>{visionBusy ? '反推中...' : '上传参考图反推'}</span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                disabled={visionBusy}
+                onChange={handleVisionFile}
+                className="hidden"
+              />
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={visionUrl}
+              onChange={(e) => setVisionUrl(e.target.value)}
+              placeholder="或粘贴公网图片 URL 点击右侧反推（经 SSRF 校验）"
+              className="h-8 flex-1 rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent"
+            />
+            <button
+              type="button"
+              disabled={visionBusy || !visionUrl.trim()}
+              onClick={() => void runVisionAnalysis({ imageUrl: visionUrl.trim() })}
+              className="h-8 shrink-0 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+            >
+              URL 反推
+            </button>
+          </div>
+          <textarea
+            rows={2}
+            value={visionDescription}
+            onChange={(e) => setVisionDescription(e.target.value)}
+            placeholder="反推结果将自动填入此处并作为外貌/形象设定依据，也可手动编辑补充..."
+            className="w-full rounded-sm border border-line bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content-primary outline-none focus:border-accent"
+          />
+          {visionError && (
+            <p className="text-[11px] text-status-danger">{visionError}</p>
+          )}
+        </div>
 
         <div>
           <label className="mb-1 block text-xs font-medium text-content-secondary">

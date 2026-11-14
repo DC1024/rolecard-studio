@@ -1,11 +1,12 @@
 {
   "name": "rolecard-studio",
-  "version": "0.1.0-m0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @rolecard/server dev",
     "build": "pnpm -r build",
+    "bundle": "node scripts/build-bundle.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint packages apps",
     "test": "vitest run",

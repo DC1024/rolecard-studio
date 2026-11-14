@@ -11,16 +11,30 @@ rolecard-studio/
 ├── packages/mcp       # 官方 MCP Server (stdio / HTTP)
 ├── apps/server        # Hono + Drizzle ORM + SQLite (WAL) 后端服务
 ├── apps/web           # React 18 + Vite + Tailwind 四主题三层工作台
-├── plugins/           # SillyTavern 扩展、Obsidian/游戏同步器与声明式插件示例
-├── packaging/         # Windows (Inno Setup) & Linux (.deb/.rpm/.tar.gz) 打包脚本
+├── plugins/           # SillyTavern 实时同步扩展、Obsidian/游戏 Webhook 验签同步器
+├── scripts/           # 方案 A 便携打包与 Windows (Inno Setup) / Linux (.deb/.tar.gz) 安装器脚本
 └── docs/              # 技术方案 (v1.4)、设计规范 (v1.0)、排期计划 (v1.0)
 ```
 
 ## 快速开始
 
+### 本地开发（Node >= 22, pnpm >= 9）
 ```bash
 pnpm install
+pnpm build
 pnpm dev
+```
+
+### 生产验证与打包
+```bash
+pnpm typecheck && pnpm lint && pnpm test && pnpm build
+pnpm bundle
+```
+
+### Docker 部署（GHCR）
+```bash
+docker pull ghcr.io/dc1024/rolecard-studio:latest
+docker run -d -p 3000:3000 -v rolecard_data:/app/data ghcr.io/dc1024/rolecard-studio:latest
 ```
 
 ## 文档索引

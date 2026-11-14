@@ -8,6 +8,7 @@ COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
 COPY pnpm-lock.yaml* ./
 COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
 COPY packages/core/package.json packages/core/tsconfig.json ./packages/core/
+COPY packages/mcp/package.json packages/mcp/tsconfig.json ./packages/mcp/
 COPY apps/server/package.json apps/server/tsconfig.json ./apps/server/
 COPY apps/web/package.json apps/web/tsconfig.json ./apps/web/
 

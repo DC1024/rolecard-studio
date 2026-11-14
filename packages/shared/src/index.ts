@@ -7,3 +7,6 @@ export * from './ccv3.js';
 export * from './playtest.js';
 export * from './lorebooks.js';
 export * from './plugins.js';
+export * from './evolution.js';
+export * from './sync.js';
+export * from './vision.js';

@@ -8,7 +8,11 @@ import type {
   ExportFormat,
   GenerateCardRequest,
   GenerationMode,
+  ImageGenerateRequest,
+  ImageSearchItem,
+  ImageSearchRequest,
   ImportCardRequest,
+  ImpressionEventDto,
   LinkCharacterToLorebookRequest,
   LlmTestRequest,
   LorebookDto,
@@ -17,14 +21,24 @@ import type {
   PlaytestRequest,
   PlaytestResponse,
   PublishStatus,
+  ResolveProposalRequest,
+  RippleProposalDto,
   RoleCardContent,
   ServiceConfigInput,
   SourceEntry,
+  SyncEventDto,
+  SyncScheduleDto,
+  SyncSubscriptionDto,
+  CreateSyncSubscriptionRequest,
   UpdateCardContentRequest,
   UpdateLorebookRequest,
   CreateLorebookRequest,
+  UpdateMetaSettingsRequest,
+  UpdateScheduleRequest,
   UpdateUserPermissionsRequest,
   UserSummary,
+  VisionAnalyzeRequest,
+  VisionAnalyzeResponse,
 } from '@rolecard/shared';
 
 export interface RoleCardDto {
@@ -439,5 +453,121 @@ export const api = {
 
   getPluginExportUrl(pluginId: string, cardId: string): string {
     return `/api/v1/plugins/${encodeURIComponent(pluginId)}/export/${encodeURIComponent(cardId)}`;
+  },
+
+  getCardSchedule(cardId: string): Promise<{ schedule: SyncScheduleDto }> {
+    return requestJson(`/cards/${encodeURIComponent(cardId)}/schedule`);
+  },
+
+  updateCardSchedule(
+    cardId: string,
+    input: UpdateScheduleRequest,
+  ): Promise<{ schedule: SyncScheduleDto }> {
+    return requestJson(`/cards/${encodeURIComponent(cardId)}/schedule`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  updateMetaSettings(
+    cardId: string,
+    input: UpdateMetaSettingsRequest,
+  ): Promise<{ card: RoleCardDto }> {
+    return requestJson(`/cards/${encodeURIComponent(cardId)}/meta-settings`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  },
+
+  evolveCard(cardId: string): Promise<{
+    skipped: boolean;
+    reason?: string;
+    impressionId?: string;
+    autoApplied?: boolean;
+    ripplesCreated?: number;
+  }> {
+    return requestJson(`/cards/${encodeURIComponent(cardId)}/evolve`, {
+      method: 'POST',
+    });
+  },
+
+  triggerEvolutionTick(): Promise<{ checked: number; evolved: number; skipped: number }> {
+    return requestJson('/evolution/tick', { method: 'POST' });
+  },
+
+  listReviews(): Promise<{
+    impressions: ImpressionEventDto[];
+    ripples: RippleProposalDto[];
+  }> {
+    return requestJson('/reviews');
+  },
+
+  resolveImpression(
+    id: string,
+    input: ResolveProposalRequest,
+  ): Promise<{ ok: boolean; status: string; ripplesCreated?: number }> {
+    return requestJson(`/reviews/impressions/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  resolveRipple(
+    id: string,
+    input: ResolveProposalRequest,
+  ): Promise<{ ok: boolean; status: string }> {
+    return requestJson(`/reviews/ripples/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  listSyncEvents(sinceCursor = 0, limit = 50): Promise<{
+    items: SyncEventDto[];
+    nextCursor: number;
+  }> {
+    return requestJson(`/sync/events?since_cursor=${sinceCursor}&limit=${limit}`);
+  },
+
+  listSyncSubscriptions(): Promise<{ items: SyncSubscriptionDto[] }> {
+    return requestJson('/sync/subscriptions');
+  },
+
+  createSyncSubscription(
+    input: CreateSyncSubscriptionRequest,
+  ): Promise<{ subscription: SyncSubscriptionDto; secret: string }> {
+    return requestJson('/sync/subscriptions', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  deleteSyncSubscription(id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/sync/subscriptions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  analyzeVision(input: VisionAnalyzeRequest): Promise<VisionAnalyzeResponse> {
+    return requestJson('/vision/analyze', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  searchImages(input: ImageSearchRequest): Promise<{ items: ImageSearchItem[] }> {
+    return requestJson('/images/search', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  generateImage(
+    input: ImageGenerateRequest,
+  ): Promise<{ dataUrl?: string; imageUrl?: string }> {
+    return requestJson('/images/generate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   },
 };

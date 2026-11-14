@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-rolecard-sync",
+  "name": "RoleCard Studio Sync",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "增量同步 RoleCard Studio 角色卡与世界书到 Obsidian Vault，支持 since_cursor 断点续传与人设演化通知。",
+  "author": "RoleCard Studio",
+  "authorUrl": "https://github.com/DC1024/rolecard-studio",
+  "isDesktopOnly": false
+}

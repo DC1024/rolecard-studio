@@ -1,0 +1,199 @@
+name: Release (GHCR & Windows/Linux Installers)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version label (e.g. 1.0.0)'
+        required: false
+        default: '1.0.0'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  NODE_VERSION: '22.22.2'
+  PNPM_VERSION: '9.15.4'
+
+jobs:
+  docker-ghcr:
+    name: Build & Push Docker Image (GHCR Only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for GHCR
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/rolecard-studio
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,prefix=sha-
+
+      - name: Build and push Docker image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  windows-installer:
+    name: Build Windows Installer (.exe + .zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install & Build Monorepo
+        run: |
+          pnpm install --frozen-lockfile || pnpm install
+          pnpm typecheck
+          pnpm test
+          pnpm build
+          pnpm bundle
+
+      - name: Embed Portable Node.js 22 Runtime (Windows x64)
+        shell: pwsh
+        run: |
+          $nodeZip = "node-v$($env:NODE_VERSION)-win-x64.zip"
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$($env:NODE_VERSION)/$nodeZip" -OutFile $nodeZip
+          Expand-Archive -Path $nodeZip -DestinationPath "release\node-tmp" -Force
+          New-Item -ItemType Directory -Force -Path "release\bundle\runtime" | Out-Null
+          Copy-Item "release\node-tmp\node-v$($env:NODE_VERSION)-win-x64\node.exe" "release\bundle\runtime\node.exe"
+          Remove-Item $nodeZip -Force
+          Remove-Item "release\node-tmp" -Recurse -Force
+
+      - name: Package Portable ZIP & Compile Inno Setup EXE
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $matches[1] } elseif ("${{ inputs.version }}") { "${{ inputs.version }}" } else { "1.0.0" }
+          Compress-Archive -Path "release\bundle\*" -DestinationPath "release\RoleCardStudio-$ver-win-x64-portable.zip" -Force
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
+          $isccPath = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
+          if (-not $isccPath) {
+            $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          & $isccPath "/DMyAppVersion=$ver" "scripts\installer.iss"
+
+      - name: Upload Windows Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            release/*.exe
+            release/*.zip
+
+  linux-installer:
+    name: Build Linux Installer (.deb + .tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install & Build Monorepo
+        run: |
+          pnpm install --frozen-lockfile || pnpm install
+          pnpm typecheck
+          pnpm test
+          pnpm build
+          pnpm bundle
+
+      - name: Embed Portable Node.js 22 Runtime (Linux x64)
+        run: |
+          NODE_TAR="node-v${NODE_VERSION}-linux-x64.tar.xz"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TAR}" -o "${NODE_TAR}"
+          mkdir -p release/node-tmp release/bundle/runtime/bin
+          tar -xJf "${NODE_TAR}" -C release/node-tmp
+          cp "release/node-tmp/node-v${NODE_VERSION}-linux-x64/bin/node" release/bundle/runtime/bin/node
+          chmod +x release/bundle/runtime/bin/node
+          rm -rf "${NODE_TAR}" release/node-tmp
+
+      - name: Build Linux .deb and .tar.gz
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if [ "$VER" = "$GITHUB_REF_NAME" ] || [ -z "$VER" ]; then
+            VER="${{ inputs.version || '1.0.0' }}"
+          fi
+          chmod +x scripts/build-linux-packages.sh
+          ./scripts/build-linux-packages.sh "$VER"
+
+      - name: Upload Linux Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            release/*.deb
+            release/*.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [docker-ghcr, windows-installer, linux-installer]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows Installers
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installers
+          path: dist-release
+
+      - name: Download Linux Installers
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-installers
+          path: dist-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist-release/*

@@ -18,6 +18,7 @@ import { Hono } from 'hono';
 import { getNow, type ServerContext } from '../context.js';
 import { lorebookCharacterLinks, lorebooks, roleCards } from '../db/schema.js';
 import { guardPermission, type AppEnv } from '../middleware/auth.js';
+import { publishSyncEvent } from './sync.js';
 
 export const lorebookRoutes = new Hono<AppEnv>();
 
@@ -185,6 +186,15 @@ lorebookRoutes.put('/lorebooks/:id', zValidator('json', UpdateLorebookSchema), a
 
   const updated = await ctx.db.select().from(lorebooks).where(eq(lorebooks.id, id)).limit(1);
   const [dto] = await hydrateLorebooks(ctx, updated);
+  if (dto) {
+    await publishSyncEvent(ctx, {
+      eventType: 'lorebook.updated',
+      targetType: 'lorebook',
+      targetId: dto.id,
+      version: 1,
+      payload: { name: dto.name, entryCount: dto.entries.length },
+    });
+  }
   return c.json({ lorebook: dto });
 });
 

@@ -41,6 +41,7 @@ import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.
 import { serializeCardRow } from './cards.js';
 import { loadRuntimeServiceConfig } from './config.js';
 import { loadLinkedLorebooksForCard } from './lorebooks.js';
+import { publishSyncEvent } from './sync.js';
 
 export const cardM1Routes = new Hono<AppEnv>();
 
@@ -133,6 +134,14 @@ cardM1Routes.put('/cards/:id', zValidator('json', UpdateCardContentSchema), asyn
   if (!updated) {
     return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
   }
+
+  await publishSyncEvent(ctx, {
+    eventType: 'card.updated',
+    targetType: 'card',
+    targetId: updated.id,
+    version: updated.version,
+    payload: { characterName: updated.characterName, diffSummary },
+  });
 
   return c.json({ card: serializeCardRow(updated) });
 });

@@ -5,6 +5,7 @@ import { serve } from '@hono/node-server';
 import { loadOrCreateMasterKey } from '@rolecard/core';
 import { createApp } from './app.js';
 import { createSqliteDatabase, seedInitialState } from './db/client.js';
+import { runScheduledEvolutionTick } from './routes/evolution.js';
 
 function resolveWebDistDir(): string | undefined {
   if (process.env.ROLECARD_WEB_DIST && existsSync(process.env.ROLECARD_WEB_DIST)) {
@@ -40,13 +41,27 @@ async function main(): Promise<void> {
     );
   }
 
-  const app = createApp({
+  const serverCtx = {
     db,
     masterKey,
     dataDir,
-    deploymentMode: process.env.ROLECARD_DEPLOYMENT_MODE === 'cloud' ? 'cloud' : 'local',
+    deploymentMode: (process.env.ROLECARD_DEPLOYMENT_MODE === 'cloud' ? 'cloud' : 'local') as
+      | 'local'
+      | 'cloud',
     webDistDir,
-  });
+  };
+
+  const app = createApp(serverCtx);
+
+  if (process.env.ROLECARD_ENABLE_SCHEDULER !== 'false') {
+    const intervalMs = 60 * 60 * 1000;
+    const timer = setInterval(() => {
+      void runScheduledEvolutionTick(serverCtx).catch((err) => {
+        console.warn('[RoleCard Studio] Evolution scheduler tick warning:', err);
+      });
+    }, intervalMs);
+    timer.unref();
+  }
 
   serve({
     fetch: app.fetch,

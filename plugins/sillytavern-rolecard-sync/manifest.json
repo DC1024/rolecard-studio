@@ -1,0 +1,10 @@
+{
+  "display_name": "RoleCard Studio Real-Time Sync",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "author": "RoleCard Studio",
+  "version": "1.0.0",
+  "homePage": "https://github.com/DC1024/rolecard-studio"
+}

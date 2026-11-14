@@ -212,6 +212,73 @@ function initializeTables(sqlite: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_lorebook_links_card ON lorebook_character_links(card_id);
     CREATE INDEX IF NOT EXISTS idx_lorebook_links_book ON lorebook_character_links(lorebook_id);
+
+    CREATE TABLE IF NOT EXISTS sync_schedules (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL UNIQUE REFERENCES role_cards(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      interval_days INTEGER NOT NULL DEFAULT 7,
+      sync_scope TEXT NOT NULL DEFAULT 'canon',
+      auto_apply_threshold TEXT NOT NULL DEFAULT 'manual_review',
+      last_run_at TEXT,
+      next_run_at TEXT,
+      last_source_hash TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS impression_events (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      diff_summary TEXT NOT NULL DEFAULT '',
+      before_content_json TEXT NOT NULL,
+      after_content_json TEXT NOT NULL,
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      meta_summary TEXT,
+      status TEXT NOT NULL DEFAULT 'pending_review',
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_impression_events_status ON impression_events(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ripple_proposals (
+      id TEXT PRIMARY KEY,
+      source_card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      target_card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      lorebook_id TEXT,
+      hop INTEGER NOT NULL DEFAULT 1,
+      proposed_attitude TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending_review',
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ripple_proposals_status ON ripple_proposals(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sync_events (
+      cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      event_type TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_subscriptions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      webhook_url TEXT NOT NULL,
+      secret_encrypted TEXT NOT NULL,
+      events_json TEXT NOT NULL DEFAULT '["card.updated","card.evolved"]',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      last_cursor INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 

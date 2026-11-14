@@ -10,7 +10,7 @@ healthRoutes.get('/health', (c) => {
 
   return c.json({
     status: 'ok',
-    version: '0.1.0-m0',
+    version: '1.0.0',
     deploymentMode: ctx.deploymentMode,
     siteAccessMode: policy.siteAccessMode,
     apiAccessMode: policy.apiAccessMode,

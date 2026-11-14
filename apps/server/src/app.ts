@@ -11,10 +11,13 @@ import { cardM1Routes } from './routes/cards-m1.js';
 import { cardM2Routes } from './routes/cards-m2.js';
 import { cardRoutes } from './routes/cards.js';
 import { configRoutes } from './routes/config.js';
+import { evolutionRoutes } from './routes/evolution.js';
 import { externalRoutes } from './routes/external.js';
 import { healthRoutes } from './routes/health.js';
 import { lorebookRoutes } from './routes/lorebooks.js';
 import { pluginRoutes } from './routes/plugins.js';
+import { syncRoutes } from './routes/sync.js';
+import { visionRoutes } from './routes/vision.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -46,6 +49,9 @@ export function createApp(ctx: ServerContext): Hono<AppEnv> {
   app.route('/api/v1', cardM2Routes);
   app.route('/api/v1', lorebookRoutes);
   app.route('/api/v1', pluginRoutes);
+  app.route('/api/v1', evolutionRoutes);
+  app.route('/api/v1', syncRoutes);
+  app.route('/api/v1', visionRoutes);
   app.route('/api/v1', externalRoutes);
 
   // Serve uploaded portrait images safely

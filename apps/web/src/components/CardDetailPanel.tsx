@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { ExportFormat, RoleCardContent } from '@rolecard/shared';
+import type {
+  AutoApplyThreshold,
+  ExportFormat,
+  RoleCardContent,
+  SyncScheduleDto,
+  SyncScope,
+} from '@rolecard/shared';
 import {
   Check,
+  Clock,
   Download,
   Edit3,
   ExternalLink,
@@ -10,6 +17,7 @@ import {
   MessageSquare,
   Minimize2,
   Plus,
+  RefreshCw,
   Save,
   Sparkles,
   Trash2,
@@ -63,7 +71,12 @@ export function CardDetailPanel({
   const [refineInput, setRefineInput] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'profile' | 'dialogue' | 'sources'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'dialogue' | 'sources' | 'evolution'>('profile');
+  const [schedule, setSchedule] = useState<SyncScheduleDto | null>(null);
+  const [schedEnabled, setSchedEnabled] = useState(false);
+  const [schedDays, setSchedDays] = useState(7);
+  const [schedScope, setSchedScope] = useState<SyncScope>('canon');
+  const [schedThreshold, setSchedThreshold] = useState<AutoApplyThreshold>('manual_review');
 
   useEffect(() => {
     if (card) {
@@ -71,9 +84,22 @@ export function CardDetailPanel({
       setLockedFields([...card.lockedFields]);
       setEditing(false);
       setError(null);
+      api
+        .getCardSchedule(card.id)
+        .then((res) => {
+          setSchedule(res.schedule);
+          setSchedEnabled(res.schedule.enabled);
+          setSchedDays(res.schedule.intervalDays);
+          setSchedScope(res.schedule.syncScope);
+          setSchedThreshold(res.schedule.autoApplyThreshold);
+        })
+        .catch(() => {
+          setSchedule(null);
+        });
     } else {
       setDraft(null);
       setLockedFields([]);
+      setSchedule(null);
     }
   }, [card?.id, card?.version, card?.updatedAt]);
 
@@ -499,6 +525,7 @@ export function CardDetailPanel({
             ['profile', '核心设定与外貌'],
             ['dialogue', '开场白与提示词'],
             ['sources', `引用溯源 (${card.sources.length})`],
+            ['evolution', `定时演化${card.scheduleEnabled ? ' · 已开启' : ''}`],
           ] as const
         ).map(([tabKey, label]) => (
           <button
@@ -752,6 +779,181 @@ export function CardDetailPanel({
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {activeTab === 'evolution' && (
+        <div className="space-y-4 rounded-md border border-line-subtle bg-canvas p-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="flex items-center gap-1.5 font-semibold text-content-primary">
+                <Clock className="h-3.5 w-3.5 text-accent" />
+                定时人设演化与 Meta 隔离配置
+              </h3>
+              <p className="mt-0.5 text-[11.5px] text-content-muted">
+                默认关闭（不消耗后台 Token）。开启后按设定周期错峰检索更新并生成审核提案；「真实/历史人物」强制仅用正典且禁用风评。
+              </p>
+            </div>
+            {canUpdate && (
+              <button
+                type="button"
+                disabled={busyAction !== null}
+                onClick={async () => {
+                  setBusyAction('evolve');
+                  setError(null);
+                  try {
+                    const res = await api.evolveCard(card.id);
+                    if (res.skipped) {
+                      onCardUpdated(
+                        card,
+                        res.reason === 'SOURCE_HASH_UNCHANGED'
+                          ? '检索源哈希未变化，已跳过本次 LLM 演化（零消耗）'
+                          : '未检索到新资料，本次未生成演化提案',
+                      );
+                    } else {
+                      onCardUpdated(
+                        card,
+                        res.autoApplied
+                          ? '已完成演化并自动应用（已生成 1-hop 涟漪建议）'
+                          : '已生成人设演化提案，请前往「审核与同步」查看确认',
+                      );
+                    }
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : '触发演化检视失败');
+                  } finally {
+                    setBusyAction(null);
+                  }
+                }}
+                className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${busyAction === 'evolve' ? 'animate-spin' : ''}`} />
+                {busyAction === 'evolve' ? '检索演化中...' : '立即执行一次演化检视'}
+              </button>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-2">
+              <span className="font-medium text-content-primary">开启定期演化任务</span>
+              <input
+                type="checkbox"
+                disabled={!canUpdate}
+                checked={schedEnabled}
+                onChange={(e) => setSchedEnabled(e.target.checked)}
+                className="h-4 w-4 accent-accent"
+              />
+            </label>
+
+            <div className="flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-2">
+              <span className="font-medium text-content-primary">更新周期（天）</span>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                disabled={!canUpdate}
+                value={schedDays}
+                onChange={(e) => setSchedDays(Math.max(1, Number(e.target.value) || 7))}
+                className="h-7 w-20 rounded-sm border border-line bg-canvas px-2 text-right font-mono text-xs text-content-primary"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-2">
+              <span className="font-medium text-content-primary">同步范围</span>
+              <select
+                disabled={!canUpdate || card.entityType === 'real_person'}
+                value={card.entityType === 'real_person' ? 'canon' : schedScope}
+                onChange={(e) => setSchedScope(e.target.value as SyncScope)}
+                className="h-7 rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary"
+              >
+                <option value="canon">仅正典设定 (canon)</option>
+                <option value="meta_reputation">仅社群风评 (meta)</option>
+                <option value="both">正典 + 独立风评层 (both)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-2">
+              <span className="font-medium text-content-primary">审核策略</span>
+              <select
+                disabled={!canUpdate}
+                value={schedThreshold}
+                onChange={(e) => setSchedThreshold(e.target.value as AutoApplyThreshold)}
+                className="h-7 rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary"
+              >
+                <option value="manual_review">人工审核后合并</option>
+                <option value="auto_minor">自动应用微调（虚构角色）</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-line bg-surface px-3 py-2">
+            <div>
+              <span className="font-medium text-content-primary">试聊时允许注入 Meta 风评层</span>
+              {card.entityType === 'real_person' && (
+                <span className="ml-2 text-[11px] text-status-warning">
+                  （现实/历史人物卡合规锁死：禁止收集与注入主观风评）
+                </span>
+              )}
+            </div>
+            <input
+              type="checkbox"
+              disabled={!canUpdate || card.entityType === 'real_person'}
+              checked={card.entityType === 'real_person' ? false : card.enableMetaInChat}
+              onChange={async (e) => {
+                setBusyAction('meta');
+                setError(null);
+                try {
+                  const res = await api.updateMetaSettings(card.id, {
+                    enableMetaInChat: e.target.checked,
+                  });
+                  onCardUpdated(res.card, e.target.checked ? '已开启试聊 Meta 层注入' : '已关闭试聊 Meta 层注入');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '更新 Meta 设置失败');
+                } finally {
+                  setBusyAction(null);
+                }
+              }}
+              className="h-4 w-4 accent-accent"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-muted">
+            <span>
+              上次检测：{schedule?.lastRunAt ? new Date(schedule.lastRunAt).toLocaleString() : '从未运行'}
+              {' · '}
+              下次预定：{schedule?.nextRunAt ? new Date(schedule.nextRunAt).toLocaleString() : '未排期'}
+            </span>
+            {canUpdate && (
+              <button
+                type="button"
+                disabled={busyAction !== null}
+                onClick={async () => {
+                  setBusyAction('schedule');
+                  setError(null);
+                  try {
+                    const res = await api.updateCardSchedule(card.id, {
+                      enabled: schedEnabled,
+                      intervalDays: schedDays,
+                      syncScope: card.entityType === 'real_person' ? 'canon' : schedScope,
+                      autoApplyThreshold: schedThreshold,
+                    });
+                    setSchedule(res.schedule);
+                    onCardUpdated(
+                      { ...card, scheduleEnabled: res.schedule.enabled },
+                      res.schedule.enabled ? `已启用每 ${res.schedule.intervalDays} 天演化同步` : '已关闭定期演化任务',
+                    );
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : '保存演化配置失败');
+                  } finally {
+                    setBusyAction(null);
+                  }
+                }}
+                className="inline-flex h-8 items-center gap-1 rounded-sm border border-accent bg-accent/10 px-3 text-xs font-medium text-accent hover:bg-accent/20"
+              >
+                <Save className="h-3.5 w-3.5" />
+                保存周期设置
+              </button>
+            )}
+          </div>
         </div>
       )}
     </section>

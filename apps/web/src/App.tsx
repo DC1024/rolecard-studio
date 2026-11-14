@@ -7,7 +7,7 @@ import type {
   MaskedServiceConfig,
   Permission,
 } from '@rolecard/shared';
-import { BookOpen, CheckCircle2, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
+import { Bell, BookOpen, CheckCircle2, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
 import { api, type CommonTagCount, type RoleCardDto } from './api/client';
 import { CardDetailPanel } from './components/CardDetailPanel';
 import { GenerateForm } from './components/GenerateForm';
@@ -17,12 +17,13 @@ import { LorebookPanel } from './components/LorebookPanel';
 import { PlaytestPanel } from './components/PlaytestPanel';
 import { PluginPanel } from './components/PluginPanel';
 import { PortraitCropModal } from './components/PortraitCropModal';
+import { ReviewSyncPanel } from './components/ReviewSyncPanel';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { ThemeProvider } from './hooks/useTheme';
 
-type WorkspaceView = 'generate' | 'detail' | 'playtest' | 'lorebooks' | 'plugins';
+type WorkspaceView = 'generate' | 'detail' | 'playtest' | 'lorebooks' | 'plugins' | 'reviews';
 
 function StudioApp() {
   const [auth, setAuth] = useState<AuthContextResponse | null>(null);
@@ -290,6 +291,18 @@ function StudioApp() {
                     <Puzzle className="h-3.5 w-3.5" />
                     插件与 MCP
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setView('reviews')}
+                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
+                      view === 'reviews'
+                        ? 'bg-accent text-content-inverse'
+                        : 'text-content-secondary hover:text-content-primary'
+                    }`}
+                  >
+                    <Bell className="h-3.5 w-3.5" />
+                    审核与同步
+                  </button>
                 </div>
 
                 {hasPerm('card:create') && (
@@ -369,6 +382,16 @@ function StudioApp() {
               <PluginPanel
                 selectedCard={selectedCard}
                 canExport={hasPerm('card:export')}
+              />
+            )}
+
+            {view === 'reviews' && (
+              <ReviewSyncPanel
+                canResolveReview={hasPerm('review:resolve')}
+                canUpdate={hasPerm('card:update')}
+                canDelete={hasPerm('card:delete')}
+                onNotify={showToast}
+                onRefreshCards={refreshCards}
               />
             )}
           </div>
