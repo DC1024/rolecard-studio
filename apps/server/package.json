@@ -1,0 +1,22 @@
+{
+  "name": "@rolecard/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "@hono/zod-validator": "^0.4.3",
+    "@rolecard/core": "workspace:*",
+    "@rolecard/shared": "workspace:*",
+    "drizzle-orm": "^0.39.1",
+    "hono": "^4.6.20",
+    "zod": "^3.24.2"
+  }
+}
