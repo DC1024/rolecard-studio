@@ -33,6 +33,7 @@ import type {
   SyncEventDto,
   SyncScheduleDto,
   SyncSubscriptionDto,
+  TokenCrop,
   CreateSyncSubscriptionRequest,
   UpdateCardContentRequest,
   UpdateLorebookRequest,
@@ -63,6 +64,8 @@ export interface RoleCardDto {
   sources: SourceEntry[];
   tokenCount: number;
   imageUrl: string | null;
+  tokenImageUrl: string | null;
+  tokenCrop: TokenCrop | null;
   imageSource: string | null;
   imagePrompt: string | null;
   lockedFields: string[];
@@ -585,6 +588,10 @@ export const api = {
 
   getExportUrl(id: string, format: ExportFormat): string {
     return `/api/v1/cards/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+  },
+
+  getPortraitSourceUrl(id: string): string {
+    return `/api/v1/cards/${encodeURIComponent(id)}/portrait-source`;
   },
 
   generateCardTrpgStats(

@@ -85,6 +85,8 @@ export const roleCards = sqliteTable('role_cards', {
   searchSnapshot: text('search_snapshot'),
   tokenCount: integer('token_count').notNull().default(0),
   imageUrl: text('image_url'),
+  tokenImageUrl: text('token_image_url'),
+  tokenCropJson: text('token_crop_json'),
   imageSource: text('image_source'),
   imagePrompt: text('image_prompt'),
   scheduleEnabled: integer('schedule_enabled', { mode: 'boolean' }).notNull().default(false),

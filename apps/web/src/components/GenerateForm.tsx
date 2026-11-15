@@ -52,6 +52,24 @@ function resolveStageIndex(step: string): number {
   return 0;
 }
 
+const PRESET_TABS: readonly { id: CardType; label: string; hint: string }[] = [
+  {
+    id: 'sillytavern_v3',
+    label: 'AI 角色扮演',
+    hint: '强化沉浸式开场白、对话示例与 SillyTavern CCV3 防出戏设定',
+  },
+  {
+    id: 'trpg_coc7',
+    label: 'TRPG 车卡',
+    hint: '生成 CoC 7e / D&D 5e 真实面板数值与技能，支持 Foundry VTT 与跑团车卡表导出',
+  },
+  {
+    id: 'general',
+    label: '通用设定',
+    hint: '精炼客观的人物档案结构，适用于小说、游戏策划与设定集归档',
+  },
+];
+
 const MODE_DESCRIPTIONS: Record<GenerationMode, string> = {
   A: '仅基于你提供的文本、设定集文件或直链 URL 提纯生成，忠实还原原作/OC 设定。',
   B: '自动直连免 Key 公开百科（萌娘/PRTS/Wikipedia）与通用搜索考据，无检索依据则硬拦截。',
@@ -212,9 +230,34 @@ export function GenerateForm({
           <Sparkles className="h-4 w-4 text-accent" />
           创建角色卡
         </h2>
-        <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
-          {CARD_TYPE_META[cardType]?.badge ?? cardType}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-md border border-line bg-subtle p-0.5">
+            {PRESET_TABS.map((tab) => {
+              const active =
+                tab.id === 'trpg_coc7'
+                  ? cardType === 'trpg_coc7' || cardType === 'trpg_dnd5e'
+                  : cardType === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  title={tab.hint}
+                  onClick={() => onCardTypeChange(tab.id)}
+                  className={`rounded-sm px-2.5 py-1 text-[12px] font-medium leading-4 transition-all ${
+                    active
+                      ? 'bg-surface text-content-primary shadow-sm'
+                      : 'text-content-secondary hover:text-content-primary'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+          <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
+            {CARD_TYPE_META[cardType]?.badge ?? cardType}
+          </span>
+        </div>
       </div>
 
       <div className="mb-4 rounded-md border border-line-subtle bg-subtle/60 px-3 py-2 text-[11.5px] text-content-secondary">
@@ -223,7 +266,7 @@ export function GenerateForm({
             <strong className="text-content-primary">输出规格：</strong>
             {CARD_TYPE_META[cardType]?.desc}
           </span>
-          {(cardType === 'trpg_coc7' || cardType === 'trpg_dnd5e') ? (
+          {(cardType === 'trpg_coc7' || cardType === 'trpg_dnd5e') && (
             <div className="inline-flex rounded-sm border border-line bg-surface p-0.5 text-[11px]">
               <button
                 type="button"
@@ -246,30 +289,6 @@ export function GenerateForm({
                 }`}
               >
                 D&amp;D 5e
-              </button>
-            </div>
-          ) : (
-            <div className="inline-flex gap-1 text-[11px] sm:hidden">
-              <button
-                type="button"
-                onClick={() => onCardTypeChange('sillytavern_v3')}
-                className="rounded border border-line bg-surface px-1.5 py-0.5"
-              >
-                角色扮演
-              </button>
-              <button
-                type="button"
-                onClick={() => onCardTypeChange('trpg_coc7')}
-                className="rounded border border-line bg-surface px-1.5 py-0.5"
-              >
-                TRPG
-              </button>
-              <button
-                type="button"
-                onClick={() => onCardTypeChange('general')}
-                className="rounded border border-line bg-surface px-1.5 py-0.5"
-              >
-                通用
               </button>
             </div>
           )}

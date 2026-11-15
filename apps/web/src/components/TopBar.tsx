@@ -1,10 +1,16 @@
 import { useState } from 'react';
-import type { AuthContextResponse, CardType, MaskedServiceConfig } from '@rolecard/shared';
+import type { AuthContextResponse, MaskedServiceConfig } from '@rolecard/shared';
 import {
+  Bell,
+  BookOpen,
+  FileUp,
+  LayoutGrid,
   LogIn,
   LogOut,
   Menu,
+  MessageSquare,
   Palette,
+  Puzzle,
   Settings,
   Shield,
   Sparkles,
@@ -19,9 +25,20 @@ import {
 } from '../hooks/useTheme';
 import { useToast } from '../hooks/useToast';
 
+export type WorkspaceView =
+  | 'gallery'
+  | 'generate'
+  | 'detail'
+  | 'playtest'
+  | 'lorebooks'
+  | 'plugins'
+  | 'reviews';
+
 interface TopBarProps {
-  preset: CardType;
-  onPresetChange: (preset: CardType) => void;
+  view: WorkspaceView;
+  onViewChange: (view: WorkspaceView) => void;
+  canCreate: boolean;
+  onOpenImport: () => void;
   config: MaskedServiceConfig | null;
   auth: AuthContextResponse | null;
   sidebarOpen: boolean;
@@ -31,27 +48,24 @@ interface TopBarProps {
   onLogout: () => void;
 }
 
-const PRESET_TABS: readonly { id: CardType; label: string; hint: string }[] = [
-  {
-    id: 'sillytavern_v3',
-    label: 'AI 角色扮演',
-    hint: '强化沉浸式开场白、对话示例与 SillyTavern CCV3 防出戏设定',
-  },
-  {
-    id: 'trpg_coc7',
-    label: 'TRPG 车卡',
-    hint: '生成 CoC 7e / D&D 5e 真实面板数值与技能，支持 Foundry VTT 与跑团车卡表导出',
-  },
-  {
-    id: 'general',
-    label: '通用设定',
-    hint: '精炼客观的人物档案结构，适用于小说、游戏策划与设定集归档',
-  },
+const NAV_ITEMS: readonly {
+  id: Exclude<WorkspaceView, 'detail'>;
+  label: string;
+  icon: typeof LayoutGrid;
+}[] = [
+  { id: 'gallery', label: '角色卡库', icon: LayoutGrid },
+  { id: 'generate', label: '生成新卡', icon: Sparkles },
+  { id: 'playtest', label: '快速试聊', icon: MessageSquare },
+  { id: 'lorebooks', label: '世界书', icon: BookOpen },
+  { id: 'plugins', label: '插件与 MCP', icon: Puzzle },
+  { id: 'reviews', label: '审核与同步', icon: Bell },
 ];
 
 export function TopBar({
-  preset,
-  onPresetChange,
+  view,
+  onViewChange,
+  canCreate,
+  onOpenImport,
   config,
   auth,
   sidebarOpen,
@@ -75,81 +89,110 @@ export function TopBar({
   const isConfigured = Boolean(config?.configured && config.primaryLlm);
   const currentThemeMeta = THEME_OPTIONS.find((t) => t.id === theme) ?? THEME_OPTIONS[0]!;
 
+  const renderNavStrip = () => (
+    <div className="flex items-center gap-1.5">
+      <nav
+        aria-label="主工作区导航"
+        className="inline-flex items-center rounded-md border border-line bg-subtle p-0.5 shadow-sm"
+      >
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = view === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onViewChange(item.id)}
+              className={`inline-flex items-center gap-1 whitespace-nowrap rounded-sm px-2.5 py-1 text-[12px] font-medium leading-4 transition-all ${
+                active
+                  ? 'bg-accent text-content-inverse shadow-sm'
+                  : 'text-content-secondary hover:bg-surface/60 hover:text-content-primary'
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0" />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {canCreate && (
+        <button
+          type="button"
+          onClick={onOpenImport}
+          className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 text-[12px] font-medium leading-4 text-content-primary shadow-sm transition-colors hover:border-accent/50 hover:bg-subtle"
+        >
+          <FileUp className="h-3.5 w-3.5 text-accent" />
+          <span>导入旧卡升级</span>
+        </button>
+      )}
+    </div>
+  );
+
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b border-line-subtle bg-surface/90 px-4 backdrop-blur-md">
-      <div className="flex min-w-0 items-center gap-3">
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          title={sidebarOpen ? '收起历史栏' : '展开历史栏'}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
-        >
-          <Menu className="h-4 w-4" />
-        </button>
+    <header className="sticky top-0 z-30 border-b border-line-subtle bg-surface/90 backdrop-blur-md">
+      <div className="flex h-14 items-center justify-between gap-2 px-4 lg:grid lg:grid-cols-[1fr_auto_1fr] lg:gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            title={sidebarOpen ? '收起侧栏' : '展开侧栏'}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
 
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-accent to-accent-secondary text-content-inverse shadow-sm">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <span className="whitespace-nowrap text-[15px] font-semibold tracking-tight text-content-primary">
-            RoleCard Studio
-          </span>
-        </div>
-
-        <div className="hidden items-center rounded-md border border-line bg-subtle p-0.5 sm:flex">
-          {PRESET_TABS.map((tab) => {
-            const active =
-              tab.id === 'trpg_coc7'
-                ? preset === 'trpg_coc7' || preset === 'trpg_dnd5e'
-                : preset === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                title={tab.hint}
-                onClick={() => onPresetChange(tab.id)}
-                className={`rounded-sm px-2.5 py-1 text-[12px] font-medium leading-4 transition-all ${
-                  active
-                    ? 'bg-surface text-content-primary shadow-sm'
-                    : 'text-content-secondary hover:text-content-primary'
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-[12px] font-medium leading-4 text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary md:inline-flex"
-          title="查看大模型与系统配置"
-        >
-          <span
-            className={`h-2 w-2 rounded-full ${
-              isConfigured ? 'bg-status-success' : 'bg-status-warning'
-            }`}
-          />
-          <span>
-            {isConfigured
-              ? `${config?.primaryLlm?.model ?? '已就绪'}`
-              : '待配置大模型'}
-          </span>
-        </button>
-
-        {auth && (
-          <div className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-[12px] leading-4 text-content-secondary lg:inline-flex">
-            <Shield className="h-3.5 w-3.5 text-accent" />
-            <span>
-              {auth.policy.siteAccessMode === 'login_required' ? '登录访问' : '公开工作台'}
-              {' · '}
-              API {auth.policy.apiAccessMode === 'public' ? '公开' : '鉴权'}
+          <button
+            type="button"
+            onClick={() => onViewChange('gallery')}
+            title="返回角色卡库"
+            className="flex min-w-0 items-center gap-2 text-left transition-opacity hover:opacity-85"
+          >
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-accent to-accent-secondary text-content-inverse shadow-sm">
+              <Sparkles className="h-4 w-4" />
+            </div>
+            <span className="truncate whitespace-nowrap text-[14px] font-semibold tracking-tight text-content-primary xl:text-[15px]">
+              RoleCard Studio
             </span>
-          </div>
-        )}
+          </button>
+        </div>
+
+        <div className="hidden justify-center lg:flex">{renderNavStrip()}</div>
+
+        <div className="flex items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2 py-1 text-[11.5px] font-medium leading-4 text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary xl:inline-flex"
+            title={
+              isConfigured
+                ? `当前主模型：${config?.primaryLlm?.model ?? '已就绪'}`
+                : '尚未配置主大模型，点击设置'
+            }
+          >
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                isConfigured ? 'bg-status-success' : 'bg-status-warning'
+              }`}
+            />
+            <span className="max-w-[110px] truncate 2xl:max-w-[160px]">
+              {isConfigured ? `${config?.primaryLlm?.model ?? '已就绪'}` : '待配置模型'}
+            </span>
+          </button>
+
+          {auth && (
+            <div
+              className="hidden items-center gap-1 rounded-full border border-line bg-subtle px-2 py-1 text-[11.5px] leading-4 text-content-secondary 2xl:inline-flex"
+              title="站点与 API 安全策略"
+            >
+              <Shield className="h-3.5 w-3.5 text-accent" />
+              <span className="whitespace-nowrap">
+                {auth.policy.siteAccessMode === 'login_required' ? '登录访问' : '公开'}
+                {' · '}
+                {auth.policy.apiAccessMode === 'public' ? 'API公开' : '鉴权'}
+              </span>
+            </div>
+          )}
 
         <div className="relative">
           <button
@@ -162,7 +205,7 @@ export function TopBar({
             title="调整界面字体大小"
           >
             <TypeIcon className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">
+            <span className="hidden xl:inline">
               {fontPreset === 'custom'
                 ? `${fontSizePx}px`
                 : FONT_PRESET_MAP[fontPreset].label}
@@ -255,7 +298,7 @@ export function TopBar({
             title="切换颜色主题"
           >
             <Palette className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{currentThemeMeta.label}</span>
+            <span className="hidden xl:inline">{currentThemeMeta.label}</span>
           </button>
 
           {themeMenuOpen && (
@@ -304,20 +347,20 @@ export function TopBar({
           className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-[12px] font-medium leading-4 text-content-primary transition-colors hover:bg-subtle"
         >
           <Settings className="h-3.5 w-3.5 text-content-secondary" />
-          <span className="hidden sm:inline">设置</span>
+          <span className="hidden xl:inline">设置</span>
         </button>
 
         {auth?.authenticated && auth.user ? (
-          <div className="flex items-center gap-1.5">
-            <span className="inline-flex h-8 items-center rounded-sm bg-accent/10 px-2.5 text-[12px] font-medium leading-4 text-accent">
+          <div className="flex items-center gap-1">
+            <span className="inline-flex h-8 max-w-[100px] items-center truncate rounded-sm bg-accent/10 px-2 text-[12px] font-medium leading-4 text-accent">
               {auth.user.username}
-              {auth.user.role === 'admin' ? ' (管理)' : ''}
+              {auth.user.role === 'admin' ? '(管)' : ''}
             </span>
             <button
               type="button"
               onClick={onLogout}
               title="退出登录"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-sm border border-line text-content-secondary hover:bg-subtle hover:text-status-danger"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-line text-content-secondary hover:bg-subtle hover:text-status-danger"
             >
               <LogOut className="h-3.5 w-3.5" />
             </button>
@@ -326,12 +369,17 @@ export function TopBar({
           <button
             type="button"
             onClick={onOpenLogin}
-            className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-[12px] font-medium leading-4 text-content-inverse transition-colors hover:bg-accent-hover"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-sm bg-accent px-2.5 text-[12px] font-medium leading-4 text-content-inverse transition-colors hover:bg-accent-hover"
           >
             <LogIn className="h-3.5 w-3.5" />
             <span>登录</span>
           </button>
         )}
+      </div>
+      </div>
+
+      <div className="flex justify-center overflow-x-auto border-t border-line-subtle bg-canvas/60 px-3 py-1.5 lg:hidden">
+        {renderNavStrip()}
       </div>
     </header>
   );

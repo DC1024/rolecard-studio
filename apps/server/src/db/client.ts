@@ -154,6 +154,8 @@ function initializeTables(sqlite: DatabaseSync): void {
       search_snapshot TEXT,
       token_count INTEGER NOT NULL DEFAULT 0,
       image_url TEXT,
+      token_image_url TEXT,
+      token_crop_json TEXT,
       image_source TEXT,
       image_prompt TEXT,
       schedule_enabled INTEGER NOT NULL DEFAULT 0,
@@ -299,6 +301,8 @@ function initializeTables(sqlite: DatabaseSync): void {
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');
   ensureColumnExists(sqlite, 'user_service_configs', 'proxy_config_encrypted', 'TEXT');
+  ensureColumnExists(sqlite, 'role_cards', 'token_image_url', 'TEXT');
+  ensureColumnExists(sqlite, 'role_cards', 'token_crop_json', 'TEXT');
 }
 
 function ensureColumnExists(

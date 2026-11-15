@@ -12,6 +12,7 @@ import {
   type GenerateCardRequest,
   type RoleCardContent,
   type SourceEntry,
+  type TokenCrop,
 } from '@rolecard/shared';
 import { desc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -40,6 +41,8 @@ export interface SerializedRoleCard {
   sources: SourceEntry[];
   tokenCount: number;
   imageUrl: string | null;
+  tokenImageUrl: string | null;
+  tokenCrop: TokenCrop | null;
   imageSource: string | null;
   imagePrompt: string | null;
   lockedFields: string[];
@@ -67,6 +70,8 @@ export function serializeCardRow(row: typeof roleCards.$inferSelect): Serialized
     sources: safeParseJsonArray<SourceEntry>(row.sourcesJson),
     tokenCount: row.tokenCount,
     imageUrl: row.imageUrl,
+    tokenImageUrl: row.tokenImageUrl ?? null,
+    tokenCrop: safeParseJsonObject<TokenCrop>(row.tokenCropJson),
     imageSource: row.imageSource,
     imagePrompt: row.imagePrompt,
     lockedFields: safeParseJsonArray<string>(row.lockedFieldsJson),
@@ -84,6 +89,16 @@ function safeParseJsonArray<T>(raw: string): T[] {
     return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch {
     return [];
+  }
+}
+
+function safeParseJsonObject<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as T) : null;
+  } catch {
+    return null;
   }
 }
 

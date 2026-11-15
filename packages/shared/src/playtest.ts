@@ -62,9 +62,18 @@ export const UpdateCardContentSchema = z.object({
 });
 export type UpdateCardContentRequest = z.infer<typeof UpdateCardContentSchema>;
 
+export const TokenCropSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  size: z.number().min(0.05).max(1),
+});
+export type TokenCrop = z.infer<typeof TokenCropSchema>;
+
 export const CardImageUploadSchema = z.object({
-  mode: z.enum(['upload', 'search_url']),
+  mode: z.enum(['upload', 'search_url', 'crop_token']),
   dataUrl: z.string().max(4_000_000).optional(),
+  tokenDataUrl: z.string().max(4_000_000).optional(),
+  tokenCrop: TokenCropSchema.optional(),
   imageUrl: z.string().url().max(2048).optional(),
   imagePrompt: z.string().max(2000).optional(),
 });

@@ -7,24 +7,22 @@ import type {
   MaskedServiceConfig,
   Permission,
 } from '@rolecard/shared';
-import { Bell, BookOpen, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
 import { api, type CommonTagCount, type RoleCardDto } from './api/client';
 import { CardDetailPanel } from './components/CardDetailPanel';
+import { CardGallery } from './components/CardGallery';
 import { GenerateForm } from './components/GenerateForm';
 import { ImportCardModal } from './components/ImportCardModal';
 import { LoginModal } from './components/LoginModal';
 import { LorebookPanel } from './components/LorebookPanel';
 import { PlaytestPanel } from './components/PlaytestPanel';
 import { PluginPanel } from './components/PluginPanel';
-import { PortraitCropModal } from './components/PortraitCropModal';
+import { PortraitCropModal, type PortraitModalTab } from './components/PortraitCropModal';
 import { ReviewSyncPanel } from './components/ReviewSyncPanel';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
-import { TopBar } from './components/TopBar';
+import { TopBar, type WorkspaceView } from './components/TopBar';
 import { ThemeProvider } from './hooks/useTheme';
 import { ToastProvider, useToast } from './hooks/useToast';
-
-type WorkspaceView = 'generate' | 'detail' | 'playtest' | 'lorebooks' | 'plugins' | 'reviews';
 
 function StudioApp() {
   const [auth, setAuth] = useState<AuthContextResponse | null>(null);
@@ -32,7 +30,7 @@ function StudioApp() {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [preset, setPreset] = useState<CardType>('sillytavern_v3');
-  const [view, setView] = useState<WorkspaceView>('generate');
+  const [view, setView] = useState<WorkspaceView>('gallery');
 
   const [cards, setCards] = useState<RoleCardDto[]>([]);
   const [total, setTotal] = useState(0);
@@ -56,6 +54,7 @@ function StudioApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [portraitOpen, setPortraitOpen] = useState(false);
+  const [portraitInitialTab, setPortraitInitialTab] = useState<PortraitModalTab>('upload');
   const [importOpen, setImportOpen] = useState(false);
 
   const hasPerm = useCallback(
@@ -184,19 +183,29 @@ function StudioApp() {
   const handleCardDeleted = (id: string) => {
     setCards((prev) => prev.filter((c) => c.id !== id));
     setSelectedCard((prev) => (prev?.id === id ? null : prev));
-    setView('generate');
+    setView('gallery');
     showToast('角色卡已删除');
     void refreshCards();
+  };
+
+  const hasActiveFilters = Boolean(
+    searchQuery.trim() || selectedTags.length > 0 || filterCardType || filterMode,
+  );
+
+  const resetFilters = () => {
+    setSearchQuery('');
+    setSelectedTags([]);
+    setFilterCardType('');
+    setFilterMode('');
   };
 
   return (
     <div className="min-h-screen bg-canvas text-content-primary">
       <TopBar
-        preset={preset}
-        onPresetChange={(p) => {
-          setPreset(p);
-          setView('generate');
-        }}
+        view={view}
+        onViewChange={setView}
+        canCreate={hasPerm('card:create')}
+        onOpenImport={() => setImportOpen(true)}
         config={config}
         auth={auth}
         sidebarOpen={sidebarOpen}
@@ -238,97 +247,31 @@ function StudioApp() {
         />
 
         <main className="min-w-0 flex-1 p-4 sm:p-6">
-          <div className="mx-auto max-w-5xl space-y-4">
-            {/* Workspace Mode Switcher */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex rounded-md border border-line bg-surface p-1 shadow-sm">
-                  <button
-                    type="button"
-                    onClick={() => setView('generate')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'generate'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    生成新卡
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView('detail')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'detail'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <FileText className="h-3.5 w-3.5" />
-                    卡片详情{selectedCard ? ` · ${selectedCard.characterName}` : ''}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView('playtest')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'playtest'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" />
-                    快速试聊
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView('lorebooks')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'lorebooks'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    世界书
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView('plugins')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'plugins'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <Puzzle className="h-3.5 w-3.5" />
-                    插件与 MCP
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView('reviews')}
-                    className={`inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-medium transition ${
-                      view === 'reviews'
-                        ? 'bg-accent text-content-inverse'
-                        : 'text-content-secondary hover:text-content-primary'
-                    }`}
-                  >
-                    <Bell className="h-3.5 w-3.5" />
-                    审核与同步
-                  </button>
-                </div>
-
-                {hasPerm('card:create') && (
-                  <button
-                    type="button"
-                    onClick={() => setImportOpen(true)}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-3 text-xs font-medium text-content-primary shadow-sm hover:bg-subtle"
-                  >
-                    <FileUp className="h-3.5 w-3.5 text-accent" />
-                    导入旧卡升级
-                  </button>
-                )}
-              </div>
-            </div>
+          <div className={view === 'gallery' ? 'mx-auto max-w-7xl space-y-4' : 'mx-auto max-w-5xl space-y-4'}>
+            {view === 'gallery' && (
+              <CardGallery
+                cards={cards}
+                total={total}
+                loading={loadingCards}
+                canCreate={hasPerm('card:create')}
+                hasActiveFilters={hasActiveFilters}
+                searchQuery={searchQuery}
+                selectedTags={selectedTags}
+                filterCardType={filterCardType}
+                filterMode={filterMode}
+                onResetFilters={resetFilters}
+                onSelectCard={(card) => {
+                  setSelectedCard(card);
+                  setView('detail');
+                }}
+                onQuickPlaytest={(card) => {
+                  setSelectedCard(card);
+                  setView('playtest');
+                }}
+                onGoGenerate={() => setView('generate')}
+                onOpenImport={() => setImportOpen(true)}
+              />
+            )}
 
             {view === 'generate' && (
               <GenerateForm
@@ -360,7 +303,15 @@ function StudioApp() {
                   setSelectedCard(card);
                   setView('playtest');
                 }}
-                onOpenPortraitModal={() => setPortraitOpen(true)}
+                onOpenPortraitModal={() => {
+                  setPortraitInitialTab('upload');
+                  setPortraitOpen(true);
+                }}
+                onOpenTokenModal={() => {
+                  setPortraitInitialTab('token');
+                  setPortraitOpen(true);
+                }}
+                onBackToGallery={() => setView('gallery')}
               />
             )}
 
@@ -442,23 +393,40 @@ function StudioApp() {
         <PortraitCropModal
           open={portraitOpen}
           card={selectedCard}
+          initialTab={portraitInitialTab}
           onClose={() => setPortraitOpen(false)}
-          onSaveUpload={async (dataUrl, imagePrompt) => {
+          onSaveUpload={async (dataUrl, options) => {
             const res = await api.uploadCardImage(selectedCard.id, {
               mode: 'upload',
               dataUrl,
-              ...(imagePrompt ? { imagePrompt } : {}),
+              ...(options?.tokenDataUrl ? { tokenDataUrl: options.tokenDataUrl } : {}),
+              ...(options?.tokenCrop ? { tokenCrop: options.tokenCrop } : {}),
+              ...(options?.imagePrompt ? { imagePrompt: options.imagePrompt } : {}),
             });
-            handleCardUpdated(res.card, '立绘已裁剪上传');
+            handleCardUpdated(
+              res.card,
+              options?.tokenDataUrl ? '2:3 立绘与 1:1 Token 已同步更新' : '2:3 立绘已裁剪上传',
+            );
             setPortraitOpen(false);
           }}
-          onSaveUrl={async (imageUrl, imagePrompt) => {
+          onSaveUrl={async (imageUrl, options) => {
             const res = await api.uploadCardImage(selectedCard.id, {
               mode: 'search_url',
               imageUrl,
-              ...(imagePrompt ? { imagePrompt } : {}),
+              ...(options?.tokenDataUrl ? { tokenDataUrl: options.tokenDataUrl } : {}),
+              ...(options?.tokenCrop ? { tokenCrop: options.tokenCrop } : {}),
+              ...(options?.imagePrompt ? { imagePrompt: options.imagePrompt } : {}),
             });
             handleCardUpdated(res.card, '立绘外链已更新');
+            setPortraitOpen(false);
+          }}
+          onSaveToken={async (tokenDataUrl, tokenCrop) => {
+            const res = await api.uploadCardImage(selectedCard.id, {
+              mode: 'crop_token',
+              tokenDataUrl,
+              tokenCrop,
+            });
+            handleCardUpdated(res.card, '1:1 VTT Token 已从 2:3 立绘裁剪更新');
             setPortraitOpen(false);
           }}
         />

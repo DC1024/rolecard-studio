@@ -8,8 +8,10 @@ import type {
   SyncScope,
 } from '@rolecard/shared';
 import {
+  ArrowLeft,
   Check,
   ChevronDown,
+  CircleDot,
   Clock,
   Copy,
   Dice5,
@@ -87,6 +89,8 @@ interface CardDetailPanelProps {
   onCardDeleted: (id: string) => void;
   onOpenPlaytest: (card: RoleCardDto) => void;
   onOpenPortraitModal: () => void;
+  onOpenTokenModal: () => void;
+  onBackToGallery: () => void;
 }
 
 const LOCKABLE_FIELDS: { key: keyof RoleCardContent; label: string }[] = [
@@ -114,6 +118,8 @@ export function CardDetailPanel({
   onCardDeleted,
   onOpenPlaytest,
   onOpenPortraitModal,
+  onOpenTokenModal,
+  onBackToGallery,
 }: CardDetailPanelProps) {
   const { notifySuccess, notifyError, copyWithToast } = useToast();
   const [editing, setEditing] = useState(false);
@@ -366,32 +372,67 @@ export function CardDetailPanel({
 
   return (
     <section className="rounded-lg border border-line bg-surface p-5 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onBackToGallery}
+          className="inline-flex items-center gap-1.5 rounded-sm border border-line bg-canvas px-2.5 py-1 text-xs font-medium text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          返回角色卡库
+        </button>
+        <span className="text-[11px] text-content-muted">
+          2:3 统一立绘 · 支持衍生 1:1 VTT Token
+        </span>
+      </div>
+
       {/* Header */}
       <div className="flex flex-col gap-4 border-b border-line-subtle pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3.5">
-          <div className="relative shrink-0">
+        <div className="flex items-start gap-4">
+          <div className="relative flex shrink-0 flex-col items-center gap-1.5">
             {card.imageUrl ? (
               <img
                 src={card.imageUrl}
                 alt={card.characterName}
                 referrerPolicy="no-referrer"
-                className="h-24 w-16 rounded-md border border-line object-cover shadow-sm"
+                className="aspect-[2/3] w-24 rounded-md border border-line object-cover shadow-sm"
               />
             ) : (
-              <div className="flex h-24 w-16 items-center justify-center rounded-md border border-dashed border-line bg-subtle text-lg font-bold text-accent">
+              <div className="flex aspect-[2/3] w-24 items-center justify-center rounded-md border border-dashed border-line bg-subtle text-xl font-bold text-accent">
                 {card.characterName.slice(0, 1)}
               </div>
             )}
             {canUpdate && (
-              <button
-                type="button"
-                onClick={onOpenPortraitModal}
-                title="裁剪或更换角色立绘"
-                className="mt-1 flex w-16 items-center justify-center gap-1 rounded-sm border border-line bg-surface py-0.5 text-[10.5px] text-content-secondary hover:bg-subtle hover:text-content-primary"
-              >
-                <ImageIcon className="h-3 w-3" />
-                立绘
-              </button>
+              <div className="flex w-24 flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={onOpenPortraitModal}
+                  title="裁剪或更换 2:3 角色立绘"
+                  className="flex w-full items-center justify-center gap-1 rounded-sm border border-line bg-surface py-0.5 text-[10.5px] text-content-secondary hover:bg-subtle hover:text-content-primary"
+                >
+                  <ImageIcon className="h-3 w-3" />
+                  2:3 立绘
+                </button>
+                {card.imageUrl && (
+                  <button
+                    type="button"
+                    onClick={onOpenTokenModal}
+                    title="从 2:3 立绘裁剪衍生 1:1 VTT Token"
+                    className="flex w-full items-center justify-center gap-1 rounded-sm border border-line bg-surface py-0.5 text-[10.5px] text-content-secondary hover:border-accent/50 hover:text-accent"
+                  >
+                    {card.tokenImageUrl ? (
+                      <img
+                        src={card.tokenImageUrl}
+                        alt="1:1 Token"
+                        className="h-3.5 w-3.5 rounded-full border border-line object-cover"
+                      />
+                    ) : (
+                      <CircleDot className="h-3 w-3" />
+                    )}
+                    1:1 Token
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -670,7 +711,18 @@ export function CardDetailPanel({
                         >
                           <div>
                             <div className="font-medium">D&amp;D 5e Foundry VTT Actor</div>
-                            <div className="text-[10px] text-content-muted">标准 FVTT 导入 JSON</div>
+                            <div className="text-[10px] text-content-muted">标准 FVTT 导入 JSON（自动使用 1:1 Token）</div>
+                          </div>
+                          <Download className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleExport('vtt_token_png', '1:1 VTT Token PNG')}
+                          className="flex w-full items-center justify-between rounded-sm border border-line bg-surface px-2.5 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div>
+                            <div className="font-medium">1:1 VTT Token 头像</div>
+                            <div className="text-[10px] text-content-muted">由 2:3 立绘衍生裁剪的 PNG</div>
                           </div>
                           <Download className="h-3.5 w-3.5 shrink-0" />
                         </button>

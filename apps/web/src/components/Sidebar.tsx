@@ -167,10 +167,10 @@ export function Sidebar({
                     src={card.imageUrl}
                     alt={card.characterName}
                     referrerPolicy="no-referrer"
-                    className="h-9 w-9 shrink-0 rounded-sm border border-line object-cover"
+                    className="aspect-[2/3] w-8 shrink-0 rounded-sm border border-line object-cover"
                   />
                 ) : (
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm border border-line bg-subtle text-xs font-semibold text-accent">
+                  <div className="flex aspect-[2/3] w-8 shrink-0 items-center justify-center rounded-sm border border-line bg-subtle text-xs font-semibold text-accent">
                     {card.characterName.slice(0, 1)}
                   </div>
                 )}

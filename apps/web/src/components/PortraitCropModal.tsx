@@ -3,8 +3,10 @@ import {
   PORTRAIT_STYLE_LABELS,
   type ImageSearchItem,
   type PortraitPromptStyle,
+  type TokenCrop,
 } from '@rolecard/shared';
 import {
+  CircleDot,
   Copy,
   Crop,
   Link as LinkIcon,
@@ -18,12 +20,104 @@ import {
 import { api, type RoleCardDto } from '../api/client';
 import { useToast } from '../hooks/useToast';
 
+export type PortraitModalTab = 'upload' | 'token' | 'url' | 'search' | 'ai';
+
 interface PortraitCropModalProps {
   open: boolean;
   card: RoleCardDto;
+  initialTab?: PortraitModalTab;
   onClose: () => void;
-  onSaveUpload: (dataUrl: string, imagePrompt?: string) => Promise<void>;
-  onSaveUrl: (imageUrl: string, imagePrompt?: string) => Promise<void>;
+  onSaveUpload: (
+    dataUrl: string,
+    options?: {
+      imagePrompt?: string;
+      tokenDataUrl?: string;
+      tokenCrop?: TokenCrop;
+    },
+  ) => Promise<void>;
+  onSaveUrl: (
+    imageUrl: string,
+    options?: {
+      imagePrompt?: string;
+      tokenDataUrl?: string;
+      tokenCrop?: TokenCrop;
+    },
+  ) => Promise<void>;
+  onSaveToken: (tokenDataUrl: string, tokenCrop: TokenCrop) => Promise<void>;
+}
+
+const DEFAULT_TOKEN_CROP: TokenCrop = {
+  x: 0,
+  y: 0.05,
+  size: 1,
+};
+
+function clampTokenCrop(crop: TokenCrop, width: number, height: number): TokenCrop {
+  const safeW = Math.max(1, width);
+  const safeH = Math.max(1, height);
+  const size = Math.max(0.35, Math.min(1, crop.size));
+  const minDim = Math.min(safeW, safeH);
+  const sidePx = minDim * size;
+  const maxX = Math.max(0, (safeW - sidePx) / safeW);
+  const maxY = Math.max(0, (safeH - sidePx) / safeH);
+  return {
+    size,
+    x: Math.max(0, Math.min(maxX, crop.x)),
+    y: Math.max(0, Math.min(maxY, crop.y)),
+  };
+}
+
+function resolveCropPixels(crop: TokenCrop, width: number, height: number) {
+  const clamped = clampTokenCrop(crop, width, height);
+  const side = Math.min(width, height) * clamped.size;
+  const sx = Math.max(0, Math.min(width - side, clamped.x * width));
+  const sy = Math.max(0, Math.min(height - side, clamped.y * height));
+  return { sx, sy, side, clamped };
+}
+
+function renderTokenDataUrlFromSource(
+  source: HTMLImageElement | HTMLCanvasElement,
+  srcW: number,
+  srcH: number,
+  crop: TokenCrop,
+  outSize = 512,
+): string {
+  const { sx, sy, side } = resolveCropPixels(crop, srcW, srcH);
+  const out = document.createElement('canvas');
+  out.width = outSize;
+  out.height = outSize;
+  const ctx = out.getContext('2d');
+  if (!ctx) return '';
+  ctx.drawImage(source, sx, sy, side, side, 0, 0, outSize, outSize);
+  return out.toDataURL('image/png');
+}
+
+function renderPortrait2By3DataUrl(
+  img: HTMLImageElement,
+  targetW = 600,
+  targetH = 900,
+): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  const scale = Math.max(targetW / img.width, targetH / img.height);
+  const drawW = img.width * scale;
+  const drawH = img.height * scale;
+  const dx = (targetW - drawW) / 2;
+  const dy = (targetH - drawH) / 2;
+  ctx.drawImage(img, dx, dy, drawW, drawH);
+  return canvas.toDataURL('image/png');
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('图片加载失败'));
+    img.src = src;
+  });
 }
 
 function buildInitialPrompt(card: RoleCardDto): string {
@@ -31,24 +125,32 @@ function buildInitialPrompt(card: RoleCardDto): string {
     return card.imagePrompt.trim();
   }
   const workHint = card.workName ? ` from ${card.workName}` : '';
-  return `anime character portrait of ${card.characterName}${workHint}, detailed lighting, clean background`;
+  return `anime character portrait of ${card.characterName}${workHint}, vertical 2:3 composition, detailed lighting, clean background`;
 }
 
 export function PortraitCropModal({
   open,
   card,
+  initialTab = 'upload',
   onClose,
   onSaveUpload,
   onSaveUrl,
+  onSaveToken,
 }: PortraitCropModalProps) {
   const cardName = card.characterName;
   const { copyWithToast, notifySuccess } = useToast();
-  const [tab, setTab] = useState<'upload' | 'url' | 'search' | 'ai'>('upload');
-  const [aspect, setAspect] = useState<'2:3' | '1:1'>('2:3');
+
+  const [tab, setTab] = useState<PortraitModalTab>(initialTab);
   const [zoom, setZoom] = useState(1);
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [imageEl, setImageEl] = useState<HTMLImageElement | null>(null);
+
+  const [syncTokenOnUpload, setSyncTokenOnUpload] = useState(true);
+  const [tokenCrop, setTokenCrop] = useState<TokenCrop>(card.tokenCrop ?? DEFAULT_TOKEN_CROP);
+  const [sourcePortraitEl, setSourcePortraitEl] = useState<HTMLImageElement | null>(null);
+  const [loadingSourcePortrait, setLoadingSourcePortrait] = useState(false);
+
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [searchQuery, setSearchQuery] = useState(cardName);
   const [searchResults, setSearchResults] = useState<ImageSearchItem[]>([]);
@@ -59,22 +161,58 @@ export function PortraitCropModal({
   const [aiNegativePrompt, setAiNegativePrompt] = useState('');
   const [aiPromptNotes, setAiPromptNotes] = useState('');
   const [promptLoadingMode, setPromptLoadingMode] = useState<'generate' | 'optimize' | null>(null);
-  const [aiSize, setAiSize] = useState<'1024x1536' | '1024x1024'>('1024x1536');
   const [aiGenerating, setAiGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    setTab(initialTab);
     setSearchQuery(card.characterName);
     setAiPrompt(buildInitialPrompt(card));
     setAiNegativePrompt('');
     setAiPromptNotes('');
     setAiInstruction('');
+    setTokenCrop(card.tokenCrop ?? DEFAULT_TOKEN_CROP);
     setError(null);
-  }, [open, card.id, card.characterName, card.imagePrompt, card.workName]);
+  }, [open, initialTab, card.id, card.characterName, card.imagePrompt, card.workName, card.tokenCrop]);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Load existing 2:3 portrait via same-origin proxy for CORS-free 1:1 Token cropping
+  useEffect(() => {
+    if (!open || tab !== 'token' || !card.imageUrl) {
+      return;
+    }
+    let cancelled = false;
+    setLoadingSourcePortrait(true);
+    setError(null);
+
+    const sourceUrl = `${api.getPortraitSourceUrl(card.id)}?v=${encodeURIComponent(card.updatedAt)}`;
+    loadImageElement(sourceUrl)
+      .then((img) => {
+        if (!cancelled) {
+          setSourcePortraitEl(img);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSourcePortraitEl(null);
+          setError(err instanceof Error ? err.message : '加载当前 2:3 立绘失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSourcePortrait(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, card.id, card.imageUrl, card.updatedAt]);
+
+  const uploadCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const uploadTokenPreviewRef = useRef<HTMLCanvasElement | null>(null);
+  const tokenCropCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tokenCirclePreviewRef = useRef<HTMLCanvasElement | null>(null);
+
   const dragRef = useRef<{ active: boolean; startX: number; startY: number; baseX: number; baseY: number }>({
     active: false,
     startX: 0,
@@ -83,11 +221,27 @@ export function PortraitCropModal({
     baseY: 0,
   });
 
-  const canvasW = aspect === '2:3' ? 280 : 280;
-  const canvasH = aspect === '2:3' ? 420 : 280;
+  const tokenDragRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    baseCropX: number;
+    baseCropY: number;
+  }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+    baseCropX: 0,
+    baseCropY: 0,
+  });
 
+  // Strict 2:3 canvas dimensions
+  const canvasW = 240;
+  const canvasH = 360;
+
+  // Draw Upload 2:3 preview + derived 1:1 preview
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas = uploadCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -98,9 +252,16 @@ export function PortraitCropModal({
 
     if (!imageEl) {
       ctx.fillStyle = '#94a3b8';
-      ctx.font = '13px sans-serif';
+      ctx.font = '12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('请先选择本地图片进行裁剪', canvasW / 2, canvasH / 2);
+      ctx.fillText('选择本地图片裁剪为 2:3 立绘', canvasW / 2, canvasH / 2);
+
+      const tPrev = uploadTokenPreviewRef.current?.getContext('2d');
+      if (tPrev) {
+        tPrev.clearRect(0, 0, 128, 128);
+        tPrev.fillStyle = '#0f172a';
+        tPrev.fillRect(0, 0, 128, 128);
+      }
       return;
     }
 
@@ -110,14 +271,94 @@ export function PortraitCropModal({
     const dx = (canvasW - drawW) / 2 + offsetX;
     const dy = (canvasH - drawH) / 2 + offsetY;
     ctx.drawImage(imageEl, dx, dy, drawW, drawH);
-  }, [imageEl, zoom, offsetX, offsetY, canvasW, canvasH]);
+
+    if (syncTokenOnUpload) {
+      const { sx, sy, side } = resolveCropPixels(tokenCrop, canvasW, canvasH);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(sx, sy, side, side);
+      ctx.restore();
+
+      const previewCanvas = uploadTokenPreviewRef.current;
+      const pCtx = previewCanvas?.getContext('2d');
+      if (previewCanvas && pCtx) {
+        pCtx.clearRect(0, 0, 128, 128);
+        pCtx.drawImage(canvas, sx, sy, side, side, 0, 0, 128, 128);
+      }
+    }
+  }, [imageEl, zoom, offsetX, offsetY, syncTokenOnUpload, tokenCrop]);
+
+  // Draw Token Cropper (derived from existing 2:3 portrait)
+  useEffect(() => {
+    if (tab !== 'token') return;
+    const canvas = tokenCropCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvasW, canvasH);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, canvasW, canvasH);
+
+    if (!sourcePortraitEl) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        loadingSourcePortrait ? '加载 2:3 原立绘...' : '当前角色卡暂无立绘',
+        canvasW / 2,
+        canvasH / 2,
+      );
+      return;
+    }
+
+    // Fit 2:3 source portrait inside 240x360 with cover
+    const scale = Math.max(canvasW / sourcePortraitEl.width, canvasH / sourcePortraitEl.height);
+    const drawW = sourcePortraitEl.width * scale;
+    const drawH = sourcePortraitEl.height * scale;
+    const dx = (canvasW - drawW) / 2;
+    const dy = (canvasH - drawH) / 2;
+    ctx.drawImage(sourcePortraitEl, dx, dy, drawW, drawH);
+
+    const { sx, sy, side } = resolveCropPixels(tokenCrop, canvasW, canvasH);
+
+    // Draw live previews before painting overlay
+    const circleCanvas = tokenCirclePreviewRef.current;
+    const circleCtx = circleCanvas?.getContext('2d');
+    if (circleCanvas && circleCtx) {
+      circleCtx.clearRect(0, 0, 128, 128);
+      circleCtx.drawImage(canvas, sx, sy, side, side, 0, 0, 128, 128);
+    }
+
+    // Dim outside 1:1 region
+    ctx.save();
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.55)';
+    ctx.beginPath();
+    ctx.rect(0, 0, canvasW, canvasH);
+    ctx.rect(sx, sy, side, side);
+    ctx.fill('evenodd');
+
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx, sy, side, side);
+
+    // Circular VTT guide ring
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(sx + side / 2, sy + side / 2, side / 2 - 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }, [tab, sourcePortraitEl, loadingSourcePortrait, tokenCrop]);
 
   if (!open) return null;
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError(null);
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
@@ -126,17 +367,25 @@ export function PortraitCropModal({
         setZoom(1);
         setOffsetX(0);
         setOffsetY(0);
+        setTokenCrop(DEFAULT_TOKEN_CROP);
+        setError(null);
       };
-      img.src = String(reader.result);
+      if (typeof reader.result === 'string') {
+        img.src = reader.result;
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
-  const exportCroppedPng = (): string | null => {
+  const exportCropped2By3AndToken = (): {
+    portraitDataUrl: string;
+    tokenDataUrl?: string;
+    clampedCrop?: TokenCrop;
+  } | null => {
     if (!imageEl) return null;
-    const outW = aspect === '2:3' ? 600 : 512;
-    const outH = aspect === '2:3' ? 900 : 512;
+    const outW = 600;
+    const outH = 900;
     const offscreen = document.createElement('canvas');
     offscreen.width = outW;
     offscreen.height = outH;
@@ -151,7 +400,38 @@ export function PortraitCropModal({
     const dy = ((canvasH - imageEl.height * coverScale) / 2 + offsetY) * ratio;
 
     ctx.drawImage(imageEl, dx, dy, drawW, drawH);
-    return offscreen.toDataURL('image/png');
+    const portraitDataUrl = offscreen.toDataURL('image/png');
+
+    if (!syncTokenOnUpload) {
+      return { portraitDataUrl };
+    }
+
+    const clampedCrop = clampTokenCrop(tokenCrop, outW, outH);
+    const tokenDataUrl = renderTokenDataUrlFromSource(offscreen, outW, outH, clampedCrop, 512);
+    return { portraitDataUrl, tokenDataUrl, clampedCrop };
+  };
+
+  const exportDerivedTokenFromSource = (): {
+    tokenDataUrl: string;
+    clampedCrop: TokenCrop;
+  } | null => {
+    if (!sourcePortraitEl) return null;
+    // First normalize source portrait into a clean 600x900 2:3 cover canvas so coordinates match preview 240x360
+    const baseW = 600;
+    const baseH = 900;
+    const offscreen = document.createElement('canvas');
+    offscreen.width = baseW;
+    offscreen.height = baseH;
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) return null;
+    const scale = Math.max(baseW / sourcePortraitEl.width, baseH / sourcePortraitEl.height);
+    const drawW = sourcePortraitEl.width * scale;
+    const drawH = sourcePortraitEl.height * scale;
+    ctx.drawImage(sourcePortraitEl, (baseW - drawW) / 2, (baseH - drawH) / 2, drawW, drawH);
+
+    const clampedCrop = clampTokenCrop(tokenCrop, baseW, baseH);
+    const tokenDataUrl = renderTokenDataUrlFromSource(offscreen, baseW, baseH, clampedCrop, 512);
+    return { tokenDataUrl, clampedCrop };
   };
 
   const handleSave = async () => {
@@ -159,13 +439,24 @@ export function PortraitCropModal({
     setSaving(true);
     try {
       if (tab === 'upload') {
-        const dataUrl = exportCroppedPng();
-        if (!dataUrl) {
+        const exported = exportCropped2By3AndToken();
+        if (!exported) {
           setError('请先选择要裁剪的图片');
           setSaving(false);
           return;
         }
-        await onSaveUpload(dataUrl);
+        await onSaveUpload(exported.portraitDataUrl, {
+          ...(exported.tokenDataUrl ? { tokenDataUrl: exported.tokenDataUrl } : {}),
+          ...(exported.clampedCrop ? { tokenCrop: exported.clampedCrop } : {}),
+        });
+      } else if (tab === 'token') {
+        const derived = exportDerivedTokenFromSource();
+        if (!derived) {
+          setError('当前角色卡尚无可用的 2:3 立绘，请先上传或生成 2:3 立绘');
+          setSaving(false);
+          return;
+        }
+        await onSaveToken(derived.tokenDataUrl, derived.clampedCrop);
       } else {
         if (!imageUrlInput.trim()) {
           setError('请输入合法的 http(s) 图片 URL');
@@ -176,21 +467,44 @@ export function PortraitCropModal({
       }
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存立绘失败');
+      setError(err instanceof Error ? err.message : '保存失败');
     } finally {
       setSaving(false);
     }
   };
 
+  const handleSearch = async () => {
+    const q = searchQuery.trim();
+    if (!q) return;
+    setSearching(true);
+    setError(null);
+    try {
+      const res = await api.searchImages({ query: q, limit: 6 });
+      setSearchResults(res.items);
+      if (res.items.length === 0) {
+        setError('未找到匹配的 Wikimedia 开源图片，可尝试英文关键词');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '搜图失败');
+    } finally {
+      setSearching(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/80 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-xl border border-line bg-elevated p-5 shadow-2xl">
+      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-line bg-elevated p-5 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Crop className="h-4 w-4 text-accent" />
-            <h3 className="text-sm font-semibold text-content-primary">
-              立绘与头像裁剪 — {cardName}
-            </h3>
+            <div>
+              <h3 className="text-sm font-semibold text-content-primary">
+                2:3 角色立绘与 1:1 VTT Token 裁剪 — {cardName}
+              </h3>
+              <p className="text-[11px] text-content-muted">
+                主立绘统一采用 2:3 竖版比例；1:1 VTT Token 均由 2:3 立绘裁剪衍生
+              </p>
+            </div>
           </div>
           <button
             type="button"
@@ -201,42 +515,30 @@ export function PortraitCropModal({
           </button>
         </div>
 
-        <div className="mb-3 grid grid-cols-4 gap-1 rounded-md border border-line bg-subtle p-1">
+        <div className="mb-3 grid grid-cols-5 gap-1 rounded-md border border-line bg-subtle p-1">
           <button
             type="button"
             onClick={() => setTab('upload')}
             className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
               tab === 'upload'
                 ? 'bg-surface text-content-primary shadow-sm'
-                : 'text-content-secondary'
+                : 'text-content-secondary hover:text-content-primary'
             }`}
           >
             <Upload className="h-3 w-3" />
-            本地裁剪
+            2:3 上传裁剪
           </button>
           <button
             type="button"
-            onClick={() => setTab('url')}
+            onClick={() => setTab('token')}
             className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
-              tab === 'url'
+              tab === 'token'
                 ? 'bg-surface text-content-primary shadow-sm'
-                : 'text-content-secondary'
+                : 'text-content-secondary hover:text-content-primary'
             }`}
           >
-            <LinkIcon className="h-3 w-3" />
-            外部直链
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('search')}
-            className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
-              tab === 'search'
-                ? 'bg-surface text-content-primary shadow-sm'
-                : 'text-content-secondary'
-            }`}
-          >
-            <Search className="h-3 w-3" />
-            搜图代理
+            <CircleDot className="h-3 w-3" />
+            1:1 Token
           </button>
           <button
             type="button"
@@ -244,32 +546,54 @@ export function PortraitCropModal({
             className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
               tab === 'ai'
                 ? 'bg-surface text-content-primary shadow-sm'
-                : 'text-content-secondary'
+                : 'text-content-secondary hover:text-content-primary'
             }`}
           >
             <Sparkles className="h-3 w-3" />
             AI 生图
           </button>
+          <button
+            type="button"
+            onClick={() => setTab('search')}
+            className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
+              tab === 'search'
+                ? 'bg-surface text-content-primary shadow-sm'
+                : 'text-content-secondary hover:text-content-primary'
+            }`}
+          >
+            <Search className="h-3 w-3" />
+            搜图代理
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('url')}
+            className={`flex items-center justify-center gap-1 rounded-sm py-1.5 text-[11px] font-medium ${
+              tab === 'url'
+                ? 'bg-surface text-content-primary shadow-sm'
+                : 'text-content-secondary hover:text-content-primary'
+            }`}
+          >
+            <LinkIcon className="h-3 w-3" />
+            外部直链
+          </button>
         </div>
 
         {tab === 'upload' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex gap-1.5">
-                {(['2:3', '1:1'] as const).map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => setAspect(preset)}
-                    className={`rounded-sm border px-2.5 py-1 text-xs font-medium ${
-                      aspect === preset
-                        ? 'border-accent bg-accent/10 text-accent'
-                        : 'border-line bg-surface text-content-secondary'
-                    }`}
-                  >
-                    {preset === '2:3' ? '2:3 酒馆立绘' : '1:1 VTT Token'}
-                  </button>
-                ))}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
+                  2:3 统一主立绘 (600×900)
+                </span>
+                <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-content-secondary">
+                  <input
+                    type="checkbox"
+                    checked={syncTokenOnUpload}
+                    onChange={(e) => setSyncTokenOnUpload(e.target.checked)}
+                    className="accent-accent"
+                  />
+                  同步从 2:3 裁剪 1:1 VTT Token
+                </label>
               </div>
 
               <label className="cursor-pointer rounded-sm border border-line bg-surface px-2.5 py-1 text-xs font-medium text-content-primary hover:bg-subtle">
@@ -283,63 +607,251 @@ export function PortraitCropModal({
               </label>
             </div>
 
-            <div className="flex justify-center rounded-lg border border-line bg-subtle p-3">
-              <canvas
-                ref={canvasRef}
-                width={canvasW}
-                height={canvasH}
-                onMouseDown={(e) => {
-                  dragRef.current = {
-                    active: true,
-                    startX: e.clientX,
-                    startY: e.clientY,
-                    baseX: offsetX,
-                    baseY: offsetY,
-                  };
-                }}
-                onMouseMove={(e) => {
-                  if (!dragRef.current.active) return;
-                  setOffsetX(dragRef.current.baseX + (e.clientX - dragRef.current.startX));
-                  setOffsetY(dragRef.current.baseY + (e.clientY - dragRef.current.startY));
-                }}
-                onMouseUp={() => {
-                  dragRef.current.active = false;
-                }}
-                onMouseLeave={() => {
-                  dragRef.current.active = false;
-                }}
-                className="max-h-[340px] w-auto cursor-grab rounded-md border border-line active:cursor-grabbing"
-              />
-            </div>
+            <div className="grid gap-4 sm:grid-cols-[auto_1fr]">
+              <div className="flex flex-col items-center rounded-lg border border-line bg-subtle p-3">
+                <canvas
+                  ref={uploadCanvasRef}
+                  width={canvasW}
+                  height={canvasH}
+                  onMouseDown={(e) => {
+                    dragRef.current = {
+                      active: true,
+                      startX: e.clientX,
+                      startY: e.clientY,
+                      baseX: offsetX,
+                      baseY: offsetY,
+                    };
+                  }}
+                  onMouseMove={(e) => {
+                    if (!dragRef.current.active) return;
+                    setOffsetX(dragRef.current.baseX + (e.clientX - dragRef.current.startX));
+                    setOffsetY(dragRef.current.baseY + (e.clientY - dragRef.current.startY));
+                  }}
+                  onMouseUp={() => {
+                    dragRef.current.active = false;
+                  }}
+                  onMouseLeave={() => {
+                    dragRef.current.active = false;
+                  }}
+                  className="w-[200px] cursor-grab rounded-md border border-line active:cursor-grabbing"
+                />
+                <div className="mt-2.5 flex w-full items-center gap-2 text-xs">
+                  <span className="text-[11px] text-content-secondary">缩放</span>
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={3}
+                    step={0.05}
+                    value={zoom}
+                    onChange={(e) => setZoom(Number(e.target.value))}
+                    className="flex-1 accent-accent"
+                  />
+                  <span className="tabular-nums w-9 text-right font-mono text-[11px] text-content-muted">
+                    {zoom.toFixed(1)}x
+                  </span>
+                </div>
+              </div>
 
-            <div className="flex items-center gap-3 text-xs">
-              <span className="text-content-secondary">缩放</span>
-              <input
-                type="range"
-                min={0.5}
-                max={3}
-                step={0.05}
-                value={zoom}
-                onChange={(e) => setZoom(Number(e.target.value))}
-                className="flex-1 accent-accent"
-              />
-              <span className="tabular-nums w-10 text-right font-mono text-content-muted">
-                {zoom.toFixed(1)}x
-              </span>
+              <div className="flex flex-col justify-between rounded-lg border border-line bg-canvas p-3 text-xs">
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs font-semibold text-content-primary">
+                      衍生 1:1 VTT Token 实时取景 (512×512)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-content-muted">
+                      蓝色虚线框即生成的 1:1 VTT Token 区域，默认靠上取景避免裁切头部。
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <canvas
+                      ref={uploadTokenPreviewRef}
+                      width={128}
+                      height={128}
+                      className="h-24 w-24 rounded-full border-2 border-accent/60 bg-subtle shadow-sm"
+                    />
+                    <div className="flex-1 space-y-2 text-[11px]">
+                      <div>
+                        <div className="mb-0.5 flex justify-between text-content-secondary">
+                          <span>上下位置</span>
+                          <span className="font-mono">{Math.round(tokenCrop.y * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={0.34}
+                          step={0.01}
+                          disabled={!syncTokenOnUpload}
+                          value={tokenCrop.y}
+                          onChange={(e) =>
+                            setTokenCrop((prev) => ({ ...prev, y: Number(e.target.value) }))
+                          }
+                          className="w-full accent-accent"
+                        />
+                      </div>
+                      <div>
+                        <div className="mb-0.5 flex justify-between text-content-secondary">
+                          <span>取景范围</span>
+                          <span className="font-mono">{Math.round(tokenCrop.size * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.45}
+                          max={1}
+                          step={0.02}
+                          disabled={!syncTokenOnUpload}
+                          value={tokenCrop.size}
+                          onChange={(e) =>
+                            setTokenCrop((prev) => ({ ...prev, size: Number(e.target.value) }))
+                          }
+                          className="w-full accent-accent"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-sm border border-line-subtle bg-subtle px-2.5 py-2 text-[11px] text-content-muted">
+                  保存后同时写入 2:3 主立绘与 1:1 VTT Token，Foundry VTT 导出将自动引用 1:1 Token。
+                </div>
+              </div>
             </div>
+          </div>
+        )}
+
+        {tab === 'token' && (
+          <div className="space-y-3">
+            {!card.imageUrl ? (
+              <div className="rounded-lg border border-dashed border-line bg-subtle p-6 text-center text-xs text-content-muted">
+                当前角色卡尚未设置 2:3 立绘，请先在「2:3 上传裁剪」或「AI 生图」设置主立绘后再裁剪 1:1 VTT Token。
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-[auto_1fr]">
+                <div className="flex flex-col items-center rounded-lg border border-line bg-subtle p-3">
+                  <canvas
+                    ref={tokenCropCanvasRef}
+                    width={canvasW}
+                    height={canvasH}
+                    onMouseDown={(e) => {
+                      tokenDragRef.current = {
+                        active: true,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        baseCropX: tokenCrop.x,
+                        baseCropY: tokenCrop.y,
+                      };
+                    }}
+                    onMouseMove={(e) => {
+                      if (!tokenDragRef.current.active) return;
+                      const dxNorm = (e.clientX - tokenDragRef.current.startX) / 200;
+                      const dyNorm = (e.clientY - tokenDragRef.current.startY) / 300;
+                      setTokenCrop((prev) =>
+                        clampTokenCrop(
+                          {
+                            ...prev,
+                            x: tokenDragRef.current.baseCropX + dxNorm,
+                            y: tokenDragRef.current.baseCropY + dyNorm,
+                          },
+                          canvasW,
+                          canvasH,
+                        ),
+                      );
+                    }}
+                    onMouseUp={() => {
+                      tokenDragRef.current.active = false;
+                    }}
+                    onMouseLeave={() => {
+                      tokenDragRef.current.active = false;
+                    }}
+                    className="w-[200px] cursor-move rounded-md border border-line"
+                  />
+                  <span className="mt-1.5 text-[11px] text-content-muted">
+                    在 2:3 原立绘上拖动蓝色方框以调整 1:1 取景区域
+                  </span>
+                </div>
+
+                <div className="flex flex-col justify-between rounded-lg border border-line bg-canvas p-3.5 text-xs">
+                  <div className="space-y-3">
+                    <div>
+                      <div className="font-semibold text-content-primary">
+                        从 2:3 立绘衍生 1:1 VTT Token
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-content-muted">
+                        不影响原 2:3 主立绘展示，仅导出并更新 512×512 1:1 Token 头像用于 VTT 棋子与列表引用。
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="text-center">
+                        <canvas
+                          ref={tokenCirclePreviewRef}
+                          width={128}
+                          height={128}
+                          className="h-24 w-24 rounded-full border-2 border-accent shadow-sm"
+                        />
+                        <span className="mt-1 block text-[10.5px] text-content-muted">圆形 Token 预览</span>
+                      </div>
+                      <div className="flex-1 space-y-2.5 text-[11px]">
+                        <div>
+                          <div className="mb-1 flex justify-between text-content-secondary">
+                            <span>取景框大小</span>
+                            <span className="font-mono">{Math.round(tokenCrop.size * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.4}
+                            max={1}
+                            step={0.02}
+                            value={tokenCrop.size}
+                            onChange={(e) =>
+                              setTokenCrop((prev) =>
+                                clampTokenCrop(
+                                  { ...prev, size: Number(e.target.value) },
+                                  canvasW,
+                                  canvasH,
+                                ),
+                              )
+                            }
+                            className="w-full accent-accent"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setTokenCrop(DEFAULT_TOKEN_CROP)}
+                          className="rounded-sm border border-line bg-surface px-2.5 py-1 text-[11px] text-content-secondary hover:bg-subtle hover:text-content-primary"
+                        >
+                          重置为头肩默认取景
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {card.tokenImageUrl && (
+                    <div className="mt-3 flex items-center gap-2 rounded-sm border border-line-subtle bg-subtle px-2.5 py-1.5 text-[11px] text-content-secondary">
+                      <img
+                        src={card.tokenImageUrl}
+                        alt="当前 1:1 Token"
+                        className="h-7 w-7 rounded-full border border-line object-cover"
+                      />
+                      <span>当前已存在已裁剪的 1:1 VTT Token，保存将覆盖更新。</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {tab === 'url' && (
           <div className="space-y-2 py-2">
             <label className="block text-xs font-medium text-content-secondary">
-              图片外链 URL（自动经 SSRF 校验，前端防盗链加载）
+              2:3 立绘外链 URL（自动经 SSRF 校验；保存后可切至「1:1 Token」衍生裁剪）
             </label>
             <input
               type="url"
               value={imageUrlInput}
               onChange={(e) => setImageUrlInput(e.target.value)}
-              placeholder="https://example.com/portrait.png"
+              placeholder="https://example.com/portrait-2x3.png"
               className="h-9 w-full rounded-sm border border-line bg-surface px-3 font-mono text-xs text-content-primary outline-none focus:border-accent"
             />
           </div>
@@ -352,46 +864,49 @@ export function PortraitCropModal({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="输入关键词检索公开图库..."
-                className="h-8 flex-1 rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleSearch();
+                  }
+                }}
+                placeholder="输入角色名 / 英文名搜索 Wikimedia 开源图片..."
+                className="h-8 flex-1 rounded-sm border border-line bg-surface px-3 text-xs text-content-primary outline-none focus:border-accent"
               />
               <button
                 type="button"
-                disabled={searching || !searchQuery.trim()}
-                onClick={async () => {
-                  setSearching(true);
-                  setError(null);
-                  try {
-                    const res = await api.searchImages({ query: searchQuery.trim(), limit: 6 });
-                    setSearchResults(res.items);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : '搜图失败');
-                  } finally {
-                    setSearching(false);
-                  }
-                }}
-                className="inline-flex h-8 items-center gap-1 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+                onClick={handleSearch}
+                disabled={searching}
+                className="h-8 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
               >
-                {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-                搜索
+                {searching ? '搜索中...' : '搜索'}
               </button>
             </div>
+
             <div className="grid max-h-60 grid-cols-3 gap-2 overflow-y-auto">
               {searchResults.map((item) => (
                 <button
                   key={item.imageUrl}
                   type="button"
                   onClick={async () => {
-                    await onSaveUrl(item.imageUrl);
-                    onClose();
+                    setSaving(true);
+                    setError(null);
+                    try {
+                      await onSaveUrl(item.imageUrl);
+                      onClose();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : '应用搜索立绘失败');
+                    } finally {
+                      setSaving(false);
+                    }
                   }}
-                  className="group overflow-hidden rounded-sm border border-line bg-surface text-left hover:border-accent"
+                  className="group overflow-hidden rounded-md border border-line bg-surface text-left hover:border-accent"
                 >
                   <img
                     src={item.thumbUrl}
                     alt={item.title}
                     referrerPolicy="no-referrer"
-                    className="h-24 w-full object-cover"
+                    className="aspect-[2/3] w-full object-cover"
                   />
                   <div className="truncate px-1.5 py-1 text-[10px] text-content-secondary group-hover:text-accent">
                     {item.title}
@@ -404,7 +919,7 @@ export function PortraitCropModal({
 
         {tab === 'ai' && (
           <div className="space-y-3 py-1 text-xs">
-            <div className="rounded-sm border border-line bg-canvas p-2.5 text-[11px] space-y-1">
+            <div className="space-y-1 rounded-sm border border-line bg-canvas p-2.5 text-[11px]">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-semibold text-content-primary">
                   关联角色卡设定：{card.characterName}
@@ -575,15 +1090,10 @@ export function PortraitCropModal({
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-2">
-              <select
-                value={aiSize}
-                onChange={(e) => setAiSize(e.target.value as '1024x1536' | '1024x1024')}
-                className="h-8 rounded-sm border border-line bg-surface px-2 text-xs text-content-primary"
-              >
-                <option value="1024x1536">2:3 竖版立绘 (1024×1536)</option>
-                <option value="1024x1024">1:1 方图头像 (1024×1024)</option>
-              </select>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent">
+                固定 2:3 竖版立绘 (1024×1536) · 自动衍生 1:1 Token
+              </span>
               <button
                 type="button"
                 disabled={aiGenerating || promptLoadingMode !== null || !aiPrompt.trim()}
@@ -592,12 +1102,27 @@ export function PortraitCropModal({
                   setAiGenerating(true);
                   setError(null);
                   try {
-                    const res = await api.generateImage({ prompt: usedPrompt, size: aiSize });
+                    const res = await api.generateImage({
+                      prompt: usedPrompt,
+                      size: '1024x1536',
+                    });
                     if (res.dataUrl) {
-                      await onSaveUpload(res.dataUrl, usedPrompt);
+                      const img = await loadImageElement(res.dataUrl);
+                      const portrait2x3 = renderPortrait2By3DataUrl(img, 600, 900);
+                      const derivedToken = renderTokenDataUrlFromSource(
+                        img,
+                        img.width,
+                        img.height,
+                        DEFAULT_TOKEN_CROP,
+                        512,
+                      );
+                      await onSaveUpload(portrait2x3 || res.dataUrl, {
+                        imagePrompt: usedPrompt,
+                        ...(derivedToken ? { tokenDataUrl: derivedToken, tokenCrop: DEFAULT_TOKEN_CROP } : {}),
+                      });
                       onClose();
                     } else if (res.imageUrl) {
-                      await onSaveUrl(res.imageUrl, usedPrompt);
+                      await onSaveUrl(res.imageUrl, { imagePrompt: usedPrompt });
                       onClose();
                     }
                   } catch (err) {
@@ -609,7 +1134,7 @@ export function PortraitCropModal({
                 className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
               >
                 {aiGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                {aiGenerating ? '生成中...' : '生成并应用立绘'}
+                {aiGenerating ? '生成中...' : '生成 2:3 立绘并应用'}
               </button>
             </div>
           </div>
@@ -629,14 +1154,14 @@ export function PortraitCropModal({
           >
             取消
           </button>
-          {(tab === 'upload' || tab === 'url') && (
+          {(tab === 'upload' || tab === 'url' || (tab === 'token' && Boolean(card.imageUrl))) && (
             <button
               type="button"
               onClick={handleSave}
               disabled={saving}
               className="h-8 rounded-sm bg-accent px-4 text-xs font-semibold text-content-inverse hover:bg-accent-hover disabled:opacity-50"
             >
-              {saving ? '保存中...' : '保存立绘'}
+              {saving ? '保存中...' : tab === 'token' ? '保存 1:1 Token' : '保存立绘'}
             </button>
           )}
         </div>

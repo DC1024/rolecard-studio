@@ -381,11 +381,26 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
       cardType: row.cardType,
       workName: row.workName,
       version: row.version,
-      imageUrl: row.imageUrl,
+      imageUrl: row.tokenImageUrl || row.imageUrl,
     });
     c.header('Content-Type', 'application/json; charset=utf-8');
     c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
     return c.body(JSON.stringify(actor, null, 2));
+  }
+
+  if (format === 'vtt_token_png') {
+    const tokenBuf =
+      (await resolveUploadBuffer(ctx, row.tokenImageUrl)) ??
+      (await resolveUploadBuffer(ctx, row.imageUrl)) ??
+      createDefaultPortraitPng();
+    const detected = detectImageMagicBytes(tokenBuf);
+    const ext = detected === 'jpeg' ? 'jpg' : detected === 'webp' ? 'webp' : 'png';
+    const contentType =
+      detected === 'jpeg' ? 'image/jpeg' : detected === 'webp' ? 'image/webp' : 'image/png';
+    const filename = safeDownloadFilename(`${content.name}.vtt-token`, ext);
+    c.header('Content-Type', contentType);
+    c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return c.body(new Uint8Array(tokenBuf));
   }
 
   if (format === 'trpg_sheet_md') {
@@ -569,6 +584,143 @@ cardM1Routes.post('/cards/:id/mes-example', zValidator('json', AdoptMesExampleSc
   return c.json({ card: serializeCardRow(updatedRows[0]!) });
 });
 
+async function saveUploadDataUrl(
+  ctx: ServerContext,
+  cardId: string,
+  suffix: string,
+  dataUrl: string,
+): Promise<
+  | { ok: true; publicUrl: string }
+  | { ok: false; status: 400; code: string; message: string }
+> {
+  const match = /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/i.exec(
+    dataUrl.trim(),
+  );
+  if (!match || !match[2]) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_IMAGE_DATA_URL',
+      message: '仅支持 PNG/JPEG/WEBP 格式的 DataURL',
+    };
+  }
+
+  const buf = Buffer.from(match[2], 'base64');
+  if (buf.length === 0 || buf.length > 3 * 1024 * 1024) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'IMAGE_TOO_LARGE',
+      message: '图片体积必须在 1B ~ 3MB 之间',
+    };
+  }
+
+  const detected = detectImageMagicBytes(buf);
+  if (!detected) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'INVALID_IMAGE_MAGIC',
+      message: '图片文件魔数校验失败，拒绝保存伪造图片',
+    };
+  }
+
+  const ext = detected === 'jpeg' ? 'jpg' : detected;
+  const contentType =
+    detected === 'png' ? 'image/png' : detected === 'webp' ? 'image/webp' : 'image/jpeg';
+  const fileName = `${cardId}-${suffix}-${Date.now()}.${ext}`;
+
+  if (ctx.dataDir === ':memory:') {
+    if (!ctx.memoryUploads) {
+      ctx.memoryUploads = new Map();
+    }
+    ctx.memoryUploads.set(fileName, { data: buf, contentType });
+  } else {
+    const uploadsDir = resolve(ctx.dataDir, 'uploads');
+    await mkdir(uploadsDir, { recursive: true });
+    await writeFile(resolve(uploadsDir, fileName), buf);
+  }
+
+  return { ok: true, publicUrl: `/uploads/${fileName}` };
+}
+
+cardM1Routes.get('/cards/:id/portrait-source', async (c) => {
+  const denied = guardPermission(c, 'card:read');
+  if (denied) return denied;
+
+  const id = c.req.param('id');
+  const ctx = c.get('ctx');
+  const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+  const row = rows[0];
+  if (!row || !row.imageUrl) {
+    return c.json({ error: { code: 'PORTRAIT_NOT_FOUND', message: '角色卡尚未设置立绘' } }, 404);
+  }
+
+  const localBuf = await resolveUploadBuffer(ctx, row.imageUrl);
+  if (localBuf) {
+    const detected = detectImageMagicBytes(localBuf);
+    const contentType =
+      detected === 'jpeg' ? 'image/jpeg' : detected === 'webp' ? 'image/webp' : 'image/png';
+    c.header('Content-Type', contentType);
+    c.header('Cache-Control', 'private, max-age=300');
+    return c.body(new Uint8Array(localBuf));
+  }
+
+  if (!/^https?:\/\//i.test(row.imageUrl)) {
+    return c.json({ error: { code: 'PORTRAIT_NOT_FOUND', message: '立绘文件不可用' } }, 404);
+  }
+
+  const mediaFetch = await loadScopedFetch(ctx, 'media');
+  const ssrf = await validatePublicUrl(row.imageUrl, ctx.dnsLookup, {
+    viaProxy: isUrlProxiedByFetch(mediaFetch, row.imageUrl),
+  });
+  if (!ssrf.ok) {
+    return sendCoreError(c, ssrf.error);
+  }
+
+  try {
+    const res = await mediaFetch(row.imageUrl, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8' },
+    });
+    if (!res.ok) {
+      return c.json(
+        { error: { code: 'PORTRAIT_FETCH_FAILED', message: `拉取外链立绘失败 (HTTP ${res.status})` } },
+        502,
+      );
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0 || buf.length > 8 * 1024 * 1024) {
+      return c.json(
+        { error: { code: 'IMAGE_TOO_LARGE', message: '外链立绘体积超出限制 (最大 8MB)' } },
+        400,
+      );
+    }
+    const detected = detectImageMagicBytes(buf);
+    if (!detected) {
+      return c.json(
+        { error: { code: 'INVALID_IMAGE_MAGIC', message: '外链返回内容不是受支持的 PNG/JPEG/WEBP 图片' } },
+        400,
+      );
+    }
+    const contentType =
+      detected === 'jpeg' ? 'image/jpeg' : detected === 'webp' ? 'image/webp' : 'image/png';
+    c.header('Content-Type', contentType);
+    c.header('Cache-Control', 'private, max-age=300');
+    return c.body(new Uint8Array(buf));
+  } catch (err) {
+    return c.json(
+      {
+        error: {
+          code: 'PORTRAIT_FETCH_FAILED',
+          message: err instanceof Error ? err.message : '拉取外链立绘失败',
+        },
+      },
+      502,
+    );
+  }
+});
+
 cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema), async (c) => {
   const denied = guardPermission(c, 'card:update');
   if (denied) return denied;
@@ -584,6 +736,40 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
   }
 
   const nowIso = getNow(ctx).toISOString();
+
+  if (input.mode === 'crop_token') {
+    if (!input.tokenDataUrl) {
+      return c.json(
+        { error: { code: 'MISSING_IMAGE_DATA', message: '缺少 1:1 Token 裁剪图片数据' } },
+        400,
+      );
+    }
+    const tokenSaved = await saveUploadDataUrl(ctx, id, 'token', input.tokenDataUrl);
+    if (!tokenSaved.ok) {
+      return c.json({ error: { code: tokenSaved.code, message: tokenSaved.message } }, tokenSaved.status);
+    }
+
+    await ctx.db
+      .update(roleCards)
+      .set({
+        tokenImageUrl: tokenSaved.publicUrl,
+        tokenCropJson: input.tokenCrop ? JSON.stringify(input.tokenCrop) : row.tokenCropJson,
+        updatedAt: nowIso,
+      })
+      .where(eq(roleCards.id, id));
+
+    const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    return c.json({ card: serializeCardRow(updatedRows[0]!) });
+  }
+
+  let nextTokenUrl: string | null = null;
+  if (input.tokenDataUrl) {
+    const tokenSaved = await saveUploadDataUrl(ctx, id, 'token', input.tokenDataUrl);
+    if (!tokenSaved.ok) {
+      return c.json({ error: { code: tokenSaved.code, message: tokenSaved.message } }, tokenSaved.status);
+    }
+    nextTokenUrl = tokenSaved.publicUrl;
+  }
 
   if (input.mode === 'search_url') {
     if (!isSafeImageUrl(input.imageUrl)) {
@@ -606,6 +792,8 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
       .update(roleCards)
       .set({
         imageUrl: input.imageUrl ?? null,
+        tokenImageUrl: nextTokenUrl,
+        tokenCropJson: nextTokenUrl && input.tokenCrop ? JSON.stringify(input.tokenCrop) : null,
         imageSource: 'search',
         imagePrompt: input.imagePrompt ?? row.imagePrompt,
         updatedAt: nowIso,
@@ -624,52 +812,20 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
     );
   }
 
-  const match = /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/i.exec(
-    input.dataUrl.trim(),
-  );
-  if (!match || !match[2]) {
+  const portraitSaved = await saveUploadDataUrl(ctx, id, 'portrait', input.dataUrl);
+  if (!portraitSaved.ok) {
     return c.json(
-      { error: { code: 'INVALID_IMAGE_DATA_URL', message: '仅支持 PNG/JPEG/WEBP 格式的 DataURL' } },
-      400,
+      { error: { code: portraitSaved.code, message: portraitSaved.message } },
+      portraitSaved.status,
     );
   }
 
-  const buf = Buffer.from(match[2], 'base64');
-  if (buf.length === 0 || buf.length > 3 * 1024 * 1024) {
-    return c.json(
-      { error: { code: 'IMAGE_TOO_LARGE', message: '图片体积必须在 1B ~ 3MB 之间' } },
-      400,
-    );
-  }
-
-  const detected = detectImageMagicBytes(buf);
-  if (!detected) {
-    return c.json(
-      { error: { code: 'INVALID_IMAGE_MAGIC', message: '图片文件魔数校验失败，拒绝保存伪造图片' } },
-      400,
-    );
-  }
-
-  const ext = detected === 'jpeg' ? 'jpg' : detected;
-  const contentType = detected === 'png' ? 'image/png' : detected === 'webp' ? 'image/webp' : 'image/jpeg';
-  const fileName = `${id}-${Date.now()}.${ext}`;
-
-  if (ctx.dataDir === ':memory:') {
-    if (!ctx.memoryUploads) {
-      ctx.memoryUploads = new Map();
-    }
-    ctx.memoryUploads.set(fileName, { data: buf, contentType });
-  } else {
-    const uploadsDir = resolve(ctx.dataDir, 'uploads');
-    await mkdir(uploadsDir, { recursive: true });
-    await writeFile(resolve(uploadsDir, fileName), buf);
-  }
-
-  const publicUrl = `/uploads/${fileName}`;
   await ctx.db
     .update(roleCards)
     .set({
-      imageUrl: publicUrl,
+      imageUrl: portraitSaved.publicUrl,
+      tokenImageUrl: nextTokenUrl,
+      tokenCropJson: nextTokenUrl && input.tokenCrop ? JSON.stringify(input.tokenCrop) : null,
       imageSource: 'upload',
       imagePrompt: input.imagePrompt ?? row.imagePrompt,
       updatedAt: nowIso,

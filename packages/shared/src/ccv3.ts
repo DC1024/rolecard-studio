@@ -58,6 +58,7 @@ export const ExportFormatSchema = z.enum([
   'json',
   'markdown',
   'foundry_dnd5e_json',
+  'vtt_token_png',
   'trpg_sheet_html',
   'trpg_sheet_md',
 ]);

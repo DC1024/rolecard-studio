@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { DnsLookupPort, HttpFetchPort, SmtpSendInput } from '@rolecard/core';
+import { createDefaultPortraitPng, type DnsLookupPort, type HttpFetchPort, type SmtpSendInput } from '@rolecard/core';
 import type { RoleCardContent } from '@rolecard/shared';
 import { createApp } from './app.js';
 import { createSqliteDatabase, seedInitialState } from './db/client.js';
@@ -783,6 +783,159 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
     expect(detailRes.status).toBe(200);
     const detailJson = (await detailRes.json()) as { card: { imagePrompt: string | null } };
     expect(detailJson.card.imagePrompt).toBe(genPromptJson.prompt);
+
+    dbHandle.close();
+  });
+
+  it('supports 2:3 portrait upload with derived 1:1 token, portrait-source proxy, crop_token update, and vtt_token_png / foundry export', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
+    const pngBuf = createDefaultPortraitPng();
+    const pngDataUrl = `data:image/png;base64,${pngBuf.toString('base64')}`;
+
+    const fetchImpl: HttpFetchPort = async (url) => {
+      if (url === 'https://cdn.example.com/kaltsit-2x3.png') {
+        return new Response(new Uint8Array(pngBuf), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        });
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: publicDns,
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    const createCardRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(createCardRes.status).toBe(201);
+    const createdJson = (await createCardRes.json()) as { card: { id: string } };
+    const cardId = createdJson.card.id;
+
+    // 1. Upload 2:3 portrait alongside derived 1:1 token
+    const uploadRes = await app.request(`/api/v1/cards/${cardId}/image`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'upload',
+        dataUrl: pngDataUrl,
+        tokenDataUrl: pngDataUrl,
+        tokenCrop: { x: 0.08, y: 0.04, size: 0.84 },
+      }),
+    });
+    expect(uploadRes.status).toBe(200);
+    const uploadJson = (await uploadRes.json()) as {
+      card: {
+        imageUrl: string | null;
+        tokenImageUrl: string | null;
+        tokenCrop: { x: number; y: number; size: number } | null;
+      };
+    };
+    expect(uploadJson.card.imageUrl).toMatch(/^\/uploads\/.*portrait.*\.png$/);
+    expect(uploadJson.card.tokenImageUrl).toMatch(/^\/uploads\/.*token.*\.png$/);
+    expect(uploadJson.card.tokenCrop).toEqual({ x: 0.08, y: 0.04, size: 0.84 });
+
+    // 2. Same-origin portrait-source serves local upload
+    const localSourceRes = await app.request(`/api/v1/cards/${cardId}/portrait-source`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(localSourceRes.status).toBe(200);
+    expect(localSourceRes.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await localSourceRes.arrayBuffer()).length).toBe(pngBuf.length);
+
+    // 3. Independent 1:1 crop_token update keeps original imageUrl
+    const cropTokenRes = await app.request(`/api/v1/cards/${cardId}/image`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'crop_token',
+        tokenDataUrl: pngDataUrl,
+        tokenCrop: { x: 0.15, y: 0.12, size: 0.7 },
+      }),
+    });
+    expect(cropTokenRes.status).toBe(200);
+    const cropTokenJson = (await cropTokenRes.json()) as {
+      card: {
+        imageUrl: string | null;
+        tokenImageUrl: string | null;
+        tokenCrop: { x: number; y: number; size: number } | null;
+      };
+    };
+    expect(cropTokenJson.card.imageUrl).toBe(uploadJson.card.imageUrl);
+    expect(cropTokenJson.card.tokenCrop).toEqual({ x: 0.15, y: 0.12, size: 0.7 });
+
+    // 4. vtt_token_png export & foundry_dnd5e_json export preferring tokenImageUrl
+    const tokenExportRes = await app.request(`/api/v1/cards/${cardId}/export?format=vtt_token_png`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(tokenExportRes.status).toBe(200);
+    expect(tokenExportRes.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await tokenExportRes.arrayBuffer()).length).toBe(pngBuf.length);
+
+    const foundryExportRes = await app.request(
+      `/api/v1/cards/${cardId}/export?format=foundry_dnd5e_json`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(foundryExportRes.status).toBe(200);
+    const foundryActor = (await foundryExportRes.json()) as {
+      img?: string;
+      prototypeToken?: { texture?: { src?: string } };
+    };
+    expect(foundryActor.img).toBe(cropTokenJson.card.tokenImageUrl);
+
+    // 5. External search_url portrait-source proxy fetch
+    const searchUrlRes = await app.request(`/api/v1/cards/${cardId}/image`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'search_url',
+        imageUrl: 'https://cdn.example.com/kaltsit-2x3.png',
+      }),
+    });
+    expect(searchUrlRes.status).toBe(200);
+
+    const remoteSourceRes = await app.request(`/api/v1/cards/${cardId}/portrait-source`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(remoteSourceRes.status).toBe(200);
+    expect(remoteSourceRes.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await remoteSourceRes.arrayBuffer()).length).toBe(pngBuf.length);
 
     dbHandle.close();
   });
