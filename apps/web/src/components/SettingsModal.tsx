@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import {
   ALL_PERMISSIONS,
   ALL_PROXY_SCOPES,
+  FREE_STARTER_PRESETS,
   LLM_PROVIDER_DEFAULTS,
   PERMISSION_LABELS,
   PROXY_SCOPE_META,
   type AccessPolicy,
   type AuthContextResponse,
+  type FreeStarterPreset,
+  type FreeStarterPresetSlot,
   type JsonModeStrategy,
   type LlmProvider,
   type LlmSlotInput,
@@ -27,6 +30,7 @@ import {
   ChevronUp,
   Copy,
   Edit3,
+  ExternalLink,
   Globe,
   Key,
   Loader2,
@@ -34,6 +38,7 @@ import {
   Plus,
   Settings,
   Shield,
+  Sparkles,
   Trash2,
   Users,
   X,
@@ -205,6 +210,7 @@ export function SettingsModal({
   const [createdPlainKey, setCreatedPlainKey] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
+  const [starterExpanded, setStarterExpanded] = useState(() => !config?.configured);
   const [testingSlot, setTestingSlot] = useState<LlmSlotPurpose | null>(null);
   const [slotTestStatus, setSlotTestStatus] = useState<
     Partial<Record<LlmSlotPurpose, SlotTestDisplayState>>
@@ -709,6 +715,61 @@ export function SettingsModal({
     }
   };
 
+  const applyFreeStarterPreset = (preset: FreeStarterPreset) => {
+    const mergeSlot = (
+      current: SlotFormState,
+      target: FreeStarterPresetSlot | undefined,
+      enabled: boolean,
+    ): SlotFormState => {
+      if (!target) {
+        return { ...current, enabled: false };
+      }
+      const sameProvider = current.provider === target.provider;
+      return {
+        enabled,
+        provider: target.provider,
+        apiKey: sameProvider ? current.apiKey : '',
+        baseUrl: target.baseUrl,
+        model: target.model,
+        jsonModeStrategy: target.jsonModeStrategy ?? 'auto',
+        maskedHint: sameProvider ? current.maskedHint : null,
+      };
+    };
+
+    setPrimary((cur) => mergeSlot(cur, preset.slots.primary, true));
+    setChatSlot((cur) => mergeSlot(cur, preset.slots.chat, Boolean(preset.slots.chat)));
+    setVisionSlot((cur) => mergeSlot(cur, preset.slots.vision, Boolean(preset.slots.vision)));
+    setImageSlot((cur) => mergeSlot(cur, preset.slots.image, Boolean(preset.slots.image)));
+    setSlotTestStatus({});
+    setError(null);
+    const msg = preset.requiresProxyHint
+      ? `已填入「${preset.title}」，请填入免费 API Key 并确保「网络代理」可访问海外服务`
+      : `已填入「${preset.title}」，请在下方填入对应服务商 API Key 后点击保存`;
+    setBanner(msg);
+    notifySuccess(`已应用预设：${preset.title}`);
+  };
+
+  const canSyncPrimaryKeyToSiblings =
+    Boolean(primary.apiKey.trim()) &&
+    [chatSlot, visionSlot, imageSlot].some(
+      (s) => s.enabled && s.provider === primary.provider && s.apiKey.trim() !== primary.apiKey.trim(),
+    );
+
+  const handleSyncPrimaryKeyToSiblings = () => {
+    const key = primary.apiKey.trim();
+    if (!key) return;
+    setChatSlot((cur) =>
+      cur.enabled && cur.provider === primary.provider ? { ...cur, apiKey: key } : cur,
+    );
+    setVisionSlot((cur) =>
+      cur.enabled && cur.provider === primary.provider ? { ...cur, apiKey: key } : cur,
+    );
+    setImageSlot((cur) =>
+      cur.enabled && cur.provider === primary.provider ? { ...cur, apiKey: key } : cur,
+    );
+    notifySuccess('已将主模型 API Key 同步到同服务商的其余槽位');
+  };
+
   const renderSlotEditor = (
     slotType: LlmSlotPurpose,
     title: string,
@@ -719,6 +780,9 @@ export function SettingsModal({
   ) => {
     const testResult = slotTestStatus[slotType];
     const isTestingThis = testingSlot === slotType;
+    const providerMeta = LLM_PROVIDER_DEFAULTS[slot.provider];
+    const slotRecommendation = providerMeta.recommendedSlots?.[slotType];
+    const chips = slotRecommendation?.chips ?? [];
     return (
       <div className="rounded-md border border-line bg-canvas p-3.5">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -743,20 +807,26 @@ export function SettingsModal({
           <div className="space-y-2.5">
             <div className="grid gap-2.5 sm:grid-cols-2">
               <div>
-                <label className="mb-1 block text-[11px] text-content-secondary">服务商</label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="block text-[11px] text-content-secondary">服务商</label>
+                  {providerMeta.signupUrl && (
+                    <a
+                      href={providerMeta.signupUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-0.5 text-[10px] font-medium text-accent hover:underline"
+                    >
+                      获取 Key
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                  )}
+                </div>
                 <select
                   value={slot.provider}
                   onChange={(e) => {
                     const p = e.target.value as LlmProvider;
                     const d = LLM_PROVIDER_DEFAULTS[p];
-                    const defaultModel =
-                      slotType === 'image'
-                        ? p === 'siliconflow'
-                          ? 'Kwai-Kolors/Kolors'
-                          : 'gpt-image-1'
-                        : slotType === 'vision' && p === 'openai'
-                          ? 'gpt-4o-mini'
-                          : d.defaultModel;
+                    const defaultModel = d.recommendedSlots?.[slotType]?.model ?? d.defaultModel;
                     setSlot({
                       ...slot,
                       provider: p,
@@ -772,6 +842,9 @@ export function SettingsModal({
                     </option>
                   ))}
                 </select>
+                {providerMeta.freeTierBadge && (
+                  <p className="mt-1 text-[10px] text-status-success">{providerMeta.freeTierBadge}</p>
+                )}
               </div>
 
               <div>
@@ -782,6 +855,33 @@ export function SettingsModal({
                   onChange={(e) => setSlot({ ...slot, model: e.target.value })}
                   className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
                 />
+                {chips.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {chips.map((chip) => {
+                      const active = slot.model.trim() === chip.id;
+                      return (
+                        <button
+                          key={chip.id}
+                          type="button"
+                          onClick={() => setSlot({ ...slot, model: chip.id })}
+                          className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-[10px] transition ${
+                            active
+                              ? 'border-accent bg-accent/15 font-medium text-accent'
+                              : 'border-line bg-surface text-content-secondary hover:border-accent/50 hover:text-content-primary'
+                          }`}
+                          title={chip.id}
+                        >
+                          <span>{chip.label}</span>
+                          {chip.badge && (
+                            <span className="rounded bg-canvas px-1 py-0 text-[9px] text-status-success">
+                              {chip.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -792,7 +892,13 @@ export function SettingsModal({
                   type="password"
                   value={slot.apiKey}
                   onChange={(e) => setSlot({ ...slot, apiKey: e.target.value })}
-                  placeholder={slot.maskedHint ? '留空沿用已加密 Key' : '输入 API Key'}
+                  placeholder={
+                    !providerMeta.requiresKey
+                      ? '本地离线运行无需 API Key（可留空）'
+                      : slot.maskedHint
+                        ? '留空沿用已加密 Key'
+                        : '输入 API Key'
+                  }
                   className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
                 />
               </div>
@@ -808,6 +914,21 @@ export function SettingsModal({
                 />
               </div>
             </div>
+
+            {slotType === 'primary' && canSyncPrimaryKeyToSiblings && (
+              <div className="flex items-center justify-between rounded-sm border border-accent/30 bg-accent/5 px-2.5 py-1.5 text-[11px]">
+                <span className="text-content-secondary">
+                  检测到其他槽位同样使用「{providerMeta.label}」，可一键复用同一把 API Key
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSyncPrimaryKeyToSiblings}
+                  className="shrink-0 rounded-sm border border-accent/40 bg-surface px-2 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/10"
+                >
+                  同步 Key 到同服务商槽位
+                </button>
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <button
@@ -955,6 +1076,92 @@ export function SettingsModal({
 
           {tab === 'models' && (
             <div className="space-y-3.5">
+              <div className="rounded-md border border-accent/30 bg-accent/5 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-accent" />
+                    <div>
+                      <h4 className="text-xs font-semibold text-content-primary">
+                        新手免费 / 低门槛一键预设方案
+                      </h4>
+                      <p className="text-[11px] text-content-muted">
+                        只需在对应平台免费申请个人 API Key（BYOK），即可一键配齐文本、识图与生图全链路
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setStarterExpanded((v) => !v)}
+                    className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] text-content-secondary hover:text-content-primary"
+                  >
+                    {starterExpanded ? (
+                      <>
+                        收起向导 <ChevronUp className="h-3 w-3" />
+                      </>
+                    ) : (
+                      <>
+                        展开向导 <ChevronDown className="h-3 w-3" />
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {starterExpanded && (
+                  <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+                    {FREE_STARTER_PRESETS.map((preset) => (
+                      <div
+                        key={preset.id}
+                        className="flex flex-col justify-between rounded-sm border border-line bg-surface p-2.5"
+                      >
+                        <div className="space-y-1.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-xs font-semibold text-content-primary">
+                              {preset.title}
+                            </span>
+                            {preset.requiresProxyHint && (
+                              <span className="shrink-0 rounded bg-status-warning/15 px-1.5 py-0.5 text-[9px] font-medium text-status-warning">
+                                需海外可达
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-content-secondary">{preset.subtitle}</p>
+                          <div className="flex flex-wrap gap-1">
+                            {preset.highlights.map((hl) => (
+                              <span
+                                key={hl}
+                                className="rounded bg-canvas px-1.5 py-0.5 text-[10px] text-content-secondary"
+                              >
+                                {hl}
+                              </span>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-content-muted">注意：{preset.caveat}</p>
+                        </div>
+
+                        <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-line-subtle pt-2">
+                          <a
+                            href={preset.signupUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+                          >
+                            {preset.signupLabel}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => applyFreeStarterPreset(preset)}
+                            className="rounded-sm bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+                          >
+                            一键填入槽位
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {renderSlotEditor(
                 'primary',
                 '1. 主生成模型 (Primary LLM)',
@@ -974,7 +1181,7 @@ export function SettingsModal({
               {renderSlotEditor(
                 'vision',
                 '3. 视觉识别模型 (Vision LLM · 可选)',
-                '仅用于立绘图文反推（需支持多模态图片输入，如 gpt-4o / qwen-vl-max）',
+                '仅用于立绘图文反推（如 glm-4.6v-flash / Qwen2.5-VL-72B / gpt-4o）',
                 visionSlot,
                 setVisionSlot,
                 true,
@@ -982,7 +1189,7 @@ export function SettingsModal({
               {renderSlotEditor(
                 'image',
                 '4. 独立生图模型 (Image Model · 可选)',
-                '专用于立绘裁剪弹窗中的 AI 文生图 (/images/generations，如 gpt-image-1 / dall-e-3 / FLUX / Kolors)',
+                '专用于立绘裁剪弹窗中的 AI 文生图（支持 cogview-3-flash / Kolors / Qwen-Image / gpt-image-1）',
                 imageSlot,
                 setImageSlot,
                 true,

@@ -1621,4 +1621,101 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports free preset providers, negativePrompt forwarding, and server-side image dataUrl localization', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const pngBuf = createDefaultPortraitPng();
+    const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
+    let capturedImagePayload: Record<string, unknown> = {};
+
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url === 'https://api.siliconflow.cn/v1/images/generations') {
+        capturedImagePayload = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            images: [{ url: 'https://sf-oss.example.com/generated-portrait.png' }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url === 'https://sf-oss.example.com/generated-portrait.png') {
+        return new Response(new Uint8Array(pngBuf), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        });
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: publicDns,
+      fetchImpl,
+      env: {},
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // Save Zhipu + SiliconFlow mixed free preset config
+    const saveCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'zhipu',
+          apiKey: 'zhipu-test-key',
+          baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          model: 'glm-4.7-flash',
+          jsonModeStrategy: 'auto',
+        },
+        visionLlm: {
+          provider: 'zhipu',
+          apiKey: 'zhipu-test-key',
+          baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          model: 'glm-4.6v-flash',
+          jsonModeStrategy: 'auto',
+        },
+        imageLlm: {
+          provider: 'siliconflow',
+          apiKey: 'sf-test-key',
+          baseUrl: 'https://api.siliconflow.cn/v1',
+          model: 'Kwai-Kolors/Kolors',
+          jsonModeStrategy: 'auto',
+        },
+      }),
+    });
+    expect(saveCfgRes.status).toBe(200);
+
+    const genImgRes = await app.request('/api/v1/images/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        prompt: '1girl, Kaltsit, anime style',
+        negativePrompt: 'lowres, bad anatomy',
+        size: '1024x1536',
+      }),
+    });
+    expect(genImgRes.status).toBe(200);
+    const genImgJson = (await genImgRes.json()) as { dataUrl?: string; imageUrl?: string };
+    expect(genImgJson.dataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(capturedImagePayload.image_size).toBe('960x1280');
+    expect(capturedImagePayload.negative_prompt).toBe('lowres, bad anatomy');
+
+    dbHandle.close();
+  });
 });

@@ -13,23 +13,41 @@
 | **主生成模型（必填）** | `primaryLlm` | 角色卡创建、AI 微调、Token 压缩、TRPG 数值推演、定时演化推理与生图提示词生成 | 必须配置 |
 | **试聊沙盒模型（可选）** | `chatLlm` | 快速试聊对话（适合配置专门擅长扮演/文风更佳的模型） | 未配置时回退至 `primaryLlm` |
 | **视觉识图模型（可选）** | `visionLlm` | 根据参考立绘反推外貌描述与服饰特征 | 未配置时回退至 `primaryLlm` |
-| **独立生图模型（可选）** | `imageLlm` | 立绘 `1024×1536` 文生图（兼容 OpenAI `/images/generations` 接口） | 无回退，使用 AI 生图前必须显式配置 |
+| **独立生图模型（可选）** | `imageLlm` | 立绘 `1024×1536` 文生图（自动适配 OpenAI、智谱 BigModel、硅基流动与魔搭异步轮询 4 种生图方言，并支持 `negativePrompt` 透传与短效外链本地转存） | 无回退，使用 AI 生图前必须显式配置 |
 
-### 1.1 内置兼容服务商预设
+### 1.1 内置兼容服务商预设（15 家）
 
-| Provider 标识 | 名称 | 默认 Base URL | 默认模型参考 |
-| --- | --- | --- | --- |
-| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| `siliconflow` | 硅基流动 (SiliconFlow) | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-72B-Instruct` |
-| `kimi` | Kimi (Moonshot) | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| `qwen` | 通义千问 (DashScope) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| `anthropic` | Anthropic（兼容网关） | `https://api.anthropic.com/v1` | `claude-3-5-sonnet-latest` |
-| `azure` | Azure OpenAI | 需填写终结点 URL | `gpt-4o` |
-| `ollama` | 本地 Ollama | `http://127.0.0.1:11434/v1` | `qwen2.5:14b`（无需 Key） |
-| `custom` | 自定义 OpenAI 兼容 | 填写任意兼容 `/chat/completions` 接口 | 按网关模型填写 |
+| Provider 标识 | 名称 | 默认 Base URL | 默认模型参考 | 免费额度 / 特性提示 |
+| --- | --- | --- | --- | --- |
+| `zhipu` | 智谱 AI (BigModel) | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.7-flash` | 文本（`glm-4.7-flash`）/ 识图（`glm-4.6v-flash`）/ 生图（`cogview-3-flash`）均有永久免费 Flash 模型 |
+| `modelscope` | 魔搭社区 (ModelScope) | `https://api-inference.modelscope.cn/v1` | `Qwen/Qwen2.5-72B-Instruct` | 绑阿里云享每日免费推理额度（72B 文本 + VL 识图 + `Qwen-Image` 异步生图） |
+| `siliconflow` | 硅基流动 (SiliconFlow) | `https://api.siliconflow.cn/v1` | `Qwen/Qwen3-8B` / `Qwen2.5-72B` | 部分 8B/9B 模型永久免费；新人赠金可用 72B / `Kwai-Kolors/Kolors` 生图 |
+| `hunyuan` | 腾讯混元 (Hunyuan) | `https://api.hunyuan.cloud.tencent.com/v1` | `hunyuan-lite` | `hunyuan-lite` 永久免费 |
+| `openrouter` | OpenRouter (聚合网关) | `https://openrouter.ai/api/v1` | `openrouter/free` | 免绑卡可用 `:free` 模型（50 次/天，需网络可达；请求自动附带 `X-Title` 归因头） |
+| `groq` | Groq (LPU 极速) | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | 免卡永久 Free Tier（每日刷新配额，极速响应） |
+| `gemini` | Google Gemini (OpenAI 兼容) | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` | AI Studio 免费层级（长上下文 + 原生识图，需网络可达/代理） |
+| `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | 推荐 `deepseek-chat`（V3）与 `deepseek-reasoner` |
+| `kimi` | Kimi (Moonshot) | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | 长文本对话兼容 |
+| `qwen` | 通义千问 (DashScope) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | 阿里云百炼新用户赠送各模型 100 万 Tokens |
+| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | 生图槽位推荐 `gpt-image-1` / `dall-e-3` |
+| `anthropic` | Anthropic（兼容网关） | `https://api.anthropic.com/v1` | `claude-3-5-sonnet-latest` | 需通过 OpenAI 兼容网关或适配层 |
+| `azure` | Azure OpenAI | 需填写终结点 URL | `gpt-4o` | 企业终结点接入 |
+| `ollama` | 本地 Ollama | `http://127.0.0.1:11434/v1` | `qwen2.5:14b` | 本地离线免费运行，无需 API Key |
+| `custom` | 自定义 OpenAI 兼容 | 填写任意兼容接口 | `gpt-4o-mini` | 按实际网关模型填写 |
 
-### 1.2 结构化输出策略（`jsonModeStrategy`）与模型探测
+### 1.2 新手免费源站向导、模型推荐 Chips 与多协议生图兼容
+
+- **新手免费源站一键向导**：在「设置 → 模型槽位」顶部可展开 4 套开箱预设——**智谱免费全家桶**（1 个 Key 跑通全部 4 槽位）、**魔搭 ModelScope 每日免费全能方案**、**硅基流动低门槛 + Kolors 立绘方案**、**OpenRouter 海外免费聚合方案**，一键填充各槽位服务商、Base URL 与推荐模型。
+- **同服务商 Key 一键同步**：在主生成模型（`primary`）填写新 Key 或已保存 Key 后，当 `chat` / `vision` / `image` 中存在与主槽位同服务商的槽位时，点击 **「同步到同服务商其它槽位」** 即可一键复用，无需重复粘贴。
+- **按槽位推荐模型 & 快捷 Chips**：切换不同槽位（如 `vision` / `image`）的服务商时，自动带出该槽位适配模型并展示热门模型快捷选择胶囊（含「免费」「极速」「中文极佳」等徽标与官网申请 Key 直达链接）。
+- **多协议生图方言自动识别（`vision.ts`）**：
+  - **OpenAI 兼容**：使用 `{ model, prompt, n: 1, size, response_format: 'b64_json' }`。
+  - **智谱 BigModel**：使用 `{ model, prompt, size }`（自动剔除会触发 400 的 `n` 与 `response_format`）。
+  - **硅基流动 SiliconFlow**：使用 `image_size` 与 `negative_prompt`；根据模型族自动映射竖版推荐分辨率（如 `Kwai-Kolors/Kolors` → `960×1280`，`Qwen/Qwen-Image` → `1056×1584`）。
+  - **魔搭 ModelScope**：自动附带 `X-ModelScope-Async-Mode: true` 发起异步任务，并以 `X-ModelScope-Task-Type: image_generation` 轮询 `GET /v1/tasks/{task_id}`（支持 `negative_prompt` 与 `size`，`testLlmConnectivity` 探测超时自动放宽至 90 秒）。
+  - **短效外链服务端自动转存**：若生图接口仅返回外链 URL（如硅基/智谱/魔搭 1 小时有效链接），服务端 `POST /api/v1/images/generate` 会使用同路 `llm_image` 代理立即拉取并转为 `dataUrl` 返回，避免前端加载跨域或链接过期。
+
+### 1.3 结构化输出策略（`jsonModeStrategy`）与模型探测
 
 - **`auto`（推荐）**：优先使用 `response_format: { type: 'json_object' }` 请求结构化 JSON；若检测到服务商不支持该参数，系统会自动降级并记住切换为 `prompt` 策略。
 - **`json_object`**：强制要求接口支持 `json_object`。

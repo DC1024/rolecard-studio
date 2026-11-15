@@ -2,6 +2,7 @@ import {
   BUILTIN_PORTRAIT_STYLE_PRESETS,
   type ImageGenerateRequest,
   type ImageSearchItem,
+  type LlmProvider,
   type PortraitPromptMode,
   type PortraitPromptResponse,
   type PortraitPromptStyle,
@@ -10,7 +11,7 @@ import {
 } from '@rolecard/shared';
 import { z } from 'zod';
 import { detectImageMagicBytes } from './ccv3.js';
-import { resolveProviderBaseUrl } from './llm/client.js';
+import { resolveProviderBaseUrl } from './llm/provider.js';
 import {
   completeStructuredJson,
   extractJsonCandidate,
@@ -37,6 +38,67 @@ import {
 export interface VisionDeps {
   fetchImpl?: HttpFetchPort;
   dnsLookup?: DnsLookupPort;
+  onProgress?: (evt: { step: string; message: string }) => void | Promise<void>;
+  signal?: AbortSignal;
+  pollIntervalMs?: number;
+  maxPollAttempts?: number;
+  includeResponseFormat?: boolean;
+}
+
+export type ImageProtocolDialect = 'openai' | 'siliconflow' | 'zhipu' | 'modelscope';
+
+export function detectImageProtocolDialect(
+  provider: LlmProvider,
+  baseUrl: string,
+): ImageProtocolDialect {
+  const lower = baseUrl.toLowerCase();
+  if (provider === 'siliconflow' || lower.includes('siliconflow.cn')) {
+    return 'siliconflow';
+  }
+  if (provider === 'zhipu' || lower.includes('bigmodel.cn')) {
+    return 'zhipu';
+  }
+  if (provider === 'modelscope' || lower.includes('modelscope.cn')) {
+    return 'modelscope';
+  }
+  return 'openai';
+}
+
+export function mapImageSizeForDialect(
+  size: string | undefined,
+  dialect: ImageProtocolDialect,
+  model: string,
+): string {
+  const target = size ?? '1024x1536';
+  if (dialect === 'siliconflow') {
+    if (/qwen-image/i.test(model)) {
+      if (target === '1024x1536') return '1056x1584';
+      if (target === '1024x1024') return '1328x1328';
+      return target;
+    }
+    if (target === '1024x1536') return '960x1280';
+    return target;
+  }
+  return target;
+}
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 const VisionAnalysisSchema = z.object({
@@ -350,12 +412,57 @@ export async function generatePortraitImage(
     });
   }
 
-  const endpoint = `${baseUrl.replace(/\/+$/, '')}/images/generations`;
+  const normalizedBase = baseUrl.replace(/\/+$/, '');
+  const baseRoot = normalizedBase.endsWith('/images/generations')
+    ? normalizedBase.slice(0, -'/images/generations'.length)
+    : normalizedBase;
+  const endpoint = normalizedBase.endsWith('/images/generations')
+    ? normalizedBase
+    : `${normalizedBase}/images/generations`;
+
+  const dialect = detectImageProtocolDialect(slot.provider, normalizedBase);
+  const mappedSize = mapImageSizeForDialect(input.size, dialect, imageModel);
+  const negativePrompt = input.negativePrompt?.trim() || undefined;
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  if (slot.apiKey) {
-    headers.Authorization = `Bearer ${slot.apiKey}`;
+  if (slot.apiKey?.trim()) {
+    headers.Authorization = `Bearer ${slot.apiKey.trim()}`;
+  }
+  if (dialect === 'modelscope') {
+    headers['X-ModelScope-Async-Mode'] = 'true';
+  }
+
+  let bodyPayload: Record<string, unknown>;
+  if (dialect === 'siliconflow') {
+    bodyPayload = {
+      model: imageModel,
+      prompt: input.prompt,
+      image_size: mappedSize,
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+    };
+  } else if (dialect === 'zhipu') {
+    bodyPayload = {
+      model: imageModel,
+      prompt: input.prompt,
+      size: mappedSize,
+    };
+  } else if (dialect === 'modelscope') {
+    bodyPayload = {
+      model: imageModel,
+      prompt: input.prompt,
+      size: mappedSize,
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+    };
+  } else {
+    bodyPayload = {
+      model: imageModel,
+      prompt: input.prompt,
+      size: mappedSize,
+      n: 1,
+      ...(deps.includeResponseFormat === false ? {} : { response_format: 'b64_json' }),
+    };
   }
 
   let response: Response;
@@ -363,13 +470,8 @@ export async function generatePortraitImage(
     response = await fetchImpl(endpoint, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        model: imageModel,
-        prompt: input.prompt,
-        size: input.size,
-        n: 1,
-        response_format: 'b64_json',
-      }),
+      body: JSON.stringify(bodyPayload),
+      signal: deps.signal,
     });
   } catch (error) {
     return err({
@@ -390,13 +492,114 @@ export async function generatePortraitImage(
 
   const payload = (await response.json()) as {
     data?: Array<{ b64_json?: string; url?: string }>;
+    images?: Array<{ url?: string }>;
+    task_id?: string;
   };
-  const first = payload.data?.[0];
-  if (first?.b64_json) {
-    return ok({ dataUrl: `data:image/png;base64,${first.b64_json}` });
+  const firstData = payload.data?.[0];
+  if (firstData?.b64_json) {
+    return ok({ dataUrl: `data:image/png;base64,${firstData.b64_json}` });
   }
-  if (first?.url) {
-    return ok({ imageUrl: first.url });
+  if (firstData?.url) {
+    return ok({ imageUrl: firstData.url });
+  }
+  const firstImage = payload.images?.[0];
+  if (firstImage?.url) {
+    return ok({ imageUrl: firstImage.url });
+  }
+
+  if (dialect === 'modelscope' && payload.task_id) {
+    const pollIntervalMs = deps.pollIntervalMs ?? 2000;
+    const maxPollAttempts = deps.maxPollAttempts ?? 45;
+    const taskEndpoint = `${baseRoot}/tasks/${encodeURIComponent(payload.task_id)}`;
+    const taskHeaders: Record<string, string> = {
+      'X-ModelScope-Task-Type': 'image_generation',
+    };
+    if (slot.apiKey?.trim()) {
+      taskHeaders.Authorization = `Bearer ${slot.apiKey.trim()}`;
+    }
+
+    for (let attempt = 1; attempt <= maxPollAttempts; attempt += 1) {
+      if (deps.signal?.aborted) {
+        return err({
+          code: 'IMAGE_GEN_FAILED',
+          message: 'AI 生图任务已取消或超时',
+          status: 504,
+        });
+      }
+      await deps.onProgress?.({
+        step: 'polling',
+        message: `魔搭异步生图排队/渲染中 (${attempt}/${maxPollAttempts})...`,
+      });
+      await sleepWithAbort(pollIntervalMs, deps.signal);
+      if (deps.signal?.aborted) {
+        return err({
+          code: 'IMAGE_GEN_FAILED',
+          message: 'AI 生图任务已取消或超时',
+          status: 504,
+        });
+      }
+
+      let pollRes: Response;
+      try {
+        pollRes = await fetchImpl(taskEndpoint, {
+          method: 'GET',
+          headers: taskHeaders,
+          signal: deps.signal,
+        });
+      } catch (error) {
+        return err({
+          code: 'IMAGE_GEN_FAILED',
+          message: `魔搭生图任务轮询失败: ${error instanceof Error ? error.message : '网络异常'}`,
+          status: 502,
+        });
+      }
+
+      if (!pollRes.ok) {
+        const errText = await pollRes.text().catch(() => '');
+        return err({
+          code: 'IMAGE_GEN_HTTP_ERROR',
+          message: `魔搭生图任务查询返回 HTTP ${pollRes.status}: ${errText.slice(0, 200)}`,
+          status: pollRes.status >= 400 ? pollRes.status : 502,
+        });
+      }
+
+      const taskData = (await pollRes.json()) as {
+        task_status?: string;
+        output_images?: string[];
+        outputs?: { output_images?: string[] };
+        errors?: { message?: string } | string;
+        message?: string;
+      };
+      const status = (taskData.task_status ?? '').toUpperCase();
+      if (status === 'SUCCEED') {
+        const url = taskData.output_images?.[0] ?? taskData.outputs?.output_images?.[0];
+        if (url) {
+          return ok({ imageUrl: url });
+        }
+        return err({
+          code: 'IMAGE_GEN_EMPTY',
+          message: '魔搭异步生图任务完成但未返回图片 URL',
+          status: 502,
+        });
+      }
+      if (status === 'FAILED' || status === 'CANCELED') {
+        const detail =
+          typeof taskData.errors === 'string'
+            ? taskData.errors
+            : (taskData.errors?.message ?? taskData.message ?? status);
+        return err({
+          code: 'IMAGE_GEN_FAILED',
+          message: `魔搭生图任务失败: ${detail}`,
+          status: 502,
+        });
+      }
+    }
+
+    return err({
+      code: 'IMAGE_GEN_TIMEOUT',
+      message: '魔搭异步生图等待超时，请稍后重试',
+      status: 504,
+    });
   }
 
   return err({

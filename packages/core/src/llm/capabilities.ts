@@ -20,11 +20,11 @@ const EMBEDDING_RE =
 const AUDIO_RE =
   /(?:^|[/:_-])(whisper|tts-|cosyvoice|fish-speech|paraformer|sensevoice|gpt-4o-audio)/i;
 const IMAGE_GEN_RE =
-  /(?:^|[/:_-])(dall-e(?:-\d+)?|gpt-image(?:-[\w.]+)?|imagen(?:-[\w.]+)?|midjourney|flux(?:[.-][\w]+)*|sdxl|stable-diffusion[\w.-]*|kolors|cogview(?:-\d+)?|wanx[\w.-]*|ideogram|recraft[\w.-]*|seedream[\w.-]*|qwen-image[\w.-]*|hunyuan-dit|janus-pro|jimeng[\w.-]*|image-generation)(?:$|[/:._-])/i;
+  /(?:^|[/:_-])(dall-e(?:-\d+)?|gpt-image(?:-[\w.]+)?|imagen(?:-[\w.]+)?|midjourney|flux(?:[.-][\w]+)*|sdxl|stable-diffusion[\w.-]*|kolors|cogview(?:-[\w.-]+)?|glm-image(?:-[\w.-]+)?|z-image(?:-[\w.-]+)?|wanx[\w.-]*|ideogram|recraft[\w.-]*|seedream[\w.-]*|qwen-image(?:-[\w.-]+)?|hunyuan-dit|janus-pro|jimeng[\w.-]*|image-generation)(?:$|[/:._-])/i;
 const MULTIMODAL_HINT_RE =
-  /(?:vision|vl|omni|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|claude-3|claude-sonnet-4|claude-opus-4|gemini-|grok-2-vision|pixtral|llava|minicpm-v|internvl)/i;
+  /(?:vision|vl|omni|gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|claude-3|claude-sonnet-4|claude-opus-4|gemini-|grok-2-vision|glm-4(?:\.\d+)?v|gemma-?3|pixtral|llava|minicpm-v|internvl)/i;
 const TEXT_ONLY_CHAT_RE =
-  /(?:^|[/:_-])(deepseek-chat|deepseek-reasoner|deepseek-r\d|deepseek-v\d|qwen-?(?:plus|turbo|max|long)|qwen[\d.]+-(?:\d+b-)?instruct|qwen3|moonshot-v\d|kimi-|glm-[34](?:-flash|-air|-plus|$)|ernie-|yi-(?:large|medium|lightning)|gpt-3\.5|o[134](?:-mini|-preview)?|llama-?[\d.]+|mixtral-|mistral-(?:small|medium|large)|gemma-?\d|phi-?\d)/i;
+  /(?:^|[/:_-])(deepseek-chat|deepseek-reasoner|deepseek-r\d|deepseek-v\d|qwen-?(?:plus|turbo|max|long)|qwen[\d.]+-(?:\d+b-)?instruct|qwen3|moonshot-v\d|kimi-|glm-[34](?:\.\d+)?(?:-(?:flash|air|plus|turbo|long|\d+b)|$)|hunyuan-(?:lite|standard|turbo|pro|large|a13b)|ernie-|yi-(?:large|medium|lightning)|gpt-3\.5|o[134](?:-mini|-preview)?|llama-?[\d.]+|mixtral-|mistral-(?:small|medium|large)|gemma-?\d|phi-?\d)/i;
 
 export const SLOT_LABELS: Record<LlmSlotPurpose, string> = {
   primary: '1. 主生成模型 (Primary LLM)',

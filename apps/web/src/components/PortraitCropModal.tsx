@@ -1663,6 +1663,7 @@ export function PortraitCropModal({
                   try {
                     const res = await api.generateImage({
                       prompt: usedPrompt,
+                      negativePrompt: aiNegativePrompt.trim() || undefined,
                       size: '1024x1536',
                     });
                     if (res.dataUrl) {

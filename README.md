@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.2）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.5.0）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
@@ -32,7 +32,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - 支持 AI 推演 CoC 7e / D&D 5e 真实数值面板与技能特性，并导出标准车卡表（HTML / Markdown）及 Foundry VTT Actor JSON。
 - **统一 2:3 角色卡画廊与衍生 1:1 VTT Token**
   - 默认主视图为 **2:3 竖版立绘角色卡画廊**，左侧栏保留常驻检索、规格/模式筛选与常用标签联动。
-  - 支持本地图片 `600×900` 裁剪、**AI 文生图（固定 `1024x1536` 竖版 + 结合角色卡生成/优化英文提示词）**、Wikimedia 同源搜图代理（`/api/v1/images/proxy`，点选自动本地转存 2:3 立绘与 1:1 Token）与外链同源代理（`/api/v1/cards/:id/portrait-source`）。
+  - 支持本地图片 `600×900` 裁剪、**AI 文生图（固定 `1024x1536` 竖版 + 结合角色卡生成/优化英文提示词 + 反向词透传）**、兼容 **OpenAI / 智谱 CogView / 硅基流动 Kolors & Qwen-Image / 魔搭异步队列** 生图协议并自动本地化短效外链、Wikimedia 同源搜图代理（`/api/v1/images/proxy`，点选自动本地转存 2:3 立绘与 1:1 Token）与外链同源代理（`/api/v1/cards/:id/portrait-source`）。
   - 可直接从 `2:3` 主立绘交互裁剪衍生 **`1:1`（`512×512`）VTT Token**，自动同步用于 `vtt_token_png` 直接导出与 `foundry_dnd5e_json`。
 - **独立世界书（Lorebook）与快速试聊沙盒**
   - 世界书支持独立管理、与角色卡多对多绑定，支持 **蓝灯常驻（Constant）** 与 **绿灯关键词（Selective）** 规则，导出 CCV3 时自动合并至 `character_book`。
@@ -46,7 +46,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - 支持按角色卡独立控制 **元舆论（Meta Reputation）风评层**（默认关闭，用户可自主在详情页编辑风评摘要或开启试聊/演化注入）。
   - 支持 **9 大等权并行通知渠道**：SMTP 邮件、飞书、企业微信、钉钉、Telegram、Discord、Bark、Server酱、自定义 Webhook。
 - **四路模型槽位、两级网络代理与 RBAC 安全体系**
-  - 支持 `primary`（主生成）/ `chat`（试聊）/ `vision`（识图反推）/ `image`（文生图）4 路独立模型槽位，兼容 OpenAI、DeepSeek、硅基流动、Kimi、通义千问、Anthropic 兼容网关、Azure OpenAI、本地 Ollama 与自定义 OpenAI 兼容接口。
+  - 支持 `primary`（主生成）/ `chat`（试聊）/ `vision`（识图反推）/ `image`（文生图）4 路独立模型槽位，内置 **15 家服务商预设**（智谱 AI、魔搭社区、硅基流动、腾讯混元、OpenRouter、Groq、Google Gemini、DeepSeek、Kimi、通义千问、OpenAI、Anthropic 兼容网关、Azure OpenAI、本地 Ollama、自定义 OpenAI 兼容），并提供 **4 套新手免费源站一键向导** 与同服务商 Key 一键同步。
   - 支持 **全局代理 + 7 个作用域独立代理覆写**（`inherit` / `direct` / `custom`）、**系统环境变量代理自动回退**（`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`）、**TUN Fake-IP（`198.18.0.0/15`）透明代理兼容**及一键连通性测试。
   - 所有凭据均采用 **AES-256-GCM**（基于本地 `.master.key`）加密落盘；内置管理员/普通用户 RBAC、站点/API 独立访客策略与 External API Key 作用域控制。
 - **开放生态与实时同步**
@@ -160,8 +160,8 @@ pnpm bundle
    打开 `http://127.0.0.1:3000`（开发前端为 `http://localhost:5173`）。  
    - 若启动时未设置 `ROLECARD_ADMIN_PASSWORD`，首次启动会在控制台日志打印自动生成的初始账号与随机密码（例如 `username: "admin", password: "..."`）。
    - 点击右上角「登录」，登录后建议立即前往「系统设置 → 账号安全」修改密码。
-2. **配置主大模型（Primary LLM）**  
-   点击右上角「设置」按钮，在 **模型槽位** 中选择服务商（如 DeepSeek、OpenAI、硅基流动、Kimi、通义千问或本地 Ollama），填入 API Key 与模型名，点击「测试连接」验证通过后保存。
+2. **配置主大模型（Primary LLM）或一键导入免费源站**  
+   点击右上角「设置」按钮，在 **模型槽位** 顶部可直接展开 **「新手免费源站一键向导」**（支持智谱免费全家桶、魔搭每日免费方案、硅基流动新人方案、OpenRouter 海外免费路由），一键预填 4 个槽位并用同一把 Key 同步；也可手动选择任意内置服务商（如 DeepSeek、通义千问、Kimi、本地 Ollama），点击「测试连接」验证通过后保存。
    - 如需访问海外接口或图源，可在「网络代理」页签开启全局代理或按作用域单独配置。
 3. **生成第一张角色卡**  
    在顶部居中导航点击 **「生成新卡」**，选择预设规格（如「AI 角色扮演」或「TRPG 车卡」），选择 **Mode B（联网考据）** 或 **Mode A（本地材料）**，填写角色名与作品名，提交生成并观察实时思考流进度。
@@ -195,7 +195,7 @@ pnpm bundle
 pnpm build       # 构建所有 workspace 包与前端生产资源
 pnpm typecheck   # 先构建 shared/core 类型产物，再对全仓执行 tsc --noEmit
 pnpm lint        # 使用 ESLint 检查 packages/ 与 apps/
-pnpm test        # 运行 Vitest 全仓单元与集成测试（11 个测试文件，44 项测试）
+pnpm test        # 运行 Vitest 全仓单元与集成测试（11 个测试文件，57 项测试）
 pnpm bundle      # 打包独立运行产物至 release/bundle/
 ```
 

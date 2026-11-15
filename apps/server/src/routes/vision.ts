@@ -195,6 +195,20 @@ visionRoutes.post(
     if (!result.ok) {
       return sendCoreError(c, result.error);
     }
+
+    if (result.value.imageUrl && !result.value.dataUrl) {
+      const fetched = await fetchRemoteImageBuffer(result.value.imageUrl, {
+        fetchImpl: imageFetch,
+        dnsLookup: ctx.dnsLookup,
+        maxBytes: 12 * 1024 * 1024,
+      });
+      if (fetched.ok) {
+        return c.json({
+          dataUrl: `data:${fetched.value.contentType};base64,${fetched.value.buffer.toString('base64')}`,
+        });
+      }
+    }
+
     return c.json(result.value);
   },
 );

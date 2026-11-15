@@ -1,22 +1,18 @@
-import { LLM_PROVIDER_DEFAULTS, type LlmProvider, type LlmSlotPurpose } from '@rolecard/shared';
+import type { LlmProvider, LlmSlotPurpose } from '@rolecard/shared';
 import type {
   HttpFetchPort,
   LlmCompletionPort,
   LlmCompletionRequest,
   LlmCompletionResponse,
 } from '../types.js';
+import { generatePortraitImage } from '../vision.js';
 import { validateModelSlotCapability } from './capabilities.js';
+import { resolveProviderBaseUrl } from './provider.js';
+
+export { resolveProviderBaseUrl } from './provider.js';
 
 const PROBE_PNG_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NMQ0AAAwDoPo33arYsQQMkB6LQCAQCAQCgUAg+BIMi1X0pjxKe0gAAAAASUVORK5CYII=';
-
-export function resolveProviderBaseUrl(provider: LlmProvider, customBaseUrl?: string): string {
-  const trimmed = customBaseUrl?.trim() ?? '';
-  if (trimmed) {
-    return trimmed.replace(/\/+$/, '');
-  }
-  return LLM_PROVIDER_DEFAULTS[provider].baseUrl.replace(/\/+$/, '');
-}
 
 /**
  * Extract inline `<think>...</think>` blocks from non-streaming content.
@@ -153,6 +149,10 @@ export function createOpenAiCompatibleLlmPort(
     };
     if (request.apiKey.trim()) {
       headers.Authorization = `Bearer ${request.apiKey.trim()}`;
+    }
+    if (request.provider === 'openrouter' || baseUrl.toLowerCase().includes('openrouter.ai')) {
+      headers['X-Title'] = 'RoleCard Studio';
+      headers['HTTP-Referer'] = 'https://github.com/rolecard-studio';
     }
 
     const controller = new AbortController();
@@ -338,6 +338,7 @@ export async function testLlmConnectivity(
     baseUrl?: string;
     model: string;
     slotType?: LlmSlotPurpose;
+    imagePollIntervalMs?: number;
     onProgress?: (evt: { step: string; message: string }) => void | Promise<void>;
     onReasoningDelta?: (delta: string) => void | Promise<void>;
     onContentDelta?: (delta: string) => void | Promise<void>;
@@ -383,52 +384,37 @@ export async function testLlmConnectivity(
       step: 'probing',
       message: `正在连接文生图端点 ${baseUrl}...`,
     });
-    const endpoint = baseUrl.endsWith('/images/generations')
-      ? baseUrl
-      : `${baseUrl}/images/generations`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (params.apiKey.trim()) {
-      headers.Authorization = `Bearer ${params.apiKey.trim()}`;
-    }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
+    const timer = setTimeout(() => controller.abort(), 90_000);
     try {
-      const response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: params.model,
+      const result = await generatePortraitImage(
+        {
           prompt: 'minimalist white circle icon',
           size: '1024x1024',
-          n: 1,
-        }),
-        signal: controller.signal,
-      });
+        },
+        {
+          provider: params.provider,
+          apiKey: params.apiKey,
+          baseUrl,
+          model: params.model,
+          jsonModeStrategy: 'auto',
+        },
+        params.model,
+        {
+          fetchImpl,
+          onProgress: params.onProgress,
+          signal: controller.signal,
+          pollIntervalMs: params.imagePollIntervalMs,
+          includeResponseFormat: false,
+        },
+      );
       const latencyMs = Date.now() - startedAt;
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
+      if (!result.ok) {
         return {
           ok: false,
           latencyMs,
-          error: enrichEndpointError(
-            errText.slice(0, 300) || `HTTP ${response.status}`,
-            'image',
-            params.model,
-          ),
-        };
-      }
-      const json = (await response.json()) as {
-        data?: Array<{ b64_json?: string; url?: string }>;
-      };
-      const first = json.data?.[0];
-      if (!first?.b64_json && !first?.url) {
-        return {
-          ok: false,
-          latencyMs,
-          error: '生图端点未返回图片数据 (data[0].b64_json 或 url)',
+          error: enrichEndpointError(result.error.message, 'image', params.model),
         };
       }
       return {

@@ -28,9 +28,10 @@ export interface ImageSearchItem {
 
 export const ImageGenerateRequestSchema = z.object({
   prompt: z.string().trim().min(3).max(2000),
+  negativePrompt: z.string().trim().max(1000).optional(),
   size: z.enum(['1024x1024', '1024x1536', '1536x1024']).optional().default('1024x1536'),
 });
-export type ImageGenerateRequest = z.infer<typeof ImageGenerateRequestSchema>;
+export type ImageGenerateRequest = z.input<typeof ImageGenerateRequestSchema>;
 
 export const PortraitPromptModeSchema = z.enum(['generate', 'optimize']);
 export type PortraitPromptMode = z.infer<typeof PortraitPromptModeSchema>;

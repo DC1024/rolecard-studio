@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { RoleCardContent, SyncEventDto } from '@rolecard/shared';
+import {
+  FREE_STARTER_PRESETS,
+  LLM_PROVIDER_DEFAULTS,
+  type LlmProvider,
+  type LlmSlotPurpose,
+  type RoleCardContent,
+  type SyncEventDto,
+} from '@rolecard/shared';
 import { generateTrpgAttributesForCard } from './generator.js';
 import { validateModelSlotCapability } from './llm/capabilities.js';
 import { createOpenAiCompatibleLlmPort, testLlmConnectivity } from './llm/client.js';
@@ -35,6 +42,7 @@ import { validatePublicUrl } from './ssrf.js';
 import {
   fetchRemoteImageBuffer,
   generateOrOptimizePortraitPrompt,
+  generatePortraitImage,
   searchWikimediaCommonsImages,
 } from './vision.js';
 
@@ -1253,4 +1261,306 @@ describe('Search connectivity probe, layered retrieval budget & single-field gen
     expect(fakeIpAllowed.ok).toBe(true);
   });
 });
+
+describe('Free provider capabilities, multi-dialect image generation & OpenRouter attribution', () => {
+  it('validates all FREE_STARTER_PRESETS models and new capability regexes', () => {
+    for (const preset of FREE_STARTER_PRESETS) {
+      expect(
+        validateModelSlotCapability({
+          slotType: 'primary',
+          provider: preset.slots.primary.provider,
+          model: preset.slots.primary.model,
+        }).ok,
+      ).toBe(true);
+
+      if (preset.slots.chat) {
+        expect(
+          validateModelSlotCapability({
+            slotType: 'chat',
+            provider: preset.slots.chat.provider,
+            model: preset.slots.chat.model,
+          }).ok,
+        ).toBe(true);
+      }
+      if (preset.slots.vision) {
+        expect(
+          validateModelSlotCapability({
+            slotType: 'vision',
+            provider: preset.slots.vision.provider,
+            model: preset.slots.vision.model,
+          }).ok,
+        ).toBe(true);
+      }
+      if (preset.slots.image) {
+        expect(
+          validateModelSlotCapability({
+            slotType: 'image',
+            provider: preset.slots.image.provider,
+            model: preset.slots.image.model,
+          }).ok,
+        ).toBe(true);
+      }
+    }
+
+    for (const [provider, meta] of Object.entries(LLM_PROVIDER_DEFAULTS)) {
+      for (const [slotType, rec] of Object.entries(meta.recommendedSlots ?? {})) {
+        if (!rec) continue;
+        expect(
+          validateModelSlotCapability({
+            slotType: slotType as LlmSlotPurpose,
+            provider: provider as LlmProvider,
+            model: rec.model,
+          }).ok,
+        ).toBe(true);
+        for (const chip of rec.chips ?? []) {
+          expect(
+            validateModelSlotCapability({
+              slotType: slotType as LlmSlotPurpose,
+              provider: provider as LlmProvider,
+              model: chip.id,
+            }).ok,
+          ).toBe(true);
+        }
+      }
+    }
+
+    expect(
+      validateModelSlotCapability({
+        slotType: 'image',
+        provider: 'zhipu',
+        model: 'cogview-3-flash',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'image',
+        provider: 'zhipu',
+        model: 'glm-image',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'image',
+        provider: 'modelscope',
+        model: 'Tongyi-MAI/Z-Image-Turbo',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'vision',
+        provider: 'zhipu',
+        model: 'glm-4.6v-flash',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'vision',
+        provider: 'zhipu',
+        model: 'glm-4.7-flash',
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'vision',
+        provider: 'hunyuan',
+        model: 'hunyuan-lite',
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateModelSlotCapability({
+        slotType: 'vision',
+        provider: 'hunyuan',
+        model: 'hunyuan-vision',
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('adapts image generation payloads for SiliconFlow, Zhipu, ModelScope async polling, and OpenRouter headers', async () => {
+    // 1. SiliconFlow: image_size + negative_prompt + images[0].url
+    const sfBodies: Array<Record<string, unknown>> = [];
+    const sfFetch: HttpFetchPort = async (_url, init) => {
+      sfBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ images: [{ url: 'https://sf-cdn.example.com/kolors.png' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const kolorsRes = await generatePortraitImage(
+      { prompt: '1girl, anime portrait', negativePrompt: 'lowres, bad hands', size: '1024x1536' },
+      {
+        provider: 'siliconflow',
+        apiKey: 'sk-sf',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        model: 'Kwai-Kolors/Kolors',
+        jsonModeStrategy: 'auto',
+      },
+      'Kwai-Kolors/Kolors',
+      { fetchImpl: sfFetch },
+    );
+    expect(kolorsRes.ok).toBe(true);
+    if (kolorsRes.ok) {
+      expect(kolorsRes.value.imageUrl).toBe('https://sf-cdn.example.com/kolors.png');
+    }
+    expect(sfBodies[0]?.image_size).toBe('960x1280');
+    expect(sfBodies[0]?.size).toBeUndefined();
+    expect(sfBodies[0]?.response_format).toBeUndefined();
+    expect(sfBodies[0]?.negative_prompt).toBe('lowres, bad hands');
+
+    const qwenImgRes = await generatePortraitImage(
+      { prompt: '1girl, anime portrait', size: '1024x1536' },
+      {
+        provider: 'siliconflow',
+        apiKey: 'sk-sf',
+        baseUrl: 'https://api.siliconflow.cn/v1',
+        model: 'Qwen/Qwen-Image',
+        jsonModeStrategy: 'auto',
+      },
+      'Qwen/Qwen-Image',
+      { fetchImpl: sfFetch },
+    );
+    expect(qwenImgRes.ok).toBe(true);
+    expect(sfBodies[1]?.image_size).toBe('1056x1584');
+
+    // 2. Zhipu BigModel: { model, prompt, size } without n/response_format
+    let zhipuBody: Record<string, unknown> = {};
+    const zhipuRes = await generatePortraitImage(
+      { prompt: '1girl, oil painting', negativePrompt: 'ignored', size: '1024x1536' },
+      {
+        provider: 'zhipu',
+        apiKey: 'zhipu-key',
+        baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+        model: 'cogview-3-flash',
+        jsonModeStrategy: 'auto',
+      },
+      'cogview-3-flash',
+      {
+        fetchImpl: async (_url, init) => {
+          zhipuBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({ data: [{ url: 'https://zhipu-cdn.example.com/cogview.png' }] }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        },
+      },
+    );
+    expect(zhipuRes.ok).toBe(true);
+    if (zhipuRes.ok) {
+      expect(zhipuRes.value.imageUrl).toBe('https://zhipu-cdn.example.com/cogview.png');
+    }
+    expect(zhipuBody).toEqual({
+      model: 'cogview-3-flash',
+      prompt: '1girl, oil painting',
+      size: '1024x1536',
+    });
+
+    // 3. ModelScope async task creation + polling + testLlmConnectivity integration
+    let pollCount = 0;
+    const msRequests: Array<{ url: string; method: string; headers: Headers; body?: string }> = [];
+    const msFetch: HttpFetchPort = async (url, init) => {
+      const headers = new Headers(init?.headers);
+      msRequests.push({
+        url,
+        method: init?.method ?? 'GET',
+        headers,
+        body: init?.body ? String(init.body) : undefined,
+      });
+      if (url.endsWith('/images/generations')) {
+        return new Response(JSON.stringify({ task_id: 'ms-task-42' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/tasks/ms-task-42')) {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return new Response(JSON.stringify({ task_status: 'RUNNING' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            task_status: 'SUCCEED',
+            output_images: ['https://ms-oss.example.com/out.png'],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const progressSteps: string[] = [];
+    const msProbe = await testLlmConnectivity(
+      {
+        slotType: 'image',
+        provider: 'modelscope',
+        apiKey: 'ms-token',
+        baseUrl: 'https://api-inference.modelscope.cn/v1',
+        model: 'Qwen/Qwen-Image',
+        imagePollIntervalMs: 0,
+        onProgress: (evt) => {
+          progressSteps.push(evt.step);
+        },
+      },
+      msFetch,
+    );
+    expect(msProbe.ok).toBe(true);
+    expect(msRequests[0]?.headers.get('x-modelscope-async-mode')).toBe('true');
+    expect(msRequests[1]?.url).toBe('https://api-inference.modelscope.cn/v1/tasks/ms-task-42');
+    expect(msRequests[1]?.headers.get('x-modelscope-task-type')).toBe('image_generation');
+    expect(progressSteps).toContain('polling');
+
+    // 4. ModelScope FAILED task surfaces clean error
+    const msFailRes = await generatePortraitImage(
+      { prompt: 'test' },
+      {
+        provider: 'modelscope',
+        apiKey: 'ms-token',
+        baseUrl: 'https://api-inference.modelscope.cn/v1',
+        model: 'Tongyi-MAI/Z-Image-Turbo',
+        jsonModeStrategy: 'auto',
+      },
+      'Tongyi-MAI/Z-Image-Turbo',
+      {
+        pollIntervalMs: 0,
+        fetchImpl: async (url) => {
+          if (url.endsWith('/images/generations')) {
+            return new Response(JSON.stringify({ task_id: 'ms-fail' }), { status: 200 });
+          }
+          return new Response(
+            JSON.stringify({ task_status: 'FAILED', errors: { message: 'nsfw blocked' } }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+    expect(msFailRes.ok).toBe(false);
+    if (!msFailRes.ok) {
+      expect(msFailRes.error.message).toContain('nsfw blocked');
+    }
+
+    // 5. OpenRouter attribution headers
+    let capturedOrTitle = '';
+    const orPort = createOpenAiCompatibleLlmPort(async (_url, init) => {
+      capturedOrTitle = new Headers(init?.headers).get('x-title') ?? '';
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: 'OK' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const orReply = await orPort({
+      provider: 'openrouter',
+      apiKey: 'or-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/free',
+      messages: [{ role: 'user', content: 'hi' }],
+      temperature: 0,
+      jsonMode: false,
+    });
+    expect(orReply.content).toBe('OK');
+    expect(capturedOrTitle).toBe('RoleCard Studio');
+  });
+});
+
 
