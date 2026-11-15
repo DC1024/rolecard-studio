@@ -1,25 +1,39 @@
 import { randomUUID } from 'node:crypto';
 import { zValidator } from '@hono/zod-validator';
 import {
+  createScopedProxyFetch,
+  DEFAULT_RUNTIME_PROXY_CONFIG,
   decryptSecret,
+  defaultHttpFetch,
   encryptSecret,
+  maskProxyConfig,
   maskSecret,
   resolveProviderBaseUrl,
   testLlmConnectivity,
+  testProxyConnectivity,
   validateModelSlotCapability,
+  validateProxyUrl,
+  type HttpFetchPort,
+  type RuntimeProxyConfig,
+  type RuntimeProxyOverride,
 } from '@rolecard/core';
 import {
+  ALL_PROXY_SCOPES,
   LlmSlotInputSchema,
   LlmTestRequestSchema,
+  ProxyTestRequestSchema,
   ServiceConfigInputSchema,
   type LlmSlotInput,
   type LlmSlotPurpose,
   type MaskedLlmSlot,
   type MaskedServiceConfig,
+  type ProxyConfigInput,
+  type ProxyScope,
   type SearchProvider,
 } from '@rolecard/shared';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { streamSSE } from 'hono/streaming';
 import { getNow, type ServerContext } from '../context.js';
 import { userServiceConfigs } from '../db/schema.js';
 import { guardAdmin, type AppEnv } from '../middleware/auth.js';
@@ -70,6 +84,147 @@ export interface DecryptedRuntimeConfig {
   enableLayer1Wiki: boolean;
   dailyAutoRefreshLimit: number;
   customSystemPrompt: string;
+  proxyConfig: RuntimeProxyConfig;
+}
+
+function parseEncryptedProxyConfig(
+  raw: string | null | undefined,
+  masterKey: Buffer,
+): RuntimeProxyConfig {
+  if (!raw) return { ...DEFAULT_RUNTIME_PROXY_CONFIG, overrides: {} };
+  try {
+    const plain = decryptSecret(raw, masterKey);
+    const parsed = JSON.parse(plain) as Partial<RuntimeProxyConfig>;
+    const overrides: Partial<Record<ProxyScope, RuntimeProxyOverride>> = {};
+    if (parsed.overrides && typeof parsed.overrides === 'object') {
+      for (const scope of ALL_PROXY_SCOPES) {
+        const entry = parsed.overrides[scope];
+        if (entry && (entry.mode === 'inherit' || entry.mode === 'direct' || entry.mode === 'custom')) {
+          overrides[scope] = {
+            mode: entry.mode,
+            url: typeof entry.url === 'string' ? entry.url : '',
+          };
+        }
+      }
+    }
+    return {
+      globalEnabled: Boolean(parsed.globalEnabled),
+      globalUrl: typeof parsed.globalUrl === 'string' ? parsed.globalUrl : '',
+      bypassLocal: parsed.bypassLocal !== false,
+      overrides,
+    };
+  } catch {
+    return { ...DEFAULT_RUNTIME_PROXY_CONFIG, overrides: {} };
+  }
+}
+
+export async function loadRuntimeProxyConfig(ctx: ServerContext): Promise<RuntimeProxyConfig> {
+  const rows = await ctx.db
+    .select({ proxyConfigEncrypted: userServiceConfigs.proxyConfigEncrypted })
+    .from(userServiceConfigs)
+    .where(eq(userServiceConfigs.userId, GLOBAL_CONFIG_USER_ID))
+    .limit(1);
+  return parseEncryptedProxyConfig(rows[0]?.proxyConfigEncrypted, ctx.masterKey);
+}
+
+export function resolveScopedFetch(
+  ctx: ServerContext,
+  proxyConfig: RuntimeProxyConfig | undefined | null,
+  scope: ProxyScope,
+): HttpFetchPort {
+  const baseFetch = ctx.fetchImpl ?? defaultHttpFetch;
+  return createScopedProxyFetch(proxyConfig, scope, baseFetch);
+}
+
+export async function loadScopedFetch(
+  ctx: ServerContext,
+  scope: ProxyScope,
+): Promise<HttpFetchPort> {
+  if (ctx.fetchImpl) {
+    return ctx.fetchImpl;
+  }
+  const proxyConfig = await loadRuntimeProxyConfig(ctx);
+  return resolveScopedFetch(ctx, proxyConfig, scope);
+}
+
+export function scopeFromLlmSlot(slotType: LlmSlotPurpose): ProxyScope {
+  switch (slotType) {
+    case 'chat':
+      return 'llm_chat';
+    case 'vision':
+      return 'llm_vision';
+    case 'image':
+      return 'llm_image';
+    case 'primary':
+    default:
+      return 'llm_primary';
+  }
+}
+
+function mergeProxyConfigInput(
+  input: ProxyConfigInput | undefined,
+  existing: RuntimeProxyConfig | undefined,
+):
+  | { ok: true; value: RuntimeProxyConfig }
+  | { ok: false; message: string } {
+  const base = existing ?? { ...DEFAULT_RUNTIME_PROXY_CONFIG, overrides: {} };
+  if (!input) {
+    return { ok: true, value: base };
+  }
+
+  let globalUrl = (input.globalUrl ?? '').trim();
+  if (!globalUrl && input.preserveStoredGlobalUrl) {
+    globalUrl = base.globalUrl;
+  }
+  if (globalUrl) {
+    const check = validateProxyUrl(globalUrl);
+    if (!check.ok) {
+      return { ok: false, message: `全局代理配置无效：${check.error}` };
+    }
+    globalUrl = check.normalized;
+  } else if (input.globalEnabled) {
+    return { ok: false, message: '启用全局代理时必须填写有效的代理地址' };
+  }
+
+  const overrides: Partial<Record<ProxyScope, RuntimeProxyOverride>> = {};
+  for (const scope of ALL_PROXY_SCOPES) {
+    const rawOv = input.overrides?.[scope];
+    if (!rawOv) {
+      if (base.overrides?.[scope]) {
+        overrides[scope] = base.overrides[scope];
+      }
+      continue;
+    }
+
+    let ovUrl = (rawOv.url ?? '').trim();
+    if (!ovUrl && rawOv.preserveStoredUrl) {
+      ovUrl = base.overrides?.[scope]?.url ?? '';
+    }
+    if (ovUrl) {
+      const check = validateProxyUrl(ovUrl);
+      if (!check.ok) {
+        return { ok: false, message: `指定代理 [${scope}] 无效：${check.error}` };
+      }
+      ovUrl = check.normalized;
+    } else if (rawOv.mode === 'custom') {
+      return { ok: false, message: `指定代理 [${scope}] 设为独立代理时必须填写代理地址` };
+    }
+
+    overrides[scope] = {
+      mode: rawOv.mode,
+      url: ovUrl,
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      globalEnabled: input.globalEnabled,
+      globalUrl,
+      bypassLocal: input.bypassLocal,
+      overrides,
+    },
+  };
 }
 
 export async function loadRuntimeServiceConfig(
@@ -113,6 +268,7 @@ export async function loadRuntimeServiceConfig(
     enableLayer1Wiki: row.enableLayer1Wiki,
     dailyAutoRefreshLimit: row.dailyAutoRefreshLimit,
     customSystemPrompt: row.customSystemPrompt,
+    proxyConfig: parseEncryptedProxyConfig(row.proxyConfigEncrypted, ctx.masterKey),
   };
 }
 
@@ -167,6 +323,7 @@ function buildMaskedResponse(
       enableLayer1Wiki: true,
       dailyAutoRefreshLimit: 20,
       customSystemPrompt: '',
+      proxyConfig: maskProxyConfig(null),
       updatedAt: null,
     };
   }
@@ -183,6 +340,7 @@ function buildMaskedResponse(
     enableLayer1Wiki: runtime.enableLayer1Wiki,
     dailyAutoRefreshLimit: runtime.dailyAutoRefreshLimit,
     customSystemPrompt: runtime.customSystemPrompt,
+    proxyConfig: maskProxyConfig(runtime.proxyConfig),
     updatedAt: rowUpdatedAt,
   };
 }
@@ -277,6 +435,20 @@ configRoutes.post('/config', zValidator('json', ServiceConfigInputSchema), async
       ? null
       : resolveKey(input.searchApiKey, existing?.searchApiKey) || null;
 
+  const mergedProxy = mergeProxyConfigInput(input.proxyConfig, existing?.proxyConfig);
+  if (!mergedProxy.ok) {
+    return c.json(
+      {
+        error: {
+          code: 'INVALID_PROXY_CONFIG',
+          message: mergedProxy.message,
+        },
+      },
+      400,
+    );
+  }
+  const proxyConfigEncrypted = encryptSecret(JSON.stringify(mergedProxy.value), ctx.masterKey);
+
   const existingRow = await ctx.db
     .select({ id: userServiceConfigs.id })
     .from(userServiceConfigs)
@@ -297,6 +469,7 @@ configRoutes.post('/config', zValidator('json', ServiceConfigInputSchema), async
     enableLayer1Wiki: input.enableLayer1Wiki,
     dailyAutoRefreshLimit: input.dailyAutoRefreshLimit,
     customSystemPrompt: input.customSystemPrompt,
+    proxyConfigEncrypted,
     updatedAt: nowIso,
   };
 
@@ -329,6 +502,60 @@ configRoutes.delete('/config', async (c) => {
   return c.json(buildMaskedResponse(null, null));
 });
 
+configRoutes.post('/config/proxy/test', zValidator('json', ProxyTestRequestSchema), async (c) => {
+  const denied = guardAdmin(c);
+  if (denied) return denied;
+
+  const input = c.req.valid('json');
+  const ctx = c.get('ctx');
+  let proxyUrl = input.proxyUrl?.trim() ?? '';
+
+  if (!proxyUrl && input.useSavedScope) {
+    const savedProxy = await loadRuntimeProxyConfig(ctx);
+    if (input.useSavedScope === 'global') {
+      proxyUrl = savedProxy.globalUrl;
+    } else {
+      const ov = savedProxy.overrides?.[input.useSavedScope];
+      if (ov?.mode === 'direct') {
+        return c.json(
+          {
+            ok: false,
+            latencyMs: 0,
+            message: `作用域 [${input.useSavedScope}] 当前设为“直连（不使用代理）”`,
+          },
+          400,
+        );
+      }
+      if (ov?.mode === 'custom') {
+        proxyUrl = ov.url;
+      } else {
+        proxyUrl = savedProxy.globalEnabled ? savedProxy.globalUrl : '';
+      }
+    }
+  }
+
+  if (!proxyUrl) {
+    return c.json(
+      {
+        ok: false,
+        latencyMs: 0,
+        message: '请先填写代理地址，或先保存有效的全局/指定代理配置',
+      },
+      400,
+    );
+  }
+
+  const result = await testProxyConnectivity(
+    {
+      proxyUrl,
+      targetUrl: input.targetUrl,
+    },
+    ctx.fetchImpl,
+  );
+
+  return c.json(result, result.ok ? 200 : 502);
+});
+
 configRoutes.post('/config/test', zValidator('json', LlmTestRequestSchema), async (c) => {
   const denied = guardAdmin(c);
   if (denied) return denied;
@@ -337,12 +564,83 @@ configRoutes.post('/config/test', zValidator('json', LlmTestRequestSchema), asyn
   const ctx = c.get('ctx');
   let apiKey = input.apiKey?.trim() ?? '';
 
+  const saved = await loadRuntimeServiceConfig(ctx);
   if (!apiKey && input.useSavedKeySlot) {
-    const saved = await loadRuntimeServiceConfig(ctx);
     if (input.useSavedKeySlot === 'primary') apiKey = saved?.primaryLlm.apiKey ?? '';
     if (input.useSavedKeySlot === 'chat') apiKey = saved?.chatLlm?.apiKey ?? '';
     if (input.useSavedKeySlot === 'vision') apiKey = saved?.visionLlm?.apiKey ?? '';
     if (input.useSavedKeySlot === 'image') apiKey = saved?.imageLlm?.apiKey ?? '';
+  }
+
+  let effectiveProxyConfig: RuntimeProxyConfig | undefined = saved?.proxyConfig;
+  if (input.proxyConfig) {
+    const merged = mergeProxyConfigInput(input.proxyConfig, saved?.proxyConfig);
+    if (!merged.ok) {
+      return c.json(
+        {
+          ok: false,
+          latencyMs: 0,
+          message: merged.message,
+          error: merged.message,
+        },
+        400,
+      );
+    }
+    effectiveProxyConfig = merged.value;
+  }
+
+  const scopedFetch = resolveScopedFetch(ctx, effectiveProxyConfig, scopeFromLlmSlot(input.slotType));
+
+  const wantsSse = (c.req.header('accept') ?? '').includes('text/event-stream');
+  if (wantsSse) {
+    return streamSSE(c, async (stream) => {
+      let sentThinkingHeader = false;
+      const result = await testLlmConnectivity(
+        {
+          provider: input.provider,
+          apiKey,
+          baseUrl: input.baseUrl,
+          model: input.model,
+          slotType: input.slotType,
+          onProgress: async (evt) => {
+            await stream.writeSSE({
+              event: 'progress',
+              data: JSON.stringify({ step: evt.step, message: evt.message }),
+            });
+          },
+          onReasoningDelta: async (delta) => {
+            if (!sentThinkingHeader) {
+              sentThinkingHeader = true;
+              await stream.writeSSE({
+                event: 'progress',
+                data: JSON.stringify({ step: 'thinking', message: '模型正在思考推理...' }),
+              });
+            }
+            await stream.writeSSE({
+              event: 'thinking',
+              data: JSON.stringify({ delta }),
+            });
+          },
+          onContentDelta: async (delta) => {
+            await stream.writeSSE({
+              event: 'content',
+              data: JSON.stringify({ delta }),
+            });
+          },
+        },
+        scopedFetch,
+      );
+
+      await stream.writeSSE({
+        event: 'result',
+        data: JSON.stringify({
+          ...result,
+          message: result.ok
+            ? result.replyPreview || '连接测试通过'
+            : result.error || '连接测试失败',
+        }),
+      });
+    });
   }
 
   const result = await testLlmConnectivity(
@@ -353,7 +651,7 @@ configRoutes.post('/config/test', zValidator('json', LlmTestRequestSchema), asyn
       model: input.model,
       slotType: input.slotType,
     },
-    ctx.fetchImpl,
+    scopedFetch,
   );
 
   return c.json(

@@ -477,4 +477,313 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports two-tier proxy persistence/testing, SSE streaming config test, and card-aware portrait prompt generation', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'AdminTestPassword!99',
+    });
+
+    const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
+    const capturedUserPrompts: string[] = [];
+
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.includes('cp.cloudflare.com/generate_204')) {
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          stream?: boolean;
+          messages?: Array<{ role: string; content: string }>;
+        };
+        const joined = body.messages?.map((m) => m.content).join('\n') ?? '';
+
+        if (body.stream) {
+          const encoder = new TextEncoder();
+          const chunks = [
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '正在验证 DeepSeek Reasoner 通道...' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: 'OK' } }] })}\n\n`,
+            'data: [DONE]\n\n',
+          ];
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                for (const c of chunks) controller.enqueue(encoder.encode(c));
+                controller.close();
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          );
+        }
+
+        if (joined.includes('角色视觉美术总监')) {
+          capturedUserPrompts.push(joined);
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      prompt:
+                        '1girl, Kaltsit, silver-green long hair, emerald eyes, white medical coat, Rhodes Island clinic',
+                      negativePrompt: 'lowres, bad hands, blurry',
+                      notes: '结合凯尔希的银绿色长发、翠绿双眸与医生白大褂特征生成立绘提示词。',
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
+        if (joined.includes('凯尔希')) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify(baseCard),
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: 'OK' } }] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+      dnsLookup: publicDns,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'AdminTestPassword!99' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = (loginRes.headers.get('set-cookie') ?? '').split(';')[0]!;
+
+    // 1. Reject invalid proxy URL
+    const badProxyRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: true,
+          globalUrl: 'ftp://bad-proxy.local:21',
+          bypassLocal: true,
+          overrides: {},
+        },
+      }),
+    });
+    expect(badProxyRes.status).toBe(400);
+    const badProxyBody = (await badProxyRes.json()) as { error?: { code?: string } };
+    expect(badProxyBody.error?.code).toBe('INVALID_PROXY_CONFIG');
+
+    // 2. Save valid two-tier proxy config & check masked output
+    const saveCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: true,
+          globalUrl: 'http://alice:mysecret@127.0.0.1:7897',
+          bypassLocal: true,
+          overrides: {
+            llm_chat: { mode: 'direct', url: '' },
+            llm_image: { mode: 'custom', url: 'socks5://bob:imgsecret@127.0.0.1:1080' },
+          },
+        },
+      }),
+    });
+    expect(saveCfgRes.status).toBe(200);
+    const savedCfg = (await saveCfgRes.json()) as {
+      proxyConfig: {
+        globalEnabled: boolean;
+        globalUrlMasked: string | null;
+        hasGlobalUrl: boolean;
+        overrides: Record<string, { mode: string; urlMasked: string | null; hasUrl: boolean }>;
+      };
+    };
+    expect(savedCfg.proxyConfig.globalEnabled).toBe(true);
+    expect(savedCfg.proxyConfig.hasGlobalUrl).toBe(true);
+    expect(savedCfg.proxyConfig.globalUrlMasked).toBe('http://alice:****@127.0.0.1:7897');
+    expect(savedCfg.proxyConfig.overrides.llm_image?.urlMasked).toBe(
+      'socks5://bob:****@127.0.0.1:1080',
+    );
+    expect(savedCfg.proxyConfig.overrides.llm_chat?.mode).toBe('direct');
+
+    // 3. Re-save with preserveStored flags -> keeps existing proxy URLs intact
+    const preserveRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: true,
+          globalUrl: '',
+          preserveStoredGlobalUrl: true,
+          bypassLocal: false,
+          overrides: {
+            llm_chat: { mode: 'direct', url: '' },
+            llm_image: { mode: 'custom', url: '', preserveStoredUrl: true },
+          },
+        },
+      }),
+    });
+    expect(preserveRes.status).toBe(200);
+    const preservedCfg = (await preserveRes.json()) as typeof savedCfg;
+    expect(preservedCfg.proxyConfig.globalUrlMasked).toBe('http://alice:****@127.0.0.1:7897');
+    expect(preservedCfg.proxyConfig.overrides.llm_image?.urlMasked).toBe(
+      'socks5://bob:****@127.0.0.1:1080',
+    );
+
+    // 4. Test proxy connectivity endpoint (direct plaintext, saved scope, and direct-mode rejection)
+    const proxyTestSaved = await app.request('/api/v1/config/proxy/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ useSavedScope: 'global' }),
+    });
+    expect(proxyTestSaved.status).toBe(200);
+    const proxyTestSavedJson = (await proxyTestSaved.json()) as { ok: boolean; status?: number };
+    expect(proxyTestSavedJson.ok).toBe(true);
+    expect(proxyTestSavedJson.status).toBe(204);
+
+    const proxyTestDirectRejected = await app.request('/api/v1/config/proxy/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ useSavedScope: 'llm_chat' }),
+    });
+    expect(proxyTestDirectRejected.status).toBe(400);
+
+    // 5. SSE streaming model validation endpoint emits progress, thinking, content, result
+    const sseTestRes = await app.request('/api/v1/config/test', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({
+        slotType: 'primary',
+        provider: 'deepseek',
+        useSavedKeySlot: 'primary',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-reasoner',
+      }),
+    });
+    expect(sseTestRes.status).toBe(200);
+    const sseBodyText = await sseTestRes.text();
+    expect(sseBodyText).toContain('event: progress');
+    expect(sseBodyText).toContain('event: thinking');
+    expect(sseBodyText).toContain('正在验证 DeepSeek Reasoner 通道');
+    expect(sseBodyText).toContain('event: content');
+    expect(sseBodyText).toContain('event: result');
+
+    // 6. Card-aware portrait prompt generation, optimization & imagePrompt persistence
+    const createCardRes = await app.request('/api/v1/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'A',
+        entityType: 'fictional',
+        characterName: '凯尔希',
+        workName: '明日方舟',
+        referenceText: '银绿色长发与翠绿双眸，罗德岛医疗部核心。',
+      }),
+    });
+    expect(createCardRes.status).toBe(201);
+    const createdCard = (await createCardRes.json()) as { card: { id: string } };
+
+    const genPromptRes = await app.request('/api/v1/images/prompt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        cardId: createdCard.card.id,
+        mode: 'generate',
+        style: 'anime',
+        instruction: '强调银绿色长发和医疗部氛围',
+      }),
+    });
+    expect(genPromptRes.status).toBe(200);
+    const genPromptJson = (await genPromptRes.json()) as {
+      prompt: string;
+      negativePrompt: string;
+      notes: string;
+    };
+    expect(genPromptJson.prompt).toContain('silver-green long hair');
+    expect(genPromptJson.notes).toContain('凯尔希');
+    expect(capturedUserPrompts[0]).toContain('银绿色长发与翠绿双眸');
+    expect(capturedUserPrompts[0]).toContain('强调银绿色长发和医疗部氛围');
+
+    const optPromptRes = await app.request('/api/v1/images/prompt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        cardId: createdCard.card.id,
+        mode: 'optimize',
+        style: 'semi_realistic',
+        draftPrompt: 'silver hair doctor',
+        instruction: '补充冷静锐利的眼神',
+      }),
+    });
+    expect(optPromptRes.status).toBe(200);
+    expect(capturedUserPrompts[1]).toContain('silver hair doctor');
+    expect(capturedUserPrompts[1]).toContain('补充冷静锐利的眼神');
+
+    const saveImageRes = await app.request(`/api/v1/cards/${createdCard.card.id}/image`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'search_url',
+        imageUrl: 'https://cdn.example.com/kaltsit.png',
+        imagePrompt: genPromptJson.prompt,
+      }),
+    });
+    expect(saveImageRes.status).toBe(200);
+
+    const detailRes = await app.request(`/api/v1/cards/${createdCard.card.id}`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(detailRes.status).toBe(200);
+    const detailJson = (await detailRes.json()) as { card: { imagePrompt: string | null } };
+    expect(detailJson.card.imagePrompt).toBe(genPromptJson.prompt);
+
+    dbHandle.close();
+  });
 });

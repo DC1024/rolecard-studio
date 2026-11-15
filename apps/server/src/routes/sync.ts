@@ -7,6 +7,7 @@ import {
   deliverWebhookWithRetry,
   encryptSecret,
   generateRandomToken,
+  isUrlProxiedByFetch,
   maskSecret,
   validateNotificationChannelSettings,
   validatePublicUrl,
@@ -32,6 +33,7 @@ import {
   sendCoreError,
   type AppEnv,
 } from '../middleware/auth.js';
+import { loadScopedFetch } from './config.js';
 
 export const syncRoutes = new Hono<AppEnv>();
 
@@ -211,6 +213,7 @@ export async function dispatchNotificationChannelsForEvent(
   if (matching.length === 0) return;
 
   const message = buildNotificationMessage(event);
+  const webhookFetch = await loadScopedFetch(ctx, 'webhook');
   await Promise.allSettled(
     matching.map(async (row) => {
       const settings = parseChannelSettings(decryptSecret(row.configEncrypted, ctx.masterKey));
@@ -223,7 +226,7 @@ export async function dispatchNotificationChannelsForEvent(
         },
         message,
         {
-          fetchImpl: ctx.fetchImpl,
+          fetchImpl: webhookFetch,
           dnsLookup: ctx.dnsLookup,
           smtpTransport: ctx.smtpTransport,
         },
@@ -251,6 +254,9 @@ export async function dispatchWebhooksForEvent(
     .from(syncSubscriptions)
     .where(eq(syncSubscriptions.isActive, true));
 
+  if (subs.length === 0) return;
+  const webhookFetch = await loadScopedFetch(ctx, 'webhook');
+
   for (const sub of subs) {
     const subscribedEvents = parseEventsJson(sub.eventsJson);
     if (!subscribedEvents.includes(event.eventType)) {
@@ -258,7 +264,7 @@ export async function dispatchWebhooksForEvent(
     }
     const secret = decryptSecret(sub.secretEncrypted, ctx.masterKey);
     const result = await deliverWebhookWithRetry(sub.webhookUrl, secret, event, {
-      fetchImpl: ctx.fetchImpl,
+      fetchImpl: webhookFetch,
       dnsLookup: ctx.dnsLookup,
       maxAttempts: 2,
       baseDelayMs: 50,
@@ -442,7 +448,10 @@ syncRoutes.post(
     const input = c.req.valid('json');
     const ctx = c.get('ctx');
 
-    const urlCheck = await validatePublicUrl(input.webhookUrl, ctx.dnsLookup);
+    const webhookFetch = await loadScopedFetch(ctx, 'webhook');
+    const urlCheck = await validatePublicUrl(input.webhookUrl, ctx.dnsLookup, {
+      viaProxy: isUrlProxiedByFetch(webhookFetch, input.webhookUrl),
+    });
     if (!urlCheck.ok) {
       return sendCoreError(c, urlCheck.error);
     }
@@ -515,10 +524,12 @@ syncRoutes.post(
 
     const input = c.req.valid('json');
     const ctx = c.get('ctx');
+    const webhookFetch = await loadScopedFetch(ctx, 'webhook');
     const check = await validateNotificationChannelSettings(
       input.channelType,
       input.settings,
       ctx.dnsLookup,
+      webhookFetch,
     );
     if (!check.ok) {
       return sendCoreError(c, check.error);
@@ -589,10 +600,12 @@ syncRoutes.put(
         : oldSettings.serverChanSendKey,
     };
 
+    const webhookFetch = await loadScopedFetch(ctx, 'webhook');
     const check = await validateNotificationChannelSettings(
       input.channelType,
       mergedSettings,
       ctx.dnsLookup,
+      webhookFetch,
     );
     if (!check.ok) {
       return sendCoreError(c, check.error);
@@ -653,6 +666,7 @@ syncRoutes.post('/notifications/channels/:id/test', async (c) => {
     createdAt: nowIso,
   };
 
+  const webhookFetch = await loadScopedFetch(ctx, 'webhook');
   const res = await deliverNotificationToChannel(
     {
       id: row.id,
@@ -662,7 +676,7 @@ syncRoutes.post('/notifications/channels/:id/test', async (c) => {
     },
     buildNotificationMessage(sampleEvent),
     {
-      fetchImpl: ctx.fetchImpl,
+      fetchImpl: webhookFetch,
       dnsLookup: ctx.dnsLookup,
       smtpTransport: ctx.smtpTransport,
     },

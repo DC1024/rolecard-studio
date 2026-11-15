@@ -128,6 +128,7 @@ function initializeTables(sqlite: DatabaseSync): void {
       enable_layer1_wiki INTEGER NOT NULL DEFAULT 1,
       daily_auto_refresh_limit INTEGER NOT NULL DEFAULT 20,
       custom_system_prompt TEXT NOT NULL DEFAULT '',
+      proxy_config_encrypted TEXT,
       updated_at TEXT NOT NULL
     );
 
@@ -297,6 +298,7 @@ function initializeTables(sqlite: DatabaseSync): void {
   `);
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');
+  ensureColumnExists(sqlite, 'user_service_configs', 'proxy_config_encrypted', 'TEXT');
 }
 
 function ensureColumnExists(

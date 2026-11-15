@@ -33,7 +33,7 @@ import {
 } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
 import { serializeCardRow } from './cards.js';
-import { loadRuntimeServiceConfig } from './config.js';
+import { loadRuntimeServiceConfig, resolveScopedFetch } from './config.js';
 import { publishSyncEvent } from './sync.js';
 
 export const evolutionRoutes = new Hono<AppEnv>();
@@ -166,7 +166,9 @@ export async function executeEvolutionForCard(
   const lockedFields = parseJsonArray<string>(cardRow.lockedFieldsJson);
   const syncScope = scheduleRow?.syncScope ?? 'canon';
 
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const primaryFetch = resolveScopedFetch(ctx, runtimeCfg.proxyConfig, 'llm_primary');
+  const searchFetch = resolveScopedFetch(ctx, runtimeCfg.proxyConfig, 'search');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
   const baseUrl = resolveProviderBaseUrl(
     runtimeCfg.primaryLlm.provider,
     runtimeCfg.primaryLlm.baseUrl,
@@ -184,7 +186,7 @@ export async function executeEvolutionForCard(
       lastSourceHash: scheduleRow?.lastSourceHash ?? null,
     },
     {
-      fetchImpl: ctx.fetchImpl,
+      fetchImpl: searchFetch,
       dnsLookup: ctx.dnsLookup,
       searchProviderPort: ctx.searchProviderPort,
       enableLayer1Wiki: runtimeCfg.enableLayer1Wiki,

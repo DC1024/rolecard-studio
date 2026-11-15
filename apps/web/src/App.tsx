@@ -441,20 +441,22 @@ function StudioApp() {
       {selectedCard && (
         <PortraitCropModal
           open={portraitOpen}
-          cardName={selectedCard.characterName}
+          card={selectedCard}
           onClose={() => setPortraitOpen(false)}
-          onSaveUpload={async (dataUrl) => {
+          onSaveUpload={async (dataUrl, imagePrompt) => {
             const res = await api.uploadCardImage(selectedCard.id, {
               mode: 'upload',
               dataUrl,
+              ...(imagePrompt ? { imagePrompt } : {}),
             });
             handleCardUpdated(res.card, '立绘已裁剪上传');
             setPortraitOpen(false);
           }}
-          onSaveUrl={async (imageUrl) => {
+          onSaveUrl={async (imageUrl, imagePrompt) => {
             const res = await api.uploadCardImage(selectedCard.id, {
               mode: 'search_url',
               imageUrl,
+              ...(imagePrompt ? { imagePrompt } : {}),
             });
             handleCardUpdated(res.card, '立绘外链已更新');
             setPortraitOpen(false);

@@ -338,15 +338,23 @@ export async function testLlmConnectivity(
     baseUrl?: string;
     model: string;
     slotType?: LlmSlotPurpose;
+    onProgress?: (evt: { step: string; message: string }) => void | Promise<void>;
+    onReasoningDelta?: (delta: string) => void | Promise<void>;
+    onContentDelta?: (delta: string) => void | Promise<void>;
   },
   fetchImpl: HttpFetchPort = fetch,
 ): Promise<{
   ok: boolean;
   latencyMs: number;
   replyPreview?: string;
+  reasoning?: string;
   error?: string;
 }> {
   const slotType: LlmSlotPurpose = params.slotType ?? 'primary';
+  await params.onProgress?.({
+    step: 'validating',
+    message: `正在校验 ${params.model} 的槽位能力与端点配置...`,
+  });
   const capability = validateModelSlotCapability({
     slotType,
     provider: params.provider,
@@ -371,6 +379,10 @@ export async function testLlmConnectivity(
   }
 
   if (slotType === 'image') {
+    await params.onProgress?.({
+      step: 'probing',
+      message: `正在连接文生图端点 ${baseUrl}...`,
+    });
     const endpoint = baseUrl.endsWith('/images/generations')
       ? baseUrl
       : `${baseUrl}/images/generations`;
@@ -436,6 +448,10 @@ export async function testLlmConnectivity(
   }
 
   if (slotType === 'vision') {
+    await params.onProgress?.({
+      step: 'probing',
+      message: `正在向视觉模型 ${params.model} 发送多模态探测请求...`,
+    });
     const endpoint = baseUrl.endsWith('/chat/completions')
       ? baseUrl
       : `${baseUrl}/chat/completions`;
@@ -446,7 +462,7 @@ export async function testLlmConnectivity(
       headers.Authorization = `Bearer ${params.apiKey.trim()}`;
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    const timer = setTimeout(() => controller.abort(), 30_000);
     try {
       const response = await fetchImpl(endpoint, {
         method: 'POST',
@@ -454,7 +470,7 @@ export async function testLlmConnectivity(
         body: JSON.stringify({
           model: params.model,
           temperature: 0,
-          max_tokens: 16,
+          max_tokens: 256,
           messages: [
             {
               role: 'user',
@@ -481,10 +497,27 @@ export async function testLlmConnectivity(
         };
       }
       const parsed = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{
+          message?: {
+            content?: string;
+            reasoning_content?: string;
+            reasoning?: string;
+          };
+        }>;
       };
-      const reply = parsed.choices?.[0]?.message?.content?.trim() ?? '';
-      if (!reply) {
+      const message = parsed.choices?.[0]?.message;
+      const rawContent = message?.content ?? '';
+      const rawReasoning = message?.reasoning_content ?? message?.reasoning ?? '';
+      const split = splitThinkTags(rawContent);
+      const combinedReasoning = [rawReasoning.trim(), split.reasoning].filter(Boolean).join('\n');
+      if (combinedReasoning && params.onReasoningDelta) {
+        await params.onReasoningDelta(combinedReasoning);
+      }
+      if (split.content && params.onContentDelta) {
+        await params.onContentDelta(split.content);
+      }
+      const reply = split.content.trim();
+      if (!reply && !combinedReasoning) {
         return {
           ok: false,
           latencyMs,
@@ -494,7 +527,10 @@ export async function testLlmConnectivity(
       return {
         ok: true,
         latencyMs,
-        replyPreview: `视觉识别探测通过: ${reply.slice(0, 40)}`,
+        reasoning: combinedReasoning || undefined,
+        replyPreview: reply
+          ? `视觉识别探测通过: ${reply.slice(0, 40)}`
+          : '视觉识别探测通过（已收到模型思考流）',
       };
     } catch (error) {
       return {
@@ -507,7 +543,11 @@ export async function testLlmConnectivity(
     }
   }
 
-  const port = createOpenAiCompatibleLlmPort(fetchImpl, 15_000);
+  await params.onProgress?.({
+    step: 'probing',
+    message: `正在流式连接 ${params.model} 并接收思考与响应...`,
+  });
+  const port = createOpenAiCompatibleLlmPort(fetchImpl, 30_000);
   const res = await port({
     provider: params.provider,
     apiKey: params.apiKey,
@@ -515,15 +555,18 @@ export async function testLlmConnectivity(
     model: params.model,
     messages: [{ role: 'user', content: 'Reply with OK only.' }],
     temperature: 0,
-    maxTokens: 16,
+    maxTokens: 512,
     jsonMode: false,
+    onReasoningDelta: params.onReasoningDelta,
+    onContentDelta: params.onContentDelta,
   });
   const latencyMs = Date.now() - startedAt;
 
-  if (res.status >= 400 || !res.content.trim()) {
+  if (res.status >= 400) {
     return {
       ok: false,
       latencyMs,
+      reasoning: res.reasoning,
       error: enrichEndpointError(
         res.rawError || `HTTP ${res.status}`,
         slotType,
@@ -532,9 +575,22 @@ export async function testLlmConnectivity(
     };
   }
 
+  const trimmedContent = res.content.trim();
+  const trimmedReasoning = res.reasoning?.trim() ?? '';
+  if (!trimmedContent && !trimmedReasoning) {
+    return {
+      ok: false,
+      latencyMs,
+      error: enrichEndpointError('模型返回空响应', slotType, params.model),
+    };
+  }
+
   return {
     ok: true,
     latencyMs,
-    replyPreview: res.content.trim().slice(0, 60),
+    reasoning: trimmedReasoning || undefined,
+    replyPreview: trimmedContent
+      ? trimmedContent.slice(0, 60)
+      : '连通正常（已收到模型思考流）',
   };
 }

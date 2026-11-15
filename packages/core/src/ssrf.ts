@@ -16,6 +16,31 @@ export const defaultDnsLookup: DnsLookupPort = async (hostname: string) => {
 
 export const defaultHttpFetch: HttpFetchPort = (url, init) => fetch(url, init);
 
+const proxiedFetchUrlCheckers = new WeakMap<HttpFetchPort, (targetUrl: string) => boolean>();
+
+export function registerProxiedFetchChecker(
+  fetchImpl: HttpFetchPort,
+  checker: (targetUrl: string) => boolean,
+): HttpFetchPort {
+  proxiedFetchUrlCheckers.set(fetchImpl, checker);
+  return fetchImpl;
+}
+
+export function isUrlProxiedByFetch(
+  fetchImpl: HttpFetchPort | undefined,
+  targetUrl: string,
+): boolean {
+  if (!fetchImpl) return false;
+  const checker = proxiedFetchUrlCheckers.get(fetchImpl);
+  return checker ? checker(targetUrl) : false;
+}
+
+function isFakeIpRange(ip: string): boolean {
+  const octets = ip.trim().split('.').map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4) return false;
+  return octets[0] === 198 && (octets[1] === 18 || octets[1] === 19);
+}
+
 /**
  * Checks whether an IPv4 or IPv6 literal falls into loopback, private,
  * link-local, CGNAT, multicast, or cloud metadata ranges.
@@ -95,6 +120,7 @@ function isDisallowedIpv4(ip: string): boolean {
 export async function validatePublicUrl(
   rawUrl: string,
   dnsLookup: DnsLookupPort = defaultDnsLookup,
+  options: { viaProxy?: boolean } = {},
 ): Promise<Result<URL, CoreError>> {
   let parsed: URL;
   try {
@@ -139,6 +165,9 @@ export async function validatePublicUrl(
   try {
     addresses = await dnsLookup(hostname);
   } catch {
+    if (options.viaProxy) {
+      return ok(parsed);
+    }
     return err({
       code: 'DNS_RESOLUTION_FAILED',
       message: `无法解析目标域名: ${hostname}`,
@@ -147,6 +176,9 @@ export async function validatePublicUrl(
   }
 
   if (addresses.length === 0) {
+    if (options.viaProxy) {
+      return ok(parsed);
+    }
     return err({
       code: 'DNS_RESOLUTION_FAILED',
       message: `域名未返回有效 IP 记录: ${hostname}`,
@@ -155,6 +187,9 @@ export async function validatePublicUrl(
   }
 
   for (const record of addresses) {
+    if (options.viaProxy && isFakeIpRange(record.address)) {
+      continue;
+    }
     if (isDisallowedIp(record.address)) {
       return err({
         code: 'SSRF_IP_BLOCKED',
@@ -197,7 +232,9 @@ export async function safeFetchText(
   let currentUrl = rawUrl;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
-    const validated = await validatePublicUrl(currentUrl, dnsLookup);
+    const validated = await validatePublicUrl(currentUrl, dnsLookup, {
+      viaProxy: isUrlProxiedByFetch(fetchImpl, currentUrl),
+    });
     if (!validated.ok) {
       return validated;
     }

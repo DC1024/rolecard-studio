@@ -1,18 +1,31 @@
 import type {
   ImageGenerateRequest,
   ImageSearchItem,
+  PortraitPromptMode,
+  PortraitPromptResponse,
+  PortraitPromptStyle,
   VisionAnalyzeRequest,
   VisionAnalyzeResponse,
 } from '@rolecard/shared';
 import { z } from 'zod';
 import { detectImageMagicBytes } from './ccv3.js';
 import { resolveProviderBaseUrl } from './llm/client.js';
-import { extractJsonCandidate, repairCommonJsonFlaws } from './llm/json-repair.js';
-import { defaultDnsLookup, defaultHttpFetch, validatePublicUrl } from './ssrf.js';
+import {
+  completeStructuredJson,
+  extractJsonCandidate,
+  repairCommonJsonFlaws,
+} from './llm/json-repair.js';
+import {
+  defaultDnsLookup,
+  defaultHttpFetch,
+  isUrlProxiedByFetch,
+  validatePublicUrl,
+} from './ssrf.js';
 import {
   type CoreError,
   type DnsLookupPort,
   type HttpFetchPort,
+  type LlmCompletionPort,
   type LlmSlotRuntimeConfig,
   type Result,
   err,
@@ -60,7 +73,9 @@ export async function analyzePortraitWithVision(
     }
     imagePayloadUrl = input.imageDataUrl.trim();
   } else if (input.imageUrl) {
-    const ssrf = await validatePublicUrl(input.imageUrl, dnsLookup);
+    const ssrf = await validatePublicUrl(input.imageUrl, dnsLookup, {
+      viaProxy: isUrlProxiedByFetch(fetchImpl, input.imageUrl),
+    });
     if (!ssrf.ok) {
       return ssrf;
     }
@@ -182,7 +197,9 @@ export async function searchWikimediaCommonsImages(
   targetUrl.searchParams.set('iiprop', 'url|mime');
   targetUrl.searchParams.set('iiurlwidth', '480');
 
-  const urlCheck = await validatePublicUrl(targetUrl.toString(), dnsLookup);
+  const urlCheck = await validatePublicUrl(targetUrl.toString(), dnsLookup, {
+    viaProxy: isUrlProxiedByFetch(fetchImpl, targetUrl.toString()),
+  });
   if (!urlCheck.ok) {
     return urlCheck;
   }
@@ -316,5 +333,109 @@ export async function generatePortraitImage(
     code: 'IMAGE_GEN_EMPTY',
     message: 'AI 生图接口未返回有效图像数据',
     status: 502,
+  });
+}
+
+const PortraitPromptOutputSchema = z.object({
+  prompt: z.string().trim().min(3).max(2000),
+  negativePrompt: z.string().max(800).optional().default(''),
+  notes: z.string().max(400).optional().default(''),
+});
+
+const PORTRAIT_STYLE_DESCRIPTORS: Record<PortraitPromptStyle, string> = {
+  anime: 'clean anime character portrait illustration, crisp lineart, cel-shaded with soft ambient lighting',
+  semi_realistic: 'semi-realistic digital character concept art, painterly brushwork, refined facial lighting',
+  oil_painting: 'classical oil painting portrait, rich impasto texture, dramatic studio chiaroscuro lighting',
+  watercolor: 'delicate watercolor character illustration, soft pigment washes, luminous paper texture',
+  pixel_retro: 'retro 90s anime cel illustration, nostalgic film grain, expressive silhouette',
+  dark_gothic: 'dark gothic fantasy character portrait, moody atmospheric shadows, high-contrast rim lighting',
+};
+
+export interface PortraitPromptCardContext {
+  characterName: string;
+  workName?: string;
+  appearance?: string;
+  personality?: string;
+  background?: string;
+  scenario?: string;
+  tags?: string[];
+}
+
+export interface PortraitPromptDeps {
+  llmPort: LlmCompletionPort;
+  llmSlot: LlmSlotRuntimeConfig;
+}
+
+export async function generateOrOptimizePortraitPrompt(
+  params: {
+    card: PortraitPromptCardContext;
+    mode: PortraitPromptMode;
+    style: PortraitPromptStyle;
+    draftPrompt?: string;
+    instruction?: string;
+  },
+  deps: PortraitPromptDeps,
+): Promise<Result<PortraitPromptResponse, CoreError>> {
+  const styleDesc = PORTRAIT_STYLE_DESCRIPTORS[params.style];
+  const cardLines = [
+    `角色名：${params.card.characterName}`,
+    params.card.workName ? `所属作品/世界观：${params.card.workName}` : '',
+    params.card.appearance ? `外貌与服饰设定：${params.card.appearance}` : '',
+    params.card.personality ? `性格与神态气质：${params.card.personality}` : '',
+    params.card.background ? `背景摘要：${params.card.background.slice(0, 450)}` : '',
+    params.card.scenario ? `当前场景氛围：${params.card.scenario.slice(0, 300)}` : '',
+    params.card.tags && params.card.tags.length > 0
+      ? `角色标签：${params.card.tags.slice(0, 12).join(', ')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const modeTask =
+    params.mode === 'optimize'
+      ? [
+          '任务类型：结合上述角色卡设定，优化并润色用户当前的生图提示词草稿。',
+          `当前草稿：${params.draftPrompt?.trim() || '（空）'}`,
+          '要求：保留草稿中的合理构图意图，补充或修正与角色外貌、服饰、神态、氛围冲突之处，使其更具体、更有画面感。',
+        ].join('\n')
+      : [
+          '任务类型：完全结合上述角色卡设定，提炼生成一份高质量英文角色立绘文生图提示词。',
+          '要求：从角色外貌、发色瞳色、服饰细节、标志性道具、眼神表情、姿势构图、光影背景中提取可视元素，避免抽象剧透或无法绘制的心理活动。',
+        ].join('\n');
+
+  const instructionLine = params.instruction?.trim()
+    ? `用户额外微调要求：${params.instruction.trim()}`
+    : '';
+
+  const result = await completeStructuredJson(deps.llmPort, {
+    slot: deps.llmSlot,
+    schema: PortraitPromptOutputSchema,
+    schemaHint: '{ "prompt": "English image generation prompt", "negativePrompt": "English negative prompt", "notes": "中文简述提炼/优化思路" }',
+    temperature: 0.4,
+    messages: [
+      {
+        role: 'system',
+        content: [
+          '你是资深角色视觉美术总监与 AI 生图提示词工程师。',
+          '你需要把角色卡设定转化为可直接用于文生图模型（gpt-image-1 / FLUX / Kolors / SDXL）的高质量英文提示词。',
+          `必须严格遵循用户指定的画风基底：${styleDesc}。`,
+          'prompt 字段必须使用清晰具体的英文描述（单人立绘/半身或全身肖像视角，避免多人混入），禁止包含任何中文字符或多余解释；negativePrompt 也用英文；notes 用简体中文（40-120字）概括提取了哪些特征或优化了哪些细节。',
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: [cardLines, modeTask, instructionLine].filter(Boolean).join('\n\n'),
+      },
+    ],
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  return ok({
+    prompt: result.value.data.prompt.trim(),
+    negativePrompt: result.value.data.negativePrompt.trim(),
+    notes: result.value.data.notes.trim(),
   });
 }

@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './crypto.js';
 export * from './rbac.js';
 export * from './ssrf.js';
+export * from './proxy.js';
 export * from './retrieval.js';
 export * from './llm/json-repair.js';
 export * from './llm/capabilities.js';

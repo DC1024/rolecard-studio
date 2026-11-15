@@ -1,23 +1,48 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
-import type { ImageSearchItem } from '@rolecard/shared';
-import { Crop, Link as LinkIcon, Loader2, Search, Sparkles, Upload, X } from 'lucide-react';
-import { api } from '../api/client';
+import {
+  PORTRAIT_STYLE_LABELS,
+  type ImageSearchItem,
+  type PortraitPromptStyle,
+} from '@rolecard/shared';
+import {
+  Copy,
+  Crop,
+  Link as LinkIcon,
+  Loader2,
+  Search,
+  Sparkles,
+  Upload,
+  Wand2,
+  X,
+} from 'lucide-react';
+import { api, type RoleCardDto } from '../api/client';
+import { useToast } from '../hooks/useToast';
 
 interface PortraitCropModalProps {
   open: boolean;
-  cardName: string;
+  card: RoleCardDto;
   onClose: () => void;
-  onSaveUpload: (dataUrl: string) => Promise<void>;
-  onSaveUrl: (imageUrl: string) => Promise<void>;
+  onSaveUpload: (dataUrl: string, imagePrompt?: string) => Promise<void>;
+  onSaveUrl: (imageUrl: string, imagePrompt?: string) => Promise<void>;
+}
+
+function buildInitialPrompt(card: RoleCardDto): string {
+  if (card.imagePrompt?.trim()) {
+    return card.imagePrompt.trim();
+  }
+  const workHint = card.workName ? ` from ${card.workName}` : '';
+  return `anime character portrait of ${card.characterName}${workHint}, detailed lighting, clean background`;
 }
 
 export function PortraitCropModal({
   open,
-  cardName,
+  card,
   onClose,
   onSaveUpload,
   onSaveUrl,
 }: PortraitCropModalProps) {
+  const cardName = card.characterName;
+  const { copyWithToast, notifySuccess } = useToast();
   const [tab, setTab] = useState<'upload' | 'url' | 'search' | 'ai'>('upload');
   const [aspect, setAspect] = useState<'2:3' | '1:1'>('2:3');
   const [zoom, setZoom] = useState(1);
@@ -28,13 +53,26 @@ export function PortraitCropModal({
   const [searchQuery, setSearchQuery] = useState(cardName);
   const [searchResults, setSearchResults] = useState<ImageSearchItem[]>([]);
   const [searching, setSearching] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState(
-    `anime character portrait of ${cardName}, detailed lighting, clean background`,
-  );
+  const [aiPrompt, setAiPrompt] = useState(() => buildInitialPrompt(card));
+  const [aiStyle, setAiStyle] = useState<PortraitPromptStyle>('anime');
+  const [aiInstruction, setAiInstruction] = useState('');
+  const [aiNegativePrompt, setAiNegativePrompt] = useState('');
+  const [aiPromptNotes, setAiPromptNotes] = useState('');
+  const [promptLoadingMode, setPromptLoadingMode] = useState<'generate' | 'optimize' | null>(null);
   const [aiSize, setAiSize] = useState<'1024x1536' | '1024x1024'>('1024x1536');
   const [aiGenerating, setAiGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSearchQuery(card.characterName);
+    setAiPrompt(buildInitialPrompt(card));
+    setAiNegativePrompt('');
+    setAiPromptNotes('');
+    setAiInstruction('');
+    setError(null);
+  }, [open, card.id, card.characterName, card.imagePrompt, card.workName]);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<{ active: boolean; startX: number; startY: number; baseX: number; baseY: number }>({
@@ -366,15 +404,177 @@ export function PortraitCropModal({
 
         {tab === 'ai' && (
           <div className="space-y-3 py-1 text-xs">
-            <label className="block font-medium text-content-secondary">
-              立绘生成提示词（调用已配置的生图兼容端点）
-            </label>
+            <div className="rounded-sm border border-line bg-canvas p-2.5 text-[11px] space-y-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-content-primary">
+                  关联角色卡设定：{card.characterName}
+                  {card.workName ? ` · ${card.workName}` : ''}
+                </span>
+                {card.imagePrompt && (
+                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
+                    已载入上次生图提示词
+                  </span>
+                )}
+              </div>
+              <p className="line-clamp-2 text-content-muted">
+                外貌参考：{card.content.appearance || '（当前角色卡暂无外貌描述，将结合性格与背景推导）'}
+              </p>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-content-secondary">
+                  目标画风预设
+                </label>
+                <select
+                  value={aiStyle}
+                  onChange={(e) => setAiStyle(e.target.value as PortraitPromptStyle)}
+                  className="h-8 w-full rounded-sm border border-line bg-surface px-2 text-xs text-content-primary"
+                >
+                  {(Object.keys(PORTRAIT_STYLE_LABELS) as PortraitPromptStyle[]).map((key) => (
+                    <option key={key} value={key}>
+                      {PORTRAIT_STYLE_LABELS[key]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-content-secondary">
+                  补充画面要求（可选）
+                </label>
+                <input
+                  type="text"
+                  value={aiInstruction}
+                  onChange={(e) => setAiInstruction(e.target.value)}
+                  placeholder="如：夜雨霓虹、仰视构图、战损披风..."
+                  className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium text-content-secondary">
+                立绘英文生图提示词
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={promptLoadingMode !== null || aiGenerating}
+                  onClick={async () => {
+                    setPromptLoadingMode('generate');
+                    setError(null);
+                    try {
+                      const res = await api.generatePortraitPrompt({
+                        cardId: card.id,
+                        mode: 'generate',
+                        style: aiStyle,
+                        draftPrompt: '',
+                        instruction: aiInstruction.trim(),
+                        characterName: card.characterName,
+                        workName: card.workName,
+                        appearance: card.content.appearance,
+                        personality: card.content.personality,
+                        background: card.content.background,
+                        scenario: card.content.scenario,
+                        tags: card.tags,
+                      });
+                      setAiPrompt(res.prompt);
+                      setAiNegativePrompt(res.negativePrompt);
+                      setAiPromptNotes(res.notes);
+                      notifySuccess('已结合角色设定生成生图提示词');
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : '生成生图提示词失败');
+                    } finally {
+                      setPromptLoadingMode(null);
+                    }
+                  }}
+                  className="inline-flex h-7 items-center gap-1 rounded-sm border border-accent/40 bg-accent/10 px-2 text-[11px] font-medium text-accent hover:bg-accent/15 disabled:opacity-50"
+                >
+                  {promptLoadingMode === 'generate' ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3 w-3" />
+                  )}
+                  结合角色卡生成
+                </button>
+                <button
+                  type="button"
+                  disabled={promptLoadingMode !== null || aiGenerating || !aiPrompt.trim()}
+                  onClick={async () => {
+                    setPromptLoadingMode('optimize');
+                    setError(null);
+                    try {
+                      const res = await api.generatePortraitPrompt({
+                        cardId: card.id,
+                        mode: 'optimize',
+                        style: aiStyle,
+                        draftPrompt: aiPrompt.trim(),
+                        instruction: aiInstruction.trim(),
+                        characterName: card.characterName,
+                        workName: card.workName,
+                        appearance: card.content.appearance,
+                        personality: card.content.personality,
+                        background: card.content.background,
+                        scenario: card.content.scenario,
+                        tags: card.tags,
+                      });
+                      setAiPrompt(res.prompt);
+                      setAiNegativePrompt(res.negativePrompt);
+                      setAiPromptNotes(res.notes);
+                      notifySuccess('已结合角色设定优化提示词');
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : '优化生图提示词失败');
+                    } finally {
+                      setPromptLoadingMode(null);
+                    }
+                  }}
+                  className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                >
+                  {promptLoadingMode === 'optimize' ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Wand2 className="h-3 w-3" />
+                  )}
+                  AI 优化当前提示词
+                </button>
+              </div>
+            </div>
+
             <textarea
-              rows={3}
+              rows={4}
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
+              placeholder="点击上方「结合角色卡生成」，或输入草稿后点「AI 优化当前提示词」..."
               className="w-full rounded-sm border border-line bg-surface p-2 font-mono text-xs text-content-primary outline-none focus:border-accent"
             />
+
+            {(aiPromptNotes || aiNegativePrompt) && (
+              <div className="space-y-1.5 rounded-sm border border-status-info/35 bg-status-info/5 p-2.5 text-[11px]">
+                {aiPromptNotes && (
+                  <p className="text-content-primary">
+                    <span className="font-semibold text-status-info">提炼/优化说明：</span>
+                    {aiPromptNotes}
+                  </p>
+                )}
+                {aiNegativePrompt && (
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="flex-1 font-mono text-[10px] text-content-muted">
+                      <span className="font-sans font-semibold text-content-secondary">参考反向词：</span>
+                      {aiNegativePrompt}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void copyWithToast(aiNegativePrompt, '反向提示词')}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-line bg-surface px-1.5 py-0.5 text-[10px] text-content-secondary hover:text-content-primary"
+                    >
+                      <Copy className="h-2.5 w-2.5" />
+                      复制
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex items-center justify-between gap-2">
               <select
                 value={aiSize}
@@ -386,17 +586,18 @@ export function PortraitCropModal({
               </select>
               <button
                 type="button"
-                disabled={aiGenerating || !aiPrompt.trim()}
+                disabled={aiGenerating || promptLoadingMode !== null || !aiPrompt.trim()}
                 onClick={async () => {
+                  const usedPrompt = aiPrompt.trim();
                   setAiGenerating(true);
                   setError(null);
                   try {
-                    const res = await api.generateImage({ prompt: aiPrompt.trim(), size: aiSize });
+                    const res = await api.generateImage({ prompt: usedPrompt, size: aiSize });
                     if (res.dataUrl) {
-                      await onSaveUpload(res.dataUrl);
+                      await onSaveUpload(res.dataUrl, usedPrompt);
                       onClose();
                     } else if (res.imageUrl) {
-                      await onSaveUrl(res.imageUrl);
+                      await onSaveUrl(res.imageUrl, usedPrompt);
                       onClose();
                     }
                   } catch (err) {

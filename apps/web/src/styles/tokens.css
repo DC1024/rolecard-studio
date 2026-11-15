@@ -1,5 +1,7 @@
 :root {
-  font-size: var(--app-font-size, 16px);
+  font-size: 16px;
+  --app-font-size: 16px;
+  --app-font-scale: 1;
 }
 
 :root,

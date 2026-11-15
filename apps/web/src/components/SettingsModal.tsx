@@ -1,23 +1,33 @@
 import { useEffect, useState } from 'react';
 import {
   ALL_PERMISSIONS,
+  ALL_PROXY_SCOPES,
   LLM_PROVIDER_DEFAULTS,
   PERMISSION_LABELS,
+  PROXY_SCOPE_META,
   type AccessPolicy,
   type AuthContextResponse,
   type JsonModeStrategy,
   type LlmProvider,
   type LlmSlotInput,
   type LlmSlotPurpose,
+  type MaskedProxyConfig,
   type MaskedServiceConfig,
   type Permission,
+  type ProxyConfigInput,
+  type ProxyOverrideMode,
+  type ProxyScope,
   type SearchProvider,
   type UserSummary,
 } from '@rolecard/shared';
 import {
+  Brain,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Edit3,
+  Globe,
   Key,
   Loader2,
   Lock,
@@ -40,7 +50,64 @@ interface SettingsModalProps {
   onPolicyUpdated: () => void;
 }
 
-type SettingsTab = 'models' | 'search' | 'account' | 'access' | 'users' | 'apikeys';
+type SettingsTab = 'models' | 'search' | 'proxy' | 'account' | 'access' | 'users' | 'apikeys';
+
+interface ProxyOverrideFormState {
+  mode: ProxyOverrideMode;
+  url: string;
+  maskedHint: string | null;
+  hasStoredUrl: boolean;
+  clearStored: boolean;
+}
+
+interface ProxyFormState {
+  globalEnabled: boolean;
+  globalUrl: string;
+  globalMaskedHint: string | null;
+  hasGlobalStored: boolean;
+  clearGlobalStored: boolean;
+  bypassLocal: boolean;
+  overrides: Record<ProxyScope, ProxyOverrideFormState>;
+}
+
+interface ProxyTestDisplayState {
+  running: boolean;
+  ok?: boolean;
+  message?: string;
+}
+
+function makeProxyForm(masked?: MaskedProxyConfig | null): ProxyFormState {
+  const overrides = {} as Record<ProxyScope, ProxyOverrideFormState>;
+  for (const scope of ALL_PROXY_SCOPES) {
+    const ov = masked?.overrides?.[scope];
+    overrides[scope] = {
+      mode: ov?.mode ?? 'inherit',
+      url: '',
+      maskedHint: ov?.urlMasked ?? null,
+      hasStoredUrl: Boolean(ov?.hasUrl),
+      clearStored: false,
+    };
+  }
+  return {
+    globalEnabled: Boolean(masked?.globalEnabled),
+    globalUrl: '',
+    globalMaskedHint: masked?.globalUrlMasked ?? null,
+    hasGlobalStored: Boolean(masked?.hasGlobalUrl),
+    clearGlobalStored: false,
+    bypassLocal: masked ? masked.bypassLocal : true,
+    overrides,
+  };
+}
+
+interface SlotTestDisplayState {
+  running: boolean;
+  ok?: boolean;
+  message?: string;
+  progressText?: string;
+  thinkingText: string;
+  contentText: string;
+  thinkingExpanded: boolean;
+}
 
 interface SlotFormState {
   enabled: boolean;
@@ -96,6 +163,8 @@ export function SettingsModal({
   const [enableLayer1Wiki, setEnableLayer1Wiki] = useState(true);
   const [dailyAutoRefreshLimit, setDailyAutoRefreshLimit] = useState(20);
   const [customSystemPrompt, setCustomSystemPrompt] = useState('');
+  const [proxyForm, setProxyForm] = useState<ProxyFormState>(() => makeProxyForm(null));
+  const [proxyTestStatus, setProxyTestStatus] = useState<Record<string, ProxyTestDisplayState>>({});
 
   // Account self-service state
   const [accountUsername, setAccountUsername] = useState('');
@@ -125,7 +194,7 @@ export function SettingsModal({
   const [busy, setBusy] = useState(false);
   const [testingSlot, setTestingSlot] = useState<LlmSlotPurpose | null>(null);
   const [slotTestStatus, setSlotTestStatus] = useState<
-    Partial<Record<LlmSlotPurpose, { ok: boolean; message: string }>>
+    Partial<Record<LlmSlotPurpose, SlotTestDisplayState>>
   >({});
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +204,7 @@ export function SettingsModal({
     setBanner(null);
     setError(null);
     setSlotTestStatus({});
+    setProxyTestStatus({});
     setCreatedPlainKey(null);
     setAccountUsername(auth?.user?.username ?? '');
     setCurrentPassword('');
@@ -163,6 +233,7 @@ export function SettingsModal({
       setEnableLayer1Wiki(config.enableLayer1Wiki);
       setDailyAutoRefreshLimit(config.dailyAutoRefreshLimit);
       setCustomSystemPrompt(config.customSystemPrompt);
+      setProxyForm(makeProxyForm(config.proxyConfig));
     }
 
     if (isAdmin) {
@@ -193,6 +264,69 @@ export function SettingsModal({
     jsonModeStrategy: s.jsonModeStrategy,
   });
 
+  const buildProxyConfigPayload = (): ProxyConfigInput => {
+    const overrides: ProxyConfigInput['overrides'] = {};
+    for (const scope of ALL_PROXY_SCOPES) {
+      const ov = proxyForm.overrides[scope];
+      const typedUrl = ov.url.trim();
+      overrides[scope] = {
+        mode: ov.mode,
+        url: typedUrl,
+        preserveStoredUrl: !typedUrl && !ov.clearStored && ov.hasStoredUrl,
+      };
+    }
+    const typedGlobal = proxyForm.globalUrl.trim();
+    return {
+      globalEnabled: proxyForm.globalEnabled,
+      globalUrl: typedGlobal,
+      preserveStoredGlobalUrl: !typedGlobal && !proxyForm.clearGlobalStored && proxyForm.hasGlobalStored,
+      bypassLocal: proxyForm.bypassLocal,
+      overrides,
+    };
+  };
+
+  const handleTestProxy = async (key: 'global' | ProxyScope) => {
+    const isGlobal = key === 'global';
+    const rawUrl = isGlobal ? proxyForm.globalUrl.trim() : proxyForm.overrides[key].url.trim();
+    const hasStored = isGlobal
+      ? proxyForm.hasGlobalStored && !proxyForm.clearGlobalStored
+      : proxyForm.overrides[key].hasStoredUrl && !proxyForm.overrides[key].clearStored;
+
+    if (!rawUrl && !hasStored) {
+      const msg = '请先填写代理地址后再测试';
+      setProxyTestStatus((prev) => ({ ...prev, [key]: { running: false, ok: false, message: msg } }));
+      notifyError(msg);
+      return;
+    }
+
+    setProxyTestStatus((prev) => ({
+      ...prev,
+      [key]: { running: true, message: '正在经代理探测外部网络连通性...' },
+    }));
+    try {
+      const res = await api.testProxyConfig({
+        proxyUrl: rawUrl || undefined,
+        useSavedScope: rawUrl ? undefined : key,
+      });
+      setProxyTestStatus((prev) => ({
+        ...prev,
+        [key]: { running: false, ok: res.ok, message: res.message },
+      }));
+      if (res.ok) {
+        notifySuccess(res.message);
+      } else {
+        notifyError(res.message);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '代理测试失败';
+      setProxyTestStatus((prev) => ({
+        ...prev,
+        [key]: { running: false, ok: false, message: msg },
+      }));
+      notifyError(msg);
+    }
+  };
+
   const handleSaveConfig = async () => {
     setBusy(true);
     setError(null);
@@ -208,10 +342,12 @@ export function SettingsModal({
         enableLayer1Wiki,
         dailyAutoRefreshLimit,
         customSystemPrompt,
+        proxyConfig: buildProxyConfigPayload(),
       });
       onSavedConfig(saved);
-      setBanner('大模型与检索配置已加密保存');
-      notifySuccess('模型与检索配置已保存');
+      setProxyForm(makeProxyForm(saved.proxyConfig));
+      setBanner('模型、检索与网络代理配置已加密保存');
+      notifySuccess('模型、检索与网络代理配置已保存');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存配置失败';
       setError(msg);
@@ -223,23 +359,100 @@ export function SettingsModal({
 
   const handleTestSlot = async (slotType: LlmSlotPurpose, slot: SlotFormState) => {
     setTestingSlot(slotType);
-    setSlotTestStatus((prev) => ({ ...prev, [slotType]: undefined }));
+    setSlotTestStatus((prev) => ({
+      ...prev,
+      [slotType]: {
+        running: true,
+        progressText: '正在建立校验连接...',
+        thinkingText: '',
+        contentText: '',
+        thinkingExpanded: true,
+      },
+    }));
     try {
-      const res = await api.testLlmConfig({
-        provider: slot.provider,
-        apiKey: slot.apiKey.trim() || undefined,
-        baseUrl: slot.baseUrl.trim() || undefined,
-        model: slot.model.trim(),
-        slotType,
-        useSavedKeySlot: slot.apiKey.trim() ? undefined : slotType,
-      });
-      setSlotTestStatus((prev) => ({
-        ...prev,
-        [slotType]: {
-          ok: res.ok,
-          message: `${res.message} (${res.latencyMs}ms)`,
+      const res = await api.testLlmConfigSse(
+        {
+          provider: slot.provider,
+          apiKey: slot.apiKey.trim() || undefined,
+          baseUrl: slot.baseUrl.trim() || undefined,
+          model: slot.model.trim(),
+          slotType,
+          useSavedKeySlot: slot.apiKey.trim() ? undefined : slotType,
+          proxyConfig: buildProxyConfigPayload(),
         },
-      }));
+        {
+          onProgress: (message) => {
+            setSlotTestStatus((prev) => {
+              const cur = prev[slotType] ?? {
+                running: true,
+                thinkingText: '',
+                contentText: '',
+                thinkingExpanded: true,
+              };
+              return {
+                ...prev,
+                [slotType]: {
+                  ...cur,
+                  progressText: message,
+                },
+              };
+            });
+          },
+          onThinking: (delta) => {
+            setSlotTestStatus((prev) => {
+              const cur = prev[slotType] ?? {
+                running: true,
+                thinkingText: '',
+                contentText: '',
+                thinkingExpanded: true,
+              };
+              return {
+                ...prev,
+                [slotType]: {
+                  ...cur,
+                  thinkingText: cur.thinkingText + delta,
+                },
+              };
+            });
+          },
+          onContent: (delta) => {
+            setSlotTestStatus((prev) => {
+              const cur = prev[slotType] ?? {
+                running: true,
+                thinkingText: '',
+                contentText: '',
+                thinkingExpanded: true,
+              };
+              return {
+                ...prev,
+                [slotType]: {
+                  ...cur,
+                  contentText: cur.contentText + delta,
+                },
+              };
+            });
+          },
+        },
+      );
+      setSlotTestStatus((prev) => {
+        const cur = prev[slotType] ?? {
+          running: false,
+          thinkingText: '',
+          contentText: '',
+          thinkingExpanded: true,
+        };
+        return {
+          ...prev,
+          [slotType]: {
+            ...cur,
+            running: false,
+            ok: res.ok,
+            progressText: undefined,
+            thinkingText: cur.thinkingText || res.reasoning || '',
+            message: `${res.message} (${res.latencyMs}ms)`,
+          },
+        };
+      });
       if (res.ok) {
         notifySuccess(`${slot.model} 能力与连通性校验通过`);
       } else {
@@ -247,13 +460,24 @@ export function SettingsModal({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '连通性测试失败';
-      setSlotTestStatus((prev) => ({
-        ...prev,
-        [slotType]: {
-          ok: false,
-          message: msg,
-        },
-      }));
+      setSlotTestStatus((prev) => {
+        const cur = prev[slotType] ?? {
+          running: false,
+          thinkingText: '',
+          contentText: '',
+          thinkingExpanded: true,
+        };
+        return {
+          ...prev,
+          [slotType]: {
+            ...cur,
+            running: false,
+            ok: false,
+            progressText: undefined,
+            message: msg,
+          },
+        };
+      });
       notifyError(msg);
     } finally {
       setTestingSlot(null);
@@ -546,7 +770,7 @@ export function SettingsModal({
                     ? '校验并探测视觉识图能力'
                     : '校验并测试连通性'}
               </button>
-              {testResult && (
+              {testResult?.message && (
                 <span
                   className={`text-[11px] ${
                     testResult.ok ? 'text-status-success' : 'text-status-danger'
@@ -556,6 +780,60 @@ export function SettingsModal({
                 </span>
               )}
             </div>
+
+            {testResult && (testResult.running || testResult.thinkingText || testResult.contentText) && (
+              <div className="space-y-2 rounded-sm border border-status-info/35 bg-status-info/5 p-2.5 text-[11px]">
+                {testResult.running && testResult.progressText && (
+                  <div className="flex items-center gap-1.5 font-medium text-status-info">
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                    <span>{testResult.progressText}</span>
+                  </div>
+                )}
+
+                {testResult.thinkingText && (
+                  <div className="rounded-sm border border-line bg-surface">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSlotTestStatus((prev) => {
+                          const cur = prev[slotType];
+                          if (!cur) return prev;
+                          return {
+                            ...prev,
+                            [slotType]: {
+                              ...cur,
+                              thinkingExpanded: !cur.thinkingExpanded,
+                            },
+                          };
+                        })
+                      }
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] font-semibold text-content-secondary hover:text-content-primary"
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <Brain className="h-3.5 w-3.5 text-accent" />
+                        模型思考过程（{testResult.thinkingText.length} 字）
+                      </span>
+                      {testResult.thinkingExpanded ? (
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    {testResult.thinkingExpanded && (
+                      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words border-t border-line-subtle px-2.5 py-2 font-mono text-[11px] leading-relaxed text-content-secondary">
+                        {testResult.thinkingText}
+                      </pre>
+                    )}
+                  </div>
+                )}
+
+                {testResult.contentText && !testResult.message && (
+                  <div className="rounded-sm border border-line bg-surface px-2.5 py-1.5 font-mono text-[11px] text-content-primary">
+                    输出：{testResult.contentText}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -565,6 +843,7 @@ export function SettingsModal({
   const tabs: { id: SettingsTab; label: string; adminOnly?: boolean }[] = [
     { id: 'models', label: '大模型配置' },
     { id: 'search', label: '检索与提示词' },
+    { id: 'proxy', label: '网络代理' },
     { id: 'account', label: '账号安全' },
     { id: 'access', label: '访问策略', adminOnly: true },
     { id: 'users', label: '用户权限', adminOnly: true },
@@ -727,6 +1006,252 @@ export function SettingsModal({
                   placeholder="例如：输出中文风格偏向细腻文学化，人物对话避免过度使用感叹号。"
                   className="w-full rounded-sm border border-line bg-surface p-2.5 text-xs text-content-primary"
                 />
+              </div>
+            </div>
+          )}
+
+          {tab === 'proxy' && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-line bg-canvas p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
+                      <Globe className="h-3.5 w-3.5 text-accent" />
+                      1. 全局代理配置 (Global Proxy)
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-content-muted">
+                      所有未单独指定策略的出站请求（LLM、检索、搜图、Webhook 等）默认继承此处配置
+                    </p>
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-content-primary">
+                    <input
+                      type="checkbox"
+                      checked={proxyForm.globalEnabled}
+                      onChange={(e) =>
+                        setProxyForm((prev) => ({ ...prev, globalEnabled: e.target.checked }))
+                      }
+                      className="accent-accent"
+                    />
+                    启用全局代理
+                  </label>
+                </div>
+
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="text-[11px] text-content-secondary">
+                      代理服务器 URL
+                      {proxyForm.globalMaskedHint && !proxyForm.clearGlobalStored
+                        ? `（已存: ${proxyForm.globalMaskedHint}）`
+                        : ''}
+                    </label>
+                    {proxyForm.hasGlobalStored && !proxyForm.clearGlobalStored && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setProxyForm((prev) => ({
+                            ...prev,
+                            globalUrl: '',
+                            globalMaskedHint: null,
+                            clearGlobalStored: true,
+                            globalEnabled: false,
+                          }))
+                        }
+                        className="text-[11px] text-status-danger hover:underline"
+                      >
+                        清除已存地址
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={proxyForm.globalUrl}
+                    onChange={(e) =>
+                      setProxyForm((prev) => ({
+                        ...prev,
+                        globalUrl: e.target.value,
+                        clearGlobalStored: false,
+                      }))
+                    }
+                    placeholder={
+                      proxyForm.globalMaskedHint && !proxyForm.clearGlobalStored
+                        ? '留空沿用已加密代理地址，或输入新地址覆盖'
+                        : 'http://127.0.0.1:7897 或 socks5://user:pass@127.0.0.1:1080'
+                    }
+                    className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <p className="mt-1 text-[11px] text-content-muted">
+                    支持 http / https / socks5 / socks5h / socks4 协议；如含认证账密将采用 AES-256-GCM 加密存储
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-content-secondary">
+                    <input
+                      type="checkbox"
+                      checked={proxyForm.bypassLocal}
+                      onChange={(e) =>
+                        setProxyForm((prev) => ({ ...prev, bypassLocal: e.target.checked }))
+                      }
+                      className="accent-accent"
+                    />
+                    自动绕过本机与内网地址（localhost / 127.0.0.1 / 内网段直连，推荐开启）
+                  </label>
+
+                  <button
+                    type="button"
+                    disabled={proxyTestStatus.global?.running || busy}
+                    onClick={() => void handleTestProxy('global')}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                  >
+                    {proxyTestStatus.global?.running && (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    )}
+                    测试全局代理连通性
+                  </button>
+                </div>
+
+                {proxyTestStatus.global?.message && (
+                  <div
+                    className={`rounded-sm border px-2.5 py-1.5 text-[11px] ${
+                      proxyTestStatus.global.running
+                        ? 'border-status-info/40 bg-status-info/10 text-status-info'
+                        : proxyTestStatus.global.ok
+                          ? 'border-status-success/40 bg-status-success/10 text-status-success'
+                          : 'border-status-danger/40 bg-status-danger/10 text-status-danger'
+                    }`}
+                  >
+                    {proxyTestStatus.global.message}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-md border border-line bg-canvas p-4 space-y-3">
+                <div>
+                  <div className="text-xs font-semibold text-content-primary">
+                    2. 指定作用域策略覆盖 (Scoped Overrides)
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-content-muted">
+                    可为特定服务指定「继承全局」「强制直连」或「独立代理服务器」，优先级高于全局设置
+                  </p>
+                </div>
+
+                <div className="space-y-2.5">
+                  {ALL_PROXY_SCOPES.map((scope) => {
+                    const ov = proxyForm.overrides[scope];
+                    const meta = PROXY_SCOPE_META[scope];
+                    const testState = proxyTestStatus[scope];
+                    return (
+                      <div
+                        key={scope}
+                        className="rounded-sm border border-line bg-surface p-3 space-y-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="text-xs font-medium text-content-primary">
+                              {meta.label}
+                            </div>
+                            <div className="text-[11px] text-content-muted">{meta.desc}</div>
+                          </div>
+
+                          <select
+                            value={ov.mode}
+                            onChange={(e) => {
+                              const nextMode = e.target.value as ProxyOverrideMode;
+                              setProxyForm((prev) => ({
+                                ...prev,
+                                overrides: {
+                                  ...prev.overrides,
+                                  [scope]: { ...prev.overrides[scope], mode: nextMode },
+                                },
+                              }));
+                            }}
+                            className="h-7 rounded-sm border border-line bg-canvas px-2 text-[11px] text-content-primary"
+                          >
+                            <option value="inherit">跟随全局代理</option>
+                            <option value="direct">强制直连（不用代理）</option>
+                            <option value="custom">使用独立代理</option>
+                          </select>
+                        </div>
+
+                        {ov.mode === 'custom' && (
+                          <div className="space-y-1.5 pt-1 border-t border-line-subtle">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={ov.url}
+                                onChange={(e) =>
+                                  setProxyForm((prev) => ({
+                                    ...prev,
+                                    overrides: {
+                                      ...prev.overrides,
+                                      [scope]: {
+                                        ...prev.overrides[scope],
+                                        url: e.target.value,
+                                        clearStored: false,
+                                      },
+                                    },
+                                  }))
+                                }
+                                placeholder={
+                                  ov.maskedHint && !ov.clearStored
+                                    ? `已存: ${ov.maskedHint}（留空沿用）`
+                                    : 'http://127.0.0.1:7897 或 socks5://127.0.0.1:1080'
+                                }
+                                className="h-7 flex-1 min-w-[200px] rounded-sm border border-line bg-canvas px-2 font-mono text-[11px] text-content-primary"
+                              />
+                              <button
+                                type="button"
+                                disabled={testState?.running || busy}
+                                onClick={() => void handleTestProxy(scope)}
+                                className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-canvas px-2 text-[11px] text-content-primary hover:bg-subtle disabled:opacity-50"
+                              >
+                                {testState?.running && (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                )}
+                                测试
+                              </button>
+                              {ov.hasStoredUrl && !ov.clearStored && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setProxyForm((prev) => ({
+                                      ...prev,
+                                      overrides: {
+                                        ...prev.overrides,
+                                        [scope]: {
+                                          ...prev.overrides[scope],
+                                          url: '',
+                                          maskedHint: null,
+                                          clearStored: true,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="text-[11px] text-status-danger hover:underline"
+                                >
+                                  清除
+                                </button>
+                              )}
+                            </div>
+                            {testState?.message && (
+                              <div
+                                className={`text-[11px] ${
+                                  testState.running
+                                    ? 'text-status-info'
+                                    : testState.ok
+                                      ? 'text-status-success'
+                                      : 'text-status-danger'
+                                }`}
+                              >
+                                {testState.message}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -1119,14 +1644,14 @@ export function SettingsModal({
           >
             关闭
           </button>
-          {(tab === 'models' || tab === 'search') && (
+          {(tab === 'models' || tab === 'search' || tab === 'proxy') && (
             <button
               type="button"
               disabled={busy}
               onClick={handleSaveConfig}
               className="h-8 rounded-sm bg-accent px-4 text-xs font-semibold text-content-inverse hover:bg-accent-hover disabled:opacity-50"
             >
-              {busy ? '保存中...' : '保存模型与检索配置'}
+              {busy ? '保存中...' : '保存模型、检索与代理配置'}
             </button>
           )}
           {tab === 'access' && isAdmin && (

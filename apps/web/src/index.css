@@ -18,6 +18,8 @@
       sans-serif;
     background-color: rgb(var(--bg-canvas));
     color: rgb(var(--text-primary));
+    font-size: var(--app-font-size, 16px);
+    line-height: 1.5;
   }
 
   code,

@@ -16,7 +16,17 @@ import {
   exportCardToTrpgSheetHtml,
   exportCardToTrpgSheetMarkdown,
 } from './trpg-export.js';
-import type { DnsLookupPort, HttpFetchPort } from './types.js';
+import type { DnsLookupPort, HttpFetchPort, LlmCompletionPort } from './types.js';
+import {
+  maskProxyConfig,
+  maskProxyUrl,
+  resolveEffectiveProxyUrl,
+  testProxyConnectivity,
+  validateProxyUrl,
+  type RuntimeProxyConfig,
+} from './proxy.js';
+import { validatePublicUrl } from './ssrf.js';
+import { generateOrOptimizePortraitPrompt } from './vision.js';
 
 const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
 
@@ -476,3 +486,229 @@ describe('Multi-channel notifications (equal priority parallel dispatch + SMTP)'
     expect(httpCalls.some((u) => u.includes('open.feishu.cn'))).toBe(true);
   });
 });
+
+describe('Two-tier network proxy & SSRF viaProxy handling', () => {
+  it('validates, masks, and resolves global vs scoped proxy overrides with bypassLocal', () => {
+    expect(validateProxyUrl('http://127.0.0.1:7897').ok).toBe(true);
+    expect(validateProxyUrl('socks5h://user:secret@proxy.example.com:1080').ok).toBe(true);
+    expect(validateProxyUrl('ftp://proxy.example.com:21').ok).toBe(false);
+    expect(validateProxyUrl('http://proxy.example.com:99999').ok).toBe(false);
+
+    expect(maskProxyUrl('socks5://alice:topsecret@127.0.0.1:1080')).toBe(
+      'socks5://alice:****@127.0.0.1:1080',
+    );
+    expect(maskProxyUrl('http://127.0.0.1:7897')).toBe('http://127.0.0.1:7897');
+
+    const cfg: RuntimeProxyConfig = {
+      globalEnabled: true,
+      globalUrl: 'http://127.0.0.1:7897',
+      bypassLocal: true,
+      overrides: {
+        llm_chat: { mode: 'direct', url: '' },
+        llm_image: { mode: 'custom', url: 'socks5://bob:pw@10.1.2.3:1080' },
+      },
+    };
+
+    // Inherit uses global proxy for external URLs, but bypasses local/private targets
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'https://api.openai.com/v1/chat/completions')).toBe(
+      'http://127.0.0.1:7897',
+    );
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://localhost:11434/v1')).toBeNull();
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://192.168.1.50:8000/v1')).toBeNull();
+
+    // Direct override forces no proxy even for public targets
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_chat', 'https://api.openai.com/v1')).toBeNull();
+
+    // Custom override uses scope-specific proxy even if global is disabled
+    const globalOffCfg: RuntimeProxyConfig = { ...cfg, globalEnabled: false, bypassLocal: false };
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_primary', 'https://api.openai.com/v1')).toBeNull();
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'https://api.openai.com/v1')).toBe(
+      'socks5://bob:pw@10.1.2.3:1080',
+    );
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'http://127.0.0.1:8188')).toBe(
+      'socks5://bob:pw@10.1.2.3:1080',
+    );
+
+    const masked = maskProxyConfig(cfg);
+    expect(masked.globalEnabled).toBe(true);
+    expect(masked.hasGlobalUrl).toBe(true);
+    expect(masked.overrides.llm_image?.urlMasked).toBe('socks5://bob:****@10.1.2.3:1080');
+    expect(masked.overrides.llm_chat?.mode).toBe('direct');
+  });
+
+  it('allows remote DNS failure and Fake-IP under viaProxy while keeping local IP blocks intact', async () => {
+    const failingDns: DnsLookupPort = async () => {
+      throw new Error('ENOTFOUND');
+    };
+    const fakeIpDns: DnsLookupPort = async () => [{ address: '198.18.0.12', family: 4 }];
+
+    expect((await validatePublicUrl('https://api.example.com/v1', failingDns)).ok).toBe(false);
+    expect(
+      (await validatePublicUrl('https://api.example.com/v1', failingDns, { viaProxy: true })).ok,
+    ).toBe(true);
+
+    expect((await validatePublicUrl('https://api.example.com/v1', fakeIpDns)).ok).toBe(false);
+    expect(
+      (await validatePublicUrl('https://api.example.com/v1', fakeIpDns, { viaProxy: true })).ok,
+    ).toBe(true);
+
+    // Direct private IP literals remain blocked even viaProxy
+    expect(
+      (await validatePublicUrl('http://127.0.0.1:8080/secret', publicDns, { viaProxy: true })).ok,
+    ).toBe(false);
+  });
+
+  it('reports proxy connectivity success and 407 auth failures cleanly', async () => {
+    const okRes = await testProxyConnectivity(
+      { proxyUrl: 'http://127.0.0.1:7897', targetUrl: 'https://cp.cloudflare.com/generate_204' },
+      async () => new Response(null, { status: 204 }),
+    );
+    expect(okRes.ok).toBe(true);
+    expect(okRes.status).toBe(204);
+
+    const authFailRes = await testProxyConnectivity(
+      { proxyUrl: 'http://127.0.0.1:7897' },
+      async () => new Response('Proxy Auth Required', { status: 407 }),
+    );
+    expect(authFailRes.ok).toBe(false);
+    expect(authFailRes.status).toBe(407);
+  });
+});
+
+describe('Streaming LLM connectivity probe & portrait prompt generator', () => {
+  it('streams thinking deltas and accepts reasoning-only responses within upgraded token budget', async () => {
+    const encoder = new TextEncoder();
+    let capturedMaxTokens = 0;
+
+    const reasoningStreamFetch: HttpFetchPort = async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { max_tokens?: number; stream?: boolean };
+      capturedMaxTokens = body.max_tokens ?? 0;
+      expect(body.stream).toBe(true);
+
+      const chunks = [
+        'data: {"choices":[{"delta":{"reasoning_content":"确认模型连通性..."}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ];
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const c of chunks) controller.enqueue(encoder.encode(c));
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    };
+
+    const progressSteps: string[] = [];
+    const thoughts: string[] = [];
+    const contents: string[] = [];
+
+    const probeResult = await testLlmConnectivity(
+      {
+        slotType: 'primary',
+        provider: 'deepseek',
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-reasoner',
+        onProgress: (evt) => {
+          progressSteps.push(evt.step);
+        },
+        onReasoningDelta: (delta) => {
+          thoughts.push(delta);
+        },
+        onContentDelta: (delta) => {
+          contents.push(delta);
+        },
+      },
+      reasoningStreamFetch,
+    );
+
+    expect(probeResult.ok).toBe(true);
+    expect(capturedMaxTokens).toBe(512);
+    expect(progressSteps).toContain('probing');
+    expect(thoughts.join('')).toContain('确认模型连通性');
+    expect(contents.join('')).toBe('OK');
+    expect(probeResult.reasoning).toContain('确认模型连通性');
+  });
+
+  it('generates and optimizes English portrait prompts from RoleCard context', async () => {
+    const capturedPrompts: string[] = [];
+    const mockPort: LlmCompletionPort = async (req) => {
+      capturedPrompts.push(req.messages.map((m) => m.content).join('\n'));
+      return {
+        status: 200,
+        content: JSON.stringify({
+          prompt:
+            '1girl, Amiya, brown hair, rabbit ears, dark coat with teal accents, glowing blue rings on fingers, Rhodes Island bridge background, dramatic rim lighting',
+          negativePrompt: 'lowres, bad anatomy, extra fingers, watermark',
+          notes: '结合阿米娅的棕发兔耳、黑色抑制戒指与罗德岛舰桥氛围提炼英文立绘提示词。',
+        }),
+      };
+    };
+
+    const genResult = await generateOrOptimizePortraitPrompt(
+      {
+        card: {
+          characterName: sampleContent.name,
+          workName: '明日方舟',
+          appearance: sampleContent.appearance,
+          personality: sampleContent.personality,
+          background: sampleContent.background,
+          scenario: sampleContent.scenario,
+          tags: sampleContent.tags,
+        },
+        mode: 'generate',
+        style: 'anime',
+        instruction: '半身肖像，眼神坚定',
+      },
+      {
+        llmPort: mockPort,
+        llmSlot: {
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+      },
+    );
+
+    expect(genResult.ok).toBe(true);
+    if (genResult.ok) {
+      expect(genResult.value.prompt).toContain('rabbit ears');
+      expect(genResult.value.negativePrompt).toContain('watermark');
+      expect(genResult.value.notes).toContain('阿米娅');
+    }
+    expect(capturedPrompts[0]).toContain('棕发兔耳少女');
+    expect(capturedPrompts[0]).toContain('半身肖像，眼神坚定');
+
+    const optResult = await generateOrOptimizePortraitPrompt(
+      {
+        card: {
+          characterName: sampleContent.name,
+          appearance: sampleContent.appearance,
+        },
+        mode: 'optimize',
+        style: 'semi_realistic',
+        draftPrompt: 'anime girl with rabbit ears',
+        instruction: '增加光影质感',
+      },
+      {
+        llmPort: mockPort,
+        llmSlot: {
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+      },
+    );
+    expect(optResult.ok).toBe(true);
+    expect(capturedPrompts[1]).toContain('anime girl with rabbit ears');
+    expect(capturedPrompts[1]).toContain('semi-realistic');
+  });
+});
+

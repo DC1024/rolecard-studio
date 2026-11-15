@@ -16,6 +16,7 @@ import {
   exportCardToTrpgSheetMarkdown,
   generateTrpgAttributesForCard,
   isSafeImageUrl,
+  isUrlProxiedByFetch,
   mergeLorebooksToCharacterBook,
   preserveLockedFields,
   refineRoleCard,
@@ -44,7 +45,7 @@ import { getNow, type ServerContext } from '../context.js';
 import { generationLogs, roleCards, userServiceConfigs } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
 import { serializeCardRow } from './cards.js';
-import { loadRuntimeServiceConfig } from './config.js';
+import { loadRuntimeServiceConfig, loadScopedFetch, resolveScopedFetch } from './config.js';
 import { loadLinkedLorebooksForCard } from './lorebooks.js';
 import { publishSyncEvent } from './sync.js';
 
@@ -177,7 +178,8 @@ cardM1Routes.post('/cards/:id/refine', zValidator('json', RefineCardRequestSchem
   const startedAt = Date.now();
   const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
   const lockedFields = parseJsonArray<string>(row.lockedFieldsJson);
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
 
   const result = await refineRoleCard(currentContent, instruction, {
     llmPort,
@@ -268,7 +270,8 @@ cardM1Routes.post('/cards/:id/compress', zValidator('json', CompressRequestSchem
 
   const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
   const lockedFields = parseJsonArray<string>(row.lockedFieldsJson);
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
 
   const startedAt = Date.now();
   const result = await compressRoleCard(currentContent, targetMaxTokens, {
@@ -493,7 +496,8 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
     : baseSlot;
 
   const content = JSON.parse(row.contentJson) as RoleCardContent;
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const chatFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_chat');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(chatFetch);
 
   const metaSummary =
     row.entityType === 'real_person'
@@ -589,7 +593,10 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
       );
     }
     if (input.imageUrl && /^https?:\/\//i.test(input.imageUrl)) {
-      const ssrf = await validatePublicUrl(input.imageUrl, ctx.dnsLookup);
+      const mediaFetch = await loadScopedFetch(ctx, 'media');
+      const ssrf = await validatePublicUrl(input.imageUrl, ctx.dnsLookup, {
+        viaProxy: isUrlProxiedByFetch(mediaFetch, input.imageUrl),
+      });
       if (!ssrf.ok) {
         return sendCoreError(c, ssrf.error);
       }
@@ -697,7 +704,8 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
   }
 
   const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
   const startedAt = Date.now();
   const result = await generateTrpgAttributesForCard(currentContent, system, {
     llmPort,

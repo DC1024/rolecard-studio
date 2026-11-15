@@ -108,7 +108,7 @@ export function TopBar({
                 type="button"
                 title={tab.hint}
                 onClick={() => onPresetChange(tab.id)}
-                className={`rounded-sm px-2.5 py-1 text-xs font-medium transition-all ${
+                className={`rounded-sm px-2.5 py-1 text-[12px] font-medium leading-4 transition-all ${
                   active
                     ? 'bg-surface text-content-primary shadow-sm'
                     : 'text-content-secondary hover:text-content-primary'
@@ -125,7 +125,7 @@ export function TopBar({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-xs font-medium text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary md:inline-flex"
+          className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-[12px] font-medium leading-4 text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary md:inline-flex"
           title="查看大模型与系统配置"
         >
           <span
@@ -141,7 +141,7 @@ export function TopBar({
         </button>
 
         {auth && (
-          <div className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-xs text-content-secondary lg:inline-flex">
+          <div className="hidden items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-1 text-[12px] leading-4 text-content-secondary lg:inline-flex">
             <Shield className="h-3.5 w-3.5 text-accent" />
             <span>
               {auth.policy.siteAccessMode === 'login_required' ? '登录访问' : '公开工作台'}
@@ -158,7 +158,7 @@ export function TopBar({
               setFontMenuOpen((prev) => !prev);
               setThemeMenuOpen(false);
             }}
-            className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-xs font-medium text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
+            className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-[12px] font-medium leading-4 text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
             title="调整界面字体大小"
           >
             <TypeIcon className="h-3.5 w-3.5" />
@@ -176,9 +176,9 @@ export function TopBar({
                 onClick={() => setFontMenuOpen(false)}
               />
               <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-md border border-line bg-elevated p-3 shadow-lg">
-                <div className="mb-2 flex items-center justify-between text-xs font-medium text-content-primary">
+                <div className="mb-2 flex h-4 items-center justify-between text-[12px] font-medium leading-4 text-content-primary">
                   <span>字体大小</span>
-                  <span className="font-mono text-[0.6875rem] text-accent">
+                  <span className="tabular-nums font-mono text-[11px] leading-4 text-accent">
                     {fontSizePx}px
                   </span>
                 </div>
@@ -194,7 +194,7 @@ export function TopBar({
                           setFontPreset(key);
                           notifySuccess(`字体已调整为「${item.label} (${item.px}px)」`);
                         }}
-                        className={`rounded-sm py-1 text-xs font-medium transition ${
+                        className={`h-7 rounded-sm text-[12px] font-medium leading-4 transition ${
                           active
                             ? 'bg-surface text-accent shadow-sm'
                             : 'text-content-secondary hover:text-content-primary'
@@ -206,7 +206,7 @@ export function TopBar({
                   })}
                 </div>
                 <div className="space-y-1.5">
-                  <div className="flex items-center justify-between text-[0.6875rem] text-content-muted">
+                  <div className="flex h-4 items-center justify-between text-[11px] leading-4 text-content-muted">
                     <span>自定义 ({FONT_SIZE_MIN}～{FONT_SIZE_MAX}px)</span>
                     <button
                       type="button"
@@ -214,12 +214,12 @@ export function TopBar({
                         setFontPreset('medium');
                         notifySuccess('已恢复默认字号 (16px)');
                       }}
-                      className="text-accent hover:underline"
+                      className="text-[11px] leading-4 text-accent hover:underline"
                     >
                       重置
                     </button>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex h-7 items-center gap-2">
                     <input
                       type="range"
                       min={FONT_SIZE_MIN}
@@ -235,7 +235,7 @@ export function TopBar({
                       max={FONT_SIZE_MAX}
                       value={fontSizePx}
                       onChange={(e) => setCustomFontSize(Number(e.target.value))}
-                      className="h-7 w-12 rounded-sm border border-line bg-surface px-1.5 text-center font-mono text-xs text-content-primary"
+                      className="h-7 w-12 rounded-sm border border-line bg-surface px-1.5 text-center font-mono text-[12px] text-content-primary"
                     />
                   </div>
                 </div>
@@ -251,7 +251,7 @@ export function TopBar({
               setThemeMenuOpen((prev) => !prev);
               setFontMenuOpen(false);
             }}
-            className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
+            className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-[12px] font-medium leading-4 text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
             title="切换颜色主题"
           >
             <Palette className="h-3.5 w-3.5" />
@@ -274,7 +274,7 @@ export function TopBar({
                       setThemeMenuOpen(false);
                       notifySuccess(`已切换至「${opt.label}」主题`);
                     }}
-                    className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-xs transition-colors ${
+                    className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-[12px] leading-4 transition-colors ${
                       theme === opt.id
                         ? 'bg-accent/10 font-semibold text-accent'
                         : 'text-content-secondary hover:bg-hover hover:text-content-primary'
@@ -301,7 +301,7 @@ export function TopBar({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-primary transition-colors hover:bg-subtle"
+          className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-[12px] font-medium leading-4 text-content-primary transition-colors hover:bg-subtle"
         >
           <Settings className="h-3.5 w-3.5 text-content-secondary" />
           <span className="hidden sm:inline">设置</span>
@@ -309,7 +309,7 @@ export function TopBar({
 
         {auth?.authenticated && auth.user ? (
           <div className="flex items-center gap-1.5">
-            <span className="inline-flex h-8 items-center rounded-sm bg-accent/10 px-2.5 text-xs font-medium text-accent">
+            <span className="inline-flex h-8 items-center rounded-sm bg-accent/10 px-2.5 text-[12px] font-medium leading-4 text-accent">
               {auth.user.username}
               {auth.user.role === 'admin' ? ' (管理)' : ''}
             </span>
@@ -326,7 +326,7 @@ export function TopBar({
           <button
             type="button"
             onClick={onOpenLogin}
-            className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse transition-colors hover:bg-accent-hover"
+            className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-[12px] font-medium leading-4 text-content-inverse transition-colors hover:bg-accent-hover"
           >
             <LogIn className="h-3.5 w-3.5" />
             <span>登录</span>

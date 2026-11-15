@@ -3,6 +3,16 @@ import type { Config } from 'tailwindcss';
 const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
+    fontSize: {
+      xs: ['calc(0.75rem * var(--app-font-scale, 1))', { lineHeight: '1.45' }],
+      sm: ['calc(0.875rem * var(--app-font-scale, 1))', { lineHeight: '1.5' }],
+      base: ['calc(1rem * var(--app-font-scale, 1))', { lineHeight: '1.55' }],
+      lg: ['calc(1.125rem * var(--app-font-scale, 1))', { lineHeight: '1.5' }],
+      xl: ['calc(1.25rem * var(--app-font-scale, 1))', { lineHeight: '1.45' }],
+      '2xl': ['calc(1.5rem * var(--app-font-scale, 1))', { lineHeight: '1.35' }],
+      '3xl': ['calc(1.875rem * var(--app-font-scale, 1))', { lineHeight: '1.25' }],
+      '4xl': ['calc(2.25rem * var(--app-font-scale, 1))', { lineHeight: '1.2' }],
+    },
     extend: {
       colors: {
         canvas: 'rgb(var(--bg-canvas) / <alpha-value>)',

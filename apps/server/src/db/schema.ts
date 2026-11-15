@@ -51,6 +51,7 @@ export const userServiceConfigs = sqliteTable('user_service_configs', {
   enableLayer1Wiki: integer('enable_layer1_wiki', { mode: 'boolean' }).notNull().default(true),
   dailyAutoRefreshLimit: integer('daily_auto_refresh_limit').notNull().default(20),
   customSystemPrompt: text('custom_system_prompt').notNull().default(''),
+  proxyConfigEncrypted: text('proxy_config_encrypted'),
   updatedAt: text('updated_at').notNull(),
 });
 

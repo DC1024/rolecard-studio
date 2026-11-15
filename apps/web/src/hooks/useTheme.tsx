@@ -93,8 +93,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const applyFontSize = useCallback((px: number) => {
     const safe = clampFontSize(px);
+    const scale = safe / 16;
     document.documentElement.style.setProperty('--app-font-size', `${safe}px`);
-    document.documentElement.style.fontSize = `${safe}px`;
+    document.documentElement.style.setProperty('--app-font-scale', scale.toFixed(4));
   }, []);
 
   const setCustomFontSize = useCallback(

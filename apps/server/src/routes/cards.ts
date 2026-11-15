@@ -20,7 +20,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getNow, type ServerContext } from '../context.js';
 import { generationLogs, roleCards, userServiceConfigs } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
-import { loadRuntimeServiceConfig } from './config.js';
+import { loadRuntimeServiceConfig, resolveScopedFetch } from './config.js';
 
 export const cardRoutes = new Hono<AppEnv>();
 
@@ -41,6 +41,7 @@ export interface SerializedRoleCard {
   tokenCount: number;
   imageUrl: string | null;
   imageSource: string | null;
+  imagePrompt: string | null;
   lockedFields: string[];
   diffSummary: string | null;
   enableMetaInChat: boolean;
@@ -67,6 +68,7 @@ export function serializeCardRow(row: typeof roleCards.$inferSelect): Serialized
     tokenCount: row.tokenCount,
     imageUrl: row.imageUrl,
     imageSource: row.imageSource,
+    imagePrompt: row.imagePrompt,
     lockedFields: safeParseJsonArray<string>(row.lockedFieldsJson),
     diffSummary: row.diffSummary,
     enableMetaInChat: row.enableMetaInChat,
@@ -111,11 +113,13 @@ export async function executeAndPersistGeneration(
     };
   }
 
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+  const searchFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'search');
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
   const genResult = await generateRoleCard(input, {
     llmPort,
     llmSlot: runtime.primaryLlm,
-    fetchImpl: ctx.fetchImpl,
+    fetchImpl: searchFetch,
     dnsLookup: ctx.dnsLookup,
     searchProviderPort: ctx.searchProviderPort,
     enableLayer1Wiki: runtime.enableLayer1Wiki,

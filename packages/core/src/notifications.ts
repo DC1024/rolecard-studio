@@ -6,7 +6,12 @@ import type {
   NotificationChannelType,
   SyncEventDto,
 } from '@rolecard/shared';
-import { defaultDnsLookup, defaultHttpFetch, validatePublicUrl } from './ssrf.js';
+import {
+  defaultDnsLookup,
+  defaultHttpFetch,
+  isUrlProxiedByFetch,
+  validatePublicUrl,
+} from './ssrf.js';
 import { deliverWebhookWithRetry } from './sync.js';
 import {
   type CoreError,
@@ -304,6 +309,7 @@ export async function validateNotificationChannelSettings(
   channelType: NotificationChannelType,
   settings: NotificationChannelSettings,
   dnsLookup: DnsLookupPort = defaultDnsLookup,
+  fetchImpl?: HttpFetchPort,
 ): Promise<Result<true, CoreError>> {
   switch (channelType) {
     case 'smtp': {
@@ -341,7 +347,10 @@ export async function validateNotificationChannelSettings(
       if (!settings.webhookUrl?.trim()) {
         return err({ code: 'MISSING_WEBHOOK_URL', message: '请填写 Webhook 地址', status: 400 });
       }
-      const urlCheck = await validatePublicUrl(settings.webhookUrl.trim(), dnsLookup);
+      const targetUrl = settings.webhookUrl.trim();
+      const urlCheck = await validatePublicUrl(targetUrl, dnsLookup, {
+        viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, targetUrl) : false,
+      });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
     }
@@ -354,7 +363,9 @@ export async function validateNotificationChannelSettings(
         });
       }
       const base = settings.telegramApiBaseUrl?.trim() || 'https://api.telegram.org';
-      const urlCheck = await validatePublicUrl(base, dnsLookup);
+      const urlCheck = await validatePublicUrl(base, dnsLookup, {
+        viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, base) : false,
+      });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
     }
@@ -367,7 +378,9 @@ export async function validateNotificationChannelSettings(
         });
       }
       const base = settings.barkServerUrl?.trim() || 'https://api.day.app';
-      const urlCheck = await validatePublicUrl(base, dnsLookup);
+      const urlCheck = await validatePublicUrl(base, dnsLookup, {
+        viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, base) : false,
+      });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
     }
@@ -392,7 +405,9 @@ async function postJsonChecked(
 ): Promise<Result<{ status: number }, CoreError>> {
   const fetchImpl = deps.fetchImpl ?? defaultHttpFetch;
   const dnsLookup = deps.dnsLookup ?? defaultDnsLookup;
-  const check = await validatePublicUrl(url, dnsLookup);
+  const check = await validatePublicUrl(url, dnsLookup, {
+    viaProxy: isUrlProxiedByFetch(fetchImpl, url),
+  });
   if (!check.ok) return check;
 
   const response = await fetchImpl(check.value.toString(), {

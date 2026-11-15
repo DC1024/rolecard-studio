@@ -21,6 +21,9 @@ import type {
   NotificationChannelDto,
   PlaytestRequest,
   PlaytestResponse,
+  PortraitPromptRequest,
+  PortraitPromptResponse,
+  ProxyTestRequest,
   PublishStatus,
   ResolveProposalRequest,
   RippleProposalDto,
@@ -61,6 +64,7 @@ export interface RoleCardDto {
   tokenCount: number;
   imageUrl: string | null;
   imageSource: string | null;
+  imagePrompt: string | null;
   lockedFields: string[];
   diffSummary: string | null;
   enableMetaInChat: boolean;
@@ -171,11 +175,166 @@ export const api = {
 
   testLlmConfig(
     input: LlmTestRequest,
-  ): Promise<{ ok: boolean; latencyMs: number; message: string }> {
+  ): Promise<{ ok: boolean; latencyMs: number; message: string; reasoning?: string }> {
     return requestJson('/config/test', {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  },
+
+  async testLlmConfigSse(
+    input: LlmTestRequest,
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+      onContent?: (delta: string) => void;
+    },
+  ): Promise<{
+    ok: boolean;
+    latencyMs: number;
+    message: string;
+    reasoning?: string;
+    replyPreview?: string;
+  }> {
+    const res = await fetch('/api/v1/config/test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      credentials: 'include',
+      body: JSON.stringify(input),
+    });
+
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!res.ok && !contentType.includes('text/event-stream')) {
+      let msg = `校验失败 (HTTP ${res.status})`;
+      let code = 'TEST_FAILED';
+      try {
+        const payload = (await res.json()) as {
+          error?: { code?: string; message?: string };
+          message?: string;
+        };
+        if (payload.error?.code) code = payload.error.code;
+        if (payload.error?.message) msg = payload.error.message;
+        else if (payload.message) msg = payload.message;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(code, msg, res.status);
+    }
+
+    if (!contentType.includes('text/event-stream')) {
+      return (await res.json()) as {
+        ok: boolean;
+        latencyMs: number;
+        message: string;
+        reasoning?: string;
+        replyPreview?: string;
+      };
+    }
+
+    let finalResult: {
+      ok: boolean;
+      latencyMs: number;
+      message: string;
+      reasoning?: string;
+      replyPreview?: string;
+    } | null = null;
+
+    const handleBlock = (block: string) => {
+      if (!block.trim()) return;
+      let eventName = 'message';
+      const dataLines: string[] = [];
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      const rawData = dataLines.join('\n');
+      if (!rawData) return;
+      const parsed = JSON.parse(rawData) as Record<string, unknown>;
+      if (eventName === 'progress' && typeof parsed.message === 'string') {
+        callbacks.onProgress?.(
+          parsed.message,
+          typeof parsed.step === 'string' ? parsed.step : undefined,
+        );
+      } else if (eventName === 'thinking' && typeof parsed.delta === 'string') {
+        callbacks.onThinking?.(parsed.delta);
+      } else if (eventName === 'content' && typeof parsed.delta === 'string') {
+        callbacks.onContent?.(parsed.delta);
+      } else if (eventName === 'result') {
+        finalResult = {
+          ok: Boolean(parsed.ok),
+          latencyMs: Number(parsed.latencyMs ?? 0),
+          message: String(parsed.message ?? ''),
+          reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
+          replyPreview:
+            typeof parsed.replyPreview === 'string' ? parsed.replyPreview : undefined,
+        };
+      }
+    };
+
+    if (res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          handleBlock(block);
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        for (const block of buffer.split(/\r?\n\r?\n/)) {
+          handleBlock(block);
+        }
+      }
+    } else {
+      const text = await res.text();
+      for (const block of text.split(/\r?\n\r?\n/)) {
+        handleBlock(block);
+      }
+    }
+
+    if (!finalResult) {
+      throw new ApiError('EMPTY_STREAM', '未收到模型校验结果', 500);
+    }
+    return finalResult;
+  },
+
+  async testProxyConfig(
+    input: ProxyTestRequest,
+  ): Promise<{ ok: boolean; latencyMs: number; status?: number; message: string }> {
+    const res = await fetch('/api/v1/config/proxy/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(input),
+    });
+    const payload = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      latencyMs?: number;
+      status?: number;
+      message?: string;
+      error?: { message?: string };
+    };
+    return {
+      ok: Boolean(payload.ok),
+      latencyMs: typeof payload.latencyMs === 'number' ? payload.latencyMs : 0,
+      status: typeof payload.status === 'number' ? payload.status : res.status,
+      message:
+        payload.message ??
+        payload.error?.message ??
+        `代理测试返回 HTTP ${res.status}`,
+    };
   },
 
   getAccessPolicy(): Promise<AccessPolicy> {
@@ -644,6 +803,13 @@ export const api = {
 
   searchImages(input: ImageSearchRequest): Promise<{ items: ImageSearchItem[] }> {
     return requestJson('/images/search', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  generatePortraitPrompt(input: PortraitPromptRequest): Promise<PortraitPromptResponse> {
+    return requestJson('/images/prompt', {
       method: 'POST',
       body: JSON.stringify(input),
     });

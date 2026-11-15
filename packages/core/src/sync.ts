@@ -1,6 +1,11 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { SyncEventDto } from '@rolecard/shared';
-import { defaultDnsLookup, defaultHttpFetch, validatePublicUrl } from './ssrf.js';
+import {
+  defaultDnsLookup,
+  defaultHttpFetch,
+  isUrlProxiedByFetch,
+  validatePublicUrl,
+} from './ssrf.js';
 import {
   type CoreError,
   type DnsLookupPort,
@@ -79,7 +84,9 @@ export async function deliverWebhookWithRetry(
   const maxAttempts = Math.max(1, Math.min(deps.maxAttempts ?? 3, 5));
   const baseDelayMs = Math.max(0, deps.baseDelayMs ?? 100);
 
-  const urlCheck = await validatePublicUrl(webhookUrl, dnsLookup);
+  const urlCheck = await validatePublicUrl(webhookUrl, dnsLookup, {
+    viaProxy: isUrlProxiedByFetch(fetchImpl, webhookUrl),
+  });
   if (!urlCheck.ok) {
     return urlCheck;
   }
