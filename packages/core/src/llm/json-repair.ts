@@ -286,6 +286,7 @@ export interface StructuredCompletionOptions<T> {
   schema: ZodType<T, ZodTypeDef, unknown>;
   schemaHint: string;
   temperature: number;
+  actionLabel?: string;
   maxRepairRetries?: number;
   onStrategyDowngraded?: (newStrategy: 'prompt') => void | Promise<void>;
   onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
@@ -303,6 +304,7 @@ export async function completeStructuredJson<T>(
   options: StructuredCompletionOptions<T>,
 ): Promise<Result<StructuredCompletionResult<T>, CoreError>> {
   const maxRepairRetries = options.maxRepairRetries ?? 2;
+  const targetLabel = options.actionLabel?.trim() || '生成结构化数据';
   let strategy: 'json_object' | 'prompt' =
     options.slot.jsonModeStrategy === 'prompt' ? 'prompt' : 'json_object';
   let useMaxTokens: number | undefined = options.slot.maxTokens ?? DEFAULT_LLM_MAX_TOKENS;
@@ -349,7 +351,7 @@ export async function completeStructuredJson<T>(
         useMaxTokens = undefined;
         await options.onProgress?.({
           step: 'llm_request',
-          message: '模型网关拒绝 max_tokens 参数，正在自动去掉限制重试...',
+          message: `${options.slot.model} 网关拒绝 max_tokens 参数，正在自动去掉限制重试（${targetLabel}）...`,
         });
         continue;
       }
@@ -358,7 +360,7 @@ export async function completeStructuredJson<T>(
         useReasoningEffort = undefined;
         await options.onProgress?.({
           step: 'llm_request',
-          message: '模型网关不支持 reasoning_effort 参数，正在自动回退重试...',
+          message: `${options.slot.model} 网关不支持 reasoning_effort 参数，正在自动回退重试（${targetLabel}）...`,
         });
         continue;
       }
@@ -373,7 +375,7 @@ export async function completeStructuredJson<T>(
         }
         await options.onProgress?.({
           step: 'llm_request',
-          message: '模型网关不支持 json_object，正在自动降级为 Prompt 约束重试...',
+          message: `${options.slot.model} 网关不支持 json_object，正在自动降级为 Prompt 约束重试（${targetLabel}）...`,
         });
         conversation = promptMessagesWithSchema(baseMessages);
         continue;
@@ -402,8 +404,8 @@ export async function completeStructuredJson<T>(
       step: 'llm_request',
       message:
         round === 0
-          ? `正在调用 ${options.slot.model} 生成结构化角色卡...`
-          : `正在执行第 ${round} 次 JSON 自愈重试...`,
+          ? `正在调用 ${options.slot.model} ${targetLabel}...`
+          : `正在调用 ${options.slot.model} ${targetLabel}（第 ${round} 次 JSON 自愈重试）...`,
     });
 
     const completion = await invokeWithCapabilityFallback();
@@ -418,7 +420,7 @@ export async function completeStructuredJson<T>(
 
     await options.onProgress?.({
       step: 'validating',
-      message: '正在解析并校验结构化 JSON 与角色卡 Schema...',
+      message: `正在解析并校验 ${options.slot.model} 返回的「${targetLabel}」结构化数据...`,
     });
 
     const isTruncated = completion.finishReason === 'length';
@@ -470,8 +472,8 @@ export async function completeStructuredJson<T>(
           await options.onProgress?.({
             step: 'llm_request',
             message: isTruncated || !hasContent
-              ? '检测到模型思考或输出过长被截断，正在切换精简推理模式重新生成...'
-              : '输出体量过大且解析失败，正在切换精简重试模式...',
+              ? `检测到 ${options.slot.model} ${targetLabel} 时思考或输出过长被截断，正在切换精简推理模式重试...`
+              : `${options.slot.model} ${targetLabel} 输出体量过大且解析失败，正在切换精简重试模式...`,
           });
         } else {
           conversation = [

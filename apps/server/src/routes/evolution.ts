@@ -32,6 +32,7 @@ import {
   syncSchedules,
 } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
+import { saveCardRevisionSnapshot } from './card-revisions.js';
 import { serializeCardRow } from './cards.js';
 import { loadRuntimeServiceConfig, resolveScopedFetch } from './config.js';
 import { publishSyncEvent } from './sync.js';
@@ -260,6 +261,11 @@ export async function executeEvolutionForCard(
 
   let ripplesCreated = 0;
   if (autoMinor) {
+    await saveCardRevisionSnapshot(ctx, cardRow, {
+      action: 'evolution',
+      summary: evoRes.value.diffSummary,
+      createdBy: 'system',
+    });
     const nextVersion = cardRow.version + 1;
     await ctx.db
       .update(roleCards)
@@ -674,6 +680,12 @@ evolutionRoutes.post(
     const diffSummary = computeCardDiffSummary(currentContent, mergedContent);
     const nextVersion = card.version + 1;
 
+    await saveCardRevisionSnapshot(ctx, card, {
+      action: 'evolution_apply',
+      summary: diffSummary,
+      createdBy: c.get('actor')?.userId ?? 'guest',
+    });
+
     await ctx.db
       .update(roleCards)
       .set({
@@ -777,6 +789,12 @@ evolutionRoutes.post(
     };
     const finalContent = preserveLockedFields(content, updatedContent, lockedFields);
     const nextVersion = targetCard.version + 1;
+
+    await saveCardRevisionSnapshot(ctx, targetCard, {
+      action: 'ripple_apply',
+      summary: `应用来自「${sourceName}」的关系涟漪调整`,
+      createdBy: c.get('actor')?.userId ?? 'guest',
+    });
 
     await ctx.db
       .update(roleCards)

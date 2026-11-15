@@ -316,6 +316,23 @@ function initializeTables(sqlite: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_portrait_style_presets_owner ON portrait_style_presets(owner_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS role_card_revisions (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      character_name TEXT NOT NULL,
+      card_type TEXT NOT NULL,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      content_json TEXT NOT NULL,
+      locked_fields_json TEXT NOT NULL DEFAULT '[]',
+      token_count INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL DEFAULT 'guest',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_role_card_revisions_card ON role_card_revisions(card_id, created_at DESC);
   `);
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');

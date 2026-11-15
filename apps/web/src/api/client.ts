@@ -4,6 +4,7 @@ import type {
   AuthContextResponse,
   CardGeneratableField,
   CardImageUploadRequest,
+  CardRevisionSummary,
   CardType,
   CreatePortraitStylePresetInput,
   CreateUserRequest,
@@ -30,6 +31,7 @@ import type {
   PortraitStylePresetDto,
   ProxyTestRequest,
   PublishStatus,
+  RegenerateCardRequest,
   ResolveProposalRequest,
   RippleProposalDto,
   RoleCardContent,
@@ -701,6 +703,67 @@ export const api = {
     return requestJson(`/cards/${encodeURIComponent(id)}/trpg`, {
       method: 'POST',
       body: JSON.stringify({ system }),
+    });
+  },
+
+  generateCardTrpgStatsSse(
+    id: string,
+    system: 'coc7e' | 'dnd5e',
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+    },
+  ): Promise<{ card: RoleCardDto }> {
+    return consumeSsePost<{ card: RoleCardDto }>(
+      `/cards/${encodeURIComponent(id)}/trpg`,
+      { system },
+      callbacks,
+      'TRPG 规则属性推演失败',
+    );
+  },
+
+  regenerateCardSse(
+    id: string,
+    input: Partial<RegenerateCardRequest>,
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+    },
+  ): Promise<{
+    card: RoleCardDto;
+    regeneratedFields: string[];
+    skippedLockedFields: string[];
+    diffSummary: string;
+  }> {
+    return consumeSsePost<{
+      card: RoleCardDto;
+      regeneratedFields: string[];
+      skippedLockedFields: string[];
+      diffSummary: string;
+    }>(
+      `/cards/${encodeURIComponent(id)}/regenerate`,
+      {
+        instruction: input.instruction ?? '',
+        ...(input.sourceIndices && input.sourceIndices.length > 0
+          ? { sourceIndices: input.sourceIndices }
+          : {}),
+      },
+      callbacks,
+      '一键 AI 生成失败',
+    );
+  },
+
+  listCardRevisions(id: string): Promise<{ revisions: CardRevisionSummary[] }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/revisions`);
+  },
+
+  rollbackCardRevision(
+    id: string,
+    revisionId?: string,
+  ): Promise<{ card: RoleCardDto; restoredRevisionId: string }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/rollback`, {
+      method: 'POST',
+      body: JSON.stringify(revisionId ? { revisionId } : {}),
     });
   },
 

@@ -7,6 +7,7 @@ import type { ServerContext } from './context.js';
 import { attachAuthContext, type AppEnv } from './middleware/auth.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
+import { cardRevisionsRoutes } from './routes/card-revisions.js';
 import { cardM1Routes } from './routes/cards-m1.js';
 import { cardM2Routes } from './routes/cards-m2.js';
 import { cardRoutes } from './routes/cards.js';
@@ -46,6 +47,7 @@ export function createApp(ctx: ServerContext): Hono<AppEnv> {
   app.route('/api/v1', configRoutes);
   app.route('/api/v1', cardRoutes);
   app.route('/api/v1', cardM1Routes);
+  app.route('/api/v1', cardRevisionsRoutes);
   app.route('/api/v1', cardM2Routes);
   app.route('/api/v1', lorebookRoutes);
   app.route('/api/v1', pluginRoutes);

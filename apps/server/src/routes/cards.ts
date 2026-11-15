@@ -21,6 +21,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getNow, type ServerContext } from '../context.js';
 import { generationLogs, roleCards, userServiceConfigs } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
+import { saveCardRevisionSnapshot } from './card-revisions.js';
 import { loadRuntimeServiceConfig, resolveScopedFetch } from './config.js';
 
 export const cardRoutes = new Hono<AppEnv>();
@@ -156,6 +157,7 @@ export async function executeAndPersistGeneration(
     createOpenAiCompatibleLlmPort(primaryFetch, {
       idleTimeoutMs: runtime.llmRequestTimeoutSeconds * 1000,
     });
+  let sentThinkingHeader = false;
   const genResult = await generateRoleCard(input, {
     llmPort,
     llmSlot: runtime.primaryLlm,
@@ -167,7 +169,16 @@ export async function executeAndPersistGeneration(
     searchApiKey: runtime.searchApiKey,
     customSystemPrompt: runtime.customSystemPrompt,
     onProgress: hooks.onProgress,
-    onReasoningDelta: hooks.onReasoningDelta,
+    onReasoningDelta: async (delta) => {
+      if (!sentThinkingHeader) {
+        sentThinkingHeader = true;
+        await hooks.onProgress?.({
+          step: 'thinking',
+          message: `${runtime.primaryLlm.model} 正在思考推演（生成「${input.characterName}」完整角色卡）...`,
+        });
+      }
+      await hooks.onReasoningDelta?.(delta);
+    },
     onStrategyDowngraded: async () => {
       await ctx.db
         .update(userServiceConfigs)
@@ -202,7 +213,7 @@ export async function executeAndPersistGeneration(
 
   await hooks.onProgress?.({
     step: 'persisting',
-    message: '结构化校验通过，正在保存角色卡与考据溯源...',
+    message: `「${input.characterName}」结构化校验通过，正在保存角色卡与考据溯源...`,
   });
 
   const cardId = randomUUID();
@@ -279,7 +290,6 @@ cardRoutes.post('/generate', zValidator('json', GenerateCardRequestSchema), asyn
 
   if (wantsSse) {
     return streamSSE(c, async (stream) => {
-      let sentThinkingHeader = false;
       let closed = false;
       const heartbeat = setInterval(() => {
         if (closed) return;
@@ -296,13 +306,6 @@ cardRoutes.post('/generate', zValidator('json', GenerateCardRequestSchema), asyn
             });
           },
           onReasoningDelta: async (delta) => {
-            if (!sentThinkingHeader) {
-              sentThinkingHeader = true;
-              await stream.writeSSE({
-                event: 'progress',
-                data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
-              });
-            }
             await stream.writeSSE({
               event: 'thinking',
               data: JSON.stringify({ delta }),
@@ -444,6 +447,7 @@ cardRoutes.patch('/cards/:id/tags', zValidator('json', UpdateCardTagsSchema), as
   const id = c.req.param('id');
   const { tags } = c.req.valid('json');
   const ctx = c.get('ctx');
+  const actorUserId = c.get('actor')?.userId ?? 'guest';
 
   const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
   const row = rows[0];
@@ -454,6 +458,12 @@ cardRoutes.patch('/cards/:id/tags', zValidator('json', UpdateCardTagsSchema), as
   const deduped = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
   const content = JSON.parse(row.contentJson) as RoleCardContent;
   content.tags = deduped;
+
+  await saveCardRevisionSnapshot(ctx, row, {
+    action: 'tags',
+    summary: '更新角色标签',
+    createdBy: actorUserId,
+  });
 
   const nowIso = getNow(ctx).toISOString();
   await ctx.db

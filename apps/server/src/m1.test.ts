@@ -43,7 +43,7 @@ describe('RoleCard Studio Server M1 integration', () => {
         }),
       };
     }
-    if (sys.includes('无损压缩专家')) {
+    if (sys.includes('语义精简专家')) {
       return {
         status: 200,
         content: JSON.stringify({

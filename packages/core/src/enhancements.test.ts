@@ -24,8 +24,11 @@ import {
   type SmtpSendInput,
 } from './notifications.js';
 import {
+  compressRoleCard,
   generateCardField,
+  mergeCardTagsDedupe,
   refineRoleCard,
+  regenerateRoleCard,
   selectSourcesForGeneration,
 } from './playtest.js';
 import { layeredRetrieve, queryMediaWikiSite, testSearchConnectivity } from './retrieval.js';
@@ -1889,6 +1892,185 @@ describe('Idle-reset streaming timeout, truncation rescue, and material token bu
     expect(res.ok).toBe(true);
     // Without budget capping, 8 x ~15000 chars + ~5400 chars would be >125k chars.
     expect(capturedPromptLength).toBeLessThan(28000);
+  });
+});
+
+describe('Tags append-dedupe, TRPG exempt compress, TRPG thinking stream, and regenerateRoleCard', () => {
+  const llmSlot = {
+    provider: 'openai' as const,
+    apiKey: 'sk-test',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    jsonModeStrategy: 'auto' as const,
+  };
+
+  it('merges and deduplicates tags on generateCardField("tags") and emits unified progress text', async () => {
+    const existing = {
+      ...sampleContent,
+      tags: ['明日方舟', 'Rhodes', '罗德岛'],
+    };
+    expect(
+      mergeCardTagsDedupe(['#明日方舟', 'rhodes'], ['RHODES', '#奇美拉', '感染者', '明日方舟']),
+    ).toEqual(['明日方舟', 'rhodes', '奇美拉', '感染者']);
+
+    const progressMsgs: string[] = [];
+    const res = await generateCardField(existing, 'tags', {
+      llmSlot,
+      onProgress: (evt) => {
+        progressMsgs.push(evt.message);
+      },
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          value: ['#罗德岛', 'rhodes', '年轻领袖', '术士'],
+        }),
+      }),
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.content.tags).toEqual(['明日方舟', 'Rhodes', '罗德岛', '年轻领袖', '术士']);
+    expect(res.value.diffSummary).toContain('追加 2 个');
+    expect(progressMsgs.some((m) => m.includes('gpt-4o-mini') && m.includes('角色标签'))).toBe(true);
+  });
+
+  it('excludes extensions (TRPG panel) from compressRoleCard LLM prompt and restores it intact', async () => {
+    const cardWithTrpg: RoleCardContent = {
+      ...sampleContent,
+      extensions: {
+        trpg: {
+          system: 'Call of Cthulhu 7e',
+          occupation: '罗德岛首席执行官',
+          characteristics: { STR: 45, INT: 85, POW: 90 },
+        },
+      },
+    };
+
+    let capturedUserPrompt = '';
+    let capturedSystemPrompt = '';
+    const res = await compressRoleCard(cardWithTrpg, 500, {
+      llmSlot,
+      lockedFields: ['first_mes'],
+      llmPort: async (req) => {
+        capturedSystemPrompt = req.messages[0]?.content ?? '';
+        capturedUserPrompt = req.messages[1]?.content ?? '';
+        return {
+          status: 200,
+          content: JSON.stringify({
+            ...sampleContent,
+            summary: '精简后的简介',
+            first_mes: '被篡改的开场白',
+            extensions: { trpg: { mutated: true } },
+          }),
+        };
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(capturedSystemPrompt).not.toContain('无损');
+    expect(capturedUserPrompt).not.toContain('Call of Cthulhu 7e');
+    expect(res.value.content.summary).toBe('精简后的简介');
+    expect(res.value.content.first_mes).toBe(cardWithTrpg.first_mes);
+    expect(res.value.content.extensions).toEqual(cardWithTrpg.extensions);
+  });
+
+  it('regenerates all unlocked sections while preserving locked fields, name, and extensions, and rejects all-locked cards', async () => {
+    const cardWithTrpg: RoleCardContent = {
+      ...sampleContent,
+      extensions: { trpg: { system: 'D&D 5e', level: 5 } },
+    };
+
+    const allLockedRes = await regenerateRoleCard(cardWithTrpg, {
+      llmSlot,
+      lockedFields: [
+        'summary',
+        'personality',
+        'appearance',
+        'background',
+        'speech_style',
+        'relationships',
+        'first_mes',
+        'alternate_greetings',
+        'mes_example',
+        'system_prompt',
+        'scenario',
+        'creator_notes',
+        'tags',
+      ],
+      llmPort: async () => ({ status: 200, content: '{}' }),
+    });
+    expect(allLockedRes.ok).toBe(false);
+    if (!allLockedRes.ok) {
+      expect(allLockedRes.error.code).toBe('ALL_FIELDS_LOCKED');
+    }
+
+    const progressMsgs: string[] = [];
+    const regenRes = await regenerateRoleCard(cardWithTrpg, {
+      llmSlot,
+      lockedFields: ['personality', 'tags'],
+      onProgress: (evt) => {
+        progressMsgs.push(evt.message);
+      },
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          ...sampleContent,
+          name: '被改掉的名字',
+          summary: '一键重生成后的核心简介',
+          personality: '不该生效的性格',
+          first_mes: '一键重生成后的开场白',
+          tags: ['不该覆盖的标签'],
+          extensions: {},
+        }),
+      }),
+    });
+
+    expect(regenRes.ok).toBe(true);
+    if (!regenRes.ok) return;
+    expect(regenRes.value.content.name).toBe(cardWithTrpg.name);
+    expect(regenRes.value.content.summary).toBe('一键重生成后的核心简介');
+    expect(regenRes.value.content.first_mes).toBe('一键重生成后的开场白');
+    expect(regenRes.value.content.personality).toBe(cardWithTrpg.personality);
+    expect(regenRes.value.content.tags).toEqual(cardWithTrpg.tags);
+    expect(regenRes.value.content.extensions).toEqual(cardWithTrpg.extensions);
+    expect(regenRes.value.skippedLockedFields).toEqual(['personality', 'tags']);
+    expect(progressMsgs.some((m) => m.includes('gpt-4o-mini'))).toBe(true);
+  });
+
+  it('forwards progress and reasoning deltas during generateTrpgAttributesForCard', async () => {
+    const progressMsgs: string[] = [];
+    const thoughts: string[] = [];
+
+    const res = await generateTrpgAttributesForCard(sampleContent, 'coc7e', {
+      llmSlot,
+      onProgress: (evt) => {
+        progressMsgs.push(evt.message);
+      },
+      onReasoningDelta: (delta) => {
+        thoughts.push(delta);
+      },
+      llmPort: async (req) => {
+        await req.onReasoningDelta?.('先评估阿米娅的精神力与学识...');
+        return {
+          status: 200,
+          content: JSON.stringify({
+            trpg: {
+              system: 'Call of Cthulhu 7e',
+              occupation: '危机应对指挥官',
+              era: '近代架空',
+              characteristics: { STR: 40, CON: 55, SIZ: 45, DEX: 65, APP: 70, INT: 80, POW: 90, EDU: 75 },
+              derived: { HP: 10, MP: 18, SAN: 85, Luck: 60, Move: 8 },
+              keySkills: ['心理学 70%', '说服 75%'],
+            },
+          }),
+        };
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(thoughts.join('')).toContain('先评估阿米娅的精神力与学识');
+    expect(progressMsgs.some((m) => m.includes('gpt-4o-mini') && m.includes('CoC 7e'))).toBe(true);
   });
 });
 

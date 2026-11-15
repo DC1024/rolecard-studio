@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type {
   AutoApplyThreshold,
   CardGeneratableField,
+  CardRevisionSummary,
   DeclarativePluginManifest,
   ExportFormat,
   RoleCardContent,
@@ -10,6 +11,7 @@ import type {
   SyncScope,
 } from '@rolecard/shared';
 import {
+  AlertTriangle,
   ArrowLeft,
   BookOpen,
   Brain,
@@ -24,6 +26,7 @@ import {
   Edit3,
   ExternalLink,
   Globe,
+  History,
   Image as ImageIcon,
   Link2,
   Loader2,
@@ -37,7 +40,9 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Undo2,
   Unlock,
+  Wand2,
   X,
 } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
@@ -115,6 +120,7 @@ const LOCKABLE_FIELDS: { key: keyof RoleCardContent; label: string }[] = [
   { key: 'scenario', label: '场景设定' },
   { key: 'system_prompt', label: '系统提示词' },
   { key: 'creator_notes', label: '作者备注' },
+  { key: 'tags', label: '角色标签' },
 ];
 
 export function CardDetailPanel({
@@ -164,7 +170,8 @@ export function CardDetailPanel({
   } | null>(null);
   const [selectedSearchIndices, setSelectedSearchIndices] = useState<number[]>([]);
 
-  // Streaming progress & thinking states for top AI Refine and per-field AI Generate
+  // Streaming progress & thinking states for top AI Refine / Regenerate, per-field AI Generate, and TRPG
+  const [cardStreamMode, setCardStreamMode] = useState<'refine' | 'regenerate' | null>(null);
   const [refineProgressText, setRefineProgressText] = useState('');
   const [refineThinkingText, setRefineThinkingText] = useState('');
   const [refineThinkingExpanded, setRefineThinkingExpanded] = useState(true);
@@ -178,6 +185,20 @@ export function CardDetailPanel({
   const [fieldThinkingText, setFieldThinkingText] = useState('');
   const [fieldThinkingExpanded, setFieldThinkingExpanded] = useState(true);
   const fieldThinkingBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const [trpgStreamSystem, setTrpgStreamSystem] = useState<'coc7e' | 'dnd5e' | null>(null);
+  const [trpgProgressText, setTrpgProgressText] = useState('');
+  const [trpgThinkingText, setTrpgThinkingText] = useState('');
+  const [trpgThinkingExpanded, setTrpgThinkingExpanded] = useState(true);
+  const trpgThinkingBoxRef = useRef<HTMLPreElement | null>(null);
+
+  // Confirm modals, revisions rollback, and source item collapse/expand
+  const [regenerateModalOpen, setRegenerateModalOpen] = useState(false);
+  const [regenerateInstruction, setRegenerateInstruction] = useState('');
+  const [compressModalOpen, setCompressModalOpen] = useState(false);
+  const [revisions, setRevisions] = useState<CardRevisionSummary[]>([]);
+  const [revisionMenuOpen, setRevisionMenuOpen] = useState(false);
+  const [expandedSourceIndices, setExpandedSourceIndices] = useState<number[]>([]);
 
   useEffect(() => {
     api
@@ -209,11 +230,20 @@ export function CardDetailPanel({
         .catch(() => {
           setSchedule(null);
         });
+      api
+        .listCardRevisions(card.id)
+        .then((res) => {
+          setRevisions(res.revisions);
+        })
+        .catch(() => {
+          setRevisions([]);
+        });
     } else {
       setDraft(null);
       setLockedFields([]);
       setMetaSummaryDraft('');
       setSchedule(null);
+      setRevisions([]);
     }
   }, [card?.id, card?.version, card?.updatedAt]);
 
@@ -233,6 +263,7 @@ export function CardDetailPanel({
       setSearchMeta(null);
       setSelectedSearchIndices([]);
     }
+    setCardStreamMode(null);
     setRefineProgressText('');
     setRefineThinkingText('');
     setRefineThinkingExpanded(true);
@@ -240,6 +271,15 @@ export function CardDetailPanel({
     setFieldProgressText('');
     setFieldThinkingText('');
     setFieldThinkingExpanded(true);
+    setTrpgStreamSystem(null);
+    setTrpgProgressText('');
+    setTrpgThinkingText('');
+    setTrpgThinkingExpanded(true);
+    setRegenerateModalOpen(false);
+    setRegenerateInstruction('');
+    setCompressModalOpen(false);
+    setRevisionMenuOpen(false);
+    setExpandedSourceIndices([]);
   }, [card?.id]);
 
   useEffect(() => {
@@ -255,8 +295,15 @@ export function CardDetailPanel({
   }, [fieldThinkingText, fieldThinkingExpanded]);
 
   useEffect(() => {
+    if (trpgThinkingExpanded && trpgThinkingBoxRef.current) {
+      trpgThinkingBoxRef.current.scrollTop = trpgThinkingBoxRef.current.scrollHeight;
+    }
+  }, [trpgThinkingText, trpgThinkingExpanded]);
+
+  useEffect(() => {
     if (!card) return;
     setSelectedSourceIndices((prev) => prev.filter((idx) => idx >= 0 && idx < card.sources.length));
+    setExpandedSourceIndices((prev) => prev.filter((idx) => idx >= 0 && idx < card.sources.length));
   }, [card?.sources.length]);
 
   if (!card || !draft) {
@@ -356,7 +403,8 @@ export function CardDetailPanel({
     if (instruction.length < 2 || !canUpdate) return;
     setBusyAction('refine');
     setError(null);
-    setRefineProgressText('正在连接大模型并分析角色卡...');
+    setCardStreamMode('refine');
+    setRefineProgressText('正在准备调用模型执行整卡局部微调...');
     setRefineThinkingText('');
     setRefineThinkingExpanded(true);
     try {
@@ -388,18 +436,78 @@ export function CardDetailPanel({
     }
   };
 
-  const handleCompress = async () => {
+  const handleConfirmRegenerate = async () => {
     if (!canUpdate) return;
+    setRegenerateModalOpen(false);
+    setBusyAction('regenerate');
+    setError(null);
+    setCardStreamMode('regenerate');
+    setRefineProgressText('正在准备调用模型一键生成未锁定区块...');
+    setRefineThinkingText('');
+    setRefineThinkingExpanded(true);
+    try {
+      const res = await api.regenerateCardSse(
+        card.id,
+        {
+          instruction: regenerateInstruction.trim(),
+          sourceIndices: selectedSourceIndices.length > 0 ? selectedSourceIndices : undefined,
+        },
+        {
+          onProgress: (message) => {
+            setRefineProgressText(message);
+          },
+          onThinking: (delta) => {
+            setRefineThinkingText((prev) => prev + delta);
+          },
+        },
+      );
+      setRegenerateInstruction('');
+      setRefineProgressText('');
+      setRefineThinkingExpanded(false);
+      onCardUpdated(res.card, res.diffSummary || '一键 AI 生成完成');
+      notifySuccess(res.diffSummary || '已完成一键 AI 生成');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '一键 AI 生成失败';
+      setRefineProgressText('');
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleConfirmCompress = async () => {
+    if (!canUpdate) return;
+    setCompressModalOpen(false);
     setBusyAction('compress');
     setError(null);
     try {
       const res = await api.compressCard(card.id, 1200);
-      onCardUpdated(
-        res.card,
-        `无损精简完成：${res.beforeTokens} → ${res.afterTokens} tokens`,
-      );
+      const summary = `语义精简完成：${res.beforeTokens} → ${res.afterTokens} tokens（已保留锁定字段与 TRPG 面板）`;
+      onCardUpdated(res.card, summary);
+      notifySuccess(summary);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '精简失败');
+      const msg = err instanceof Error ? err.message : '语义精简失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleRollback = async (revisionId?: string) => {
+    if (!canUpdate) return;
+    setRevisionMenuOpen(false);
+    setBusyAction('rollback');
+    setError(null);
+    try {
+      const res = await api.rollbackCardRevision(card.id, revisionId);
+      onCardUpdated(res.card, res.card.diffSummary || '已撤回至历史版本');
+      notifySuccess(res.card.diffSummary || '已撤回至历史版本');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '撤回版本失败';
+      setError(msg);
+      notifyError(msg);
     } finally {
       setBusyAction(null);
     }
@@ -438,17 +546,60 @@ export function CardDetailPanel({
 
   const handleGenerateTrpg = async (system: 'coc7e' | 'dnd5e') => {
     if (!canUpdate) return;
+    const systemLabel = system === 'coc7e' ? 'CoC 7e 调查员规则面板' : 'D&D 5e 冒险者规则面板';
     setBusyAction(`trpg-${system}`);
     setError(null);
+    setTrpgStreamSystem(system);
+    setTrpgProgressText(`正在准备调用模型推演「${systemLabel}」...`);
+    setTrpgThinkingText('');
+    setTrpgThinkingExpanded(true);
     try {
-      const res = await api.generateCardTrpgStats(card.id, system);
-      const label = system === 'coc7e' ? 'CoC 7e 调查员数据' : 'D&D 5e 冒险者数据';
-      onCardUpdated(res.card, `已根据角色设定生成 ${label}`);
-      notifySuccess(`已生成 ${label}`);
+      const res = await api.generateCardTrpgStatsSse(card.id, system, {
+        onProgress: (message) => {
+          setTrpgProgressText(message);
+        },
+        onThinking: (delta) => {
+          setTrpgThinkingText((prev) => prev + delta);
+        },
+      });
+      setTrpgProgressText('');
+      setTrpgThinkingExpanded(false);
+      onCardUpdated(res.card, `已根据角色设定推演 ${systemLabel}`);
+      notifySuccess(`已生成 ${systemLabel}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '生成 TRPG 数据失败';
+      setTrpgProgressText('');
       setError(msg);
       notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSaveTrpg = async (nextTrpg: Record<string, unknown>) => {
+    if (!canUpdate) return;
+    setBusyAction('save-trpg');
+    setError(null);
+    try {
+      const nextContent: RoleCardContent = {
+        ...card.content,
+        extensions: {
+          ...card.content.extensions,
+          trpg: nextTrpg,
+        },
+      };
+      const res = await api.updateCardContent(card.id, {
+        content: nextContent,
+        lockedFields,
+        tags: card.tags,
+      });
+      onCardUpdated(res.card, '已手动更新 TRPG 规则面板属性');
+      notifySuccess('已保存 TRPG 规则面板修改');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '保存 TRPG 属性失败';
+      setError(msg);
+      notifyError(msg);
+      throw err;
     } finally {
       setBusyAction(null);
     }
@@ -465,7 +616,7 @@ export function CardDetailPanel({
     setBusyAction(`gen-${field}`);
     setError(null);
     setFieldStreamTarget({ field, label });
-    setFieldProgressText(`正在准备生成「${label}」...`);
+    setFieldProgressText(`正在准备调用模型生成「${label}」...`);
     setFieldThinkingText('');
     setFieldThinkingExpanded(true);
     try {
@@ -488,7 +639,11 @@ export function CardDetailPanel({
       setFieldProgressText('');
       setFieldThinkingExpanded(false);
       onCardUpdated(res.card, res.diffSummary);
-      notifySuccess(`已为「${res.fieldLabel}」生成新内容`);
+      notifySuccess(
+        field === 'tags'
+          ? res.diffSummary
+          : `已为「${res.fieldLabel}」生成新内容`,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : `AI 生成「${label}」失败`;
       setFieldProgressText('');
@@ -743,7 +898,7 @@ export function CardDetailPanel({
         {(isGenerating || fieldProgressText) && (
           <div className="flex items-center gap-2 font-medium text-status-info">
             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            <span>{fieldProgressText || `正在为「${fieldStreamTarget?.label ?? field}」生成内容...`}</span>
+            <span>{fieldProgressText || `正在调用模型生成「${fieldStreamTarget?.label ?? field}」...`}</span>
           </div>
         )}
         {fieldThinkingText && (
@@ -902,50 +1057,74 @@ export function CardDetailPanel({
             )}
 
             {/* Tags */}
-            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-              {card.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 rounded-full border border-line bg-subtle px-2 py-0.5 text-[11px] text-content-secondary"
-                >
-                  {tag}
-                  {canUpdate && (
+            <div className="mt-2.5 space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {card.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center gap-1 rounded-full border border-line bg-subtle px-2 py-0.5 text-[11px] text-content-secondary"
+                  >
+                    {tag}
+                    {canUpdate && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTag(tag)}
+                        className="text-content-muted hover:text-status-danger"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    )}
+                  </span>
+                ))}
+                {canUpdate && (
+                  <>
+                    <div className="inline-flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={newTag}
+                        onChange={(e) => setNewTag(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleAddTag();
+                          }
+                        }}
+                        placeholder="+ 标签"
+                        className="h-6 w-20 rounded-full border border-line bg-surface px-2 text-[11px] text-content-primary outline-none focus:w-28 focus:border-accent"
+                      />
+                      {newTag.trim() && (
+                        <button
+                          type="button"
+                          onClick={handleAddTag}
+                          className="rounded-full bg-accent p-1 text-content-inverse"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
                     <button
                       type="button"
-                      onClick={() => handleRemoveTag(tag)}
-                      className="text-content-muted hover:text-status-danger"
-                    >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  )}
-                </span>
-              ))}
-              {canUpdate && (
-                <div className="inline-flex items-center gap-1">
-                  <input
-                    type="text"
-                    value={newTag}
-                    onChange={(e) => setNewTag(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleAddTag();
+                      disabled={busyAction !== null || lockedFields.includes('tags')}
+                      onClick={() => void handleGenerateField('tags', '角色标签')}
+                      title={
+                        lockedFields.includes('tags')
+                          ? '标签已锁定，解锁后可使用 AI 生成'
+                          : '结合人设与资料 AI 生成标签（保留已有标签并追加去重）'
                       }
-                    }}
-                    placeholder="+ 标签"
-                    className="h-6 w-20 rounded-full border border-line bg-surface px-2 text-[11px] text-content-primary outline-none focus:w-28 focus:border-accent"
-                  />
-                  {newTag.trim() && (
-                    <button
-                      type="button"
-                      onClick={handleAddTag}
-                      className="rounded-full bg-accent p-1 text-content-inverse"
+                      className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-line bg-surface px-2 text-[11px] font-medium text-content-secondary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
                     >
-                      <Plus className="h-3 w-3" />
+                      {busyAction === 'gen-tags' ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-accent" />
+                      ) : (
+                        <Sparkles className="h-3 w-3 text-accent" />
+                      )}
+                      <span>{busyAction === 'gen-tags' ? '生成中...' : 'AI 生成标签'}</span>
                     </button>
-                  )}
-                </div>
-              )}
+                    {renderLockButton('tags')}
+                  </>
+                )}
+              </div>
+              {renderFieldStreamPanel('tags')}
             </div>
           </div>
         </div>
@@ -999,16 +1178,122 @@ export function CardDetailPanel({
             </>
           )}
 
+          {canUpdate && !editing && (
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => setRegenerateModalOpen(true)}
+              title="一键协同重写除已锁定区块外的全部设定"
+              className="inline-flex h-8 items-center gap-1 rounded-sm border border-accent/50 bg-accent/10 px-2.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+            >
+              {busyAction === 'regenerate' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              一键 AI 生成
+            </button>
+          )}
+
+          {canUpdate && !editing && (
+            <div className="relative flex items-center">
+              <button
+                type="button"
+                disabled={busyAction !== null || revisions.length === 0}
+                onClick={() => void handleRollback(revisions[0]?.id)}
+                title={
+                  revisions[0]
+                    ? `撤回至上一版本：${revisions[0].summary || revisions[0].action}`
+                    : '暂无可撤回的历史版本（执行编辑/AI 生成/精简后将自动留存快照）'
+                }
+                className="inline-flex h-8 items-center gap-1 rounded-l-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {busyAction === 'rollback' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Undo2 className="h-3.5 w-3.5" />
+                )}
+                撤回上一版
+              </button>
+              <button
+                type="button"
+                disabled={busyAction !== null || revisions.length === 0}
+                onClick={() => setRevisionMenuOpen((prev) => !prev)}
+                title="查看并选择历史版本快照"
+                className="inline-flex h-8 items-center gap-1 rounded-r-sm border border-l-0 border-line bg-surface px-1.5 text-[11px] text-content-muted hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <History className="h-3.5 w-3.5" />
+                {revisions.length > 0 && (
+                  <span className="font-mono text-[10px]">{revisions.length}</span>
+                )}
+              </button>
+
+              {revisionMenuOpen && revisions.length > 0 && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setRevisionMenuOpen(false)}
+                  />
+                  <div className="absolute right-0 top-9 z-40 w-80 rounded-md border border-line bg-elevated p-2.5 shadow-xl">
+                    <div className="mb-2 flex items-center justify-between border-b border-line-subtle pb-1.5">
+                      <span className="text-xs font-semibold text-content-primary">
+                        历史版本快照（最近 {revisions.length} 条）
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setRevisionMenuOpen(false)}
+                        className="text-content-muted hover:text-content-primary"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="max-h-64 space-y-1.5 overflow-y-auto pr-0.5 text-xs">
+                      {revisions.map((rev, idx) => (
+                        <div
+                          key={rev.id}
+                          className="flex items-start justify-between gap-2 rounded-sm border border-line-subtle bg-surface p-2"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              {idx === 0 && (
+                                <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-semibold text-accent">
+                                  上一版
+                                </span>
+                              )}
+                              <span className="truncate font-medium text-content-primary">
+                                {rev.summary || rev.action}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 font-mono text-[10px] text-content-muted">
+                              {new Date(rev.createdAt).toLocaleString()} · {rev.tokenCount} tok
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRollback(rev.id)}
+                            className="shrink-0 rounded-sm border border-line bg-canvas px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent"
+                          >
+                            恢复
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {canUpdate && (
             <button
               type="button"
               disabled={busyAction !== null}
-              onClick={handleCompress}
-              title="无损压缩至约 1200 tokens（跳过锁定字段）"
+              onClick={() => setCompressModalOpen(true)}
+              title="有损语义精简至约 1200 tokens（跳过锁定字段与 TRPG 面板，可能影响角色细节精准度）"
               className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:opacity-50"
             >
               <Minimize2 className="h-3.5 w-3.5" />
-              精简
+              {busyAction === 'compress' ? '精简中...' : '精简'}
             </button>
           )}
 
@@ -1242,12 +1527,20 @@ export function CardDetailPanel({
         )}
       </div>
 
-      {(busyAction === 'refine' || refineProgressText || refineThinkingText) && (
+      {(busyAction === 'refine' ||
+        busyAction === 'regenerate' ||
+        refineProgressText ||
+        refineThinkingText) && (
         <div className="mb-3 space-y-2 rounded-md border border-line bg-subtle p-3 text-xs">
-          {(busyAction === 'refine' || refineProgressText) && (
+          {(busyAction === 'refine' || busyAction === 'regenerate' || refineProgressText) && (
             <div className="flex items-center gap-2 font-medium text-status-info">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-              <span>{refineProgressText || '正在执行 AI 微调...'}</span>
+              <span>
+                {refineProgressText ||
+                  (cardStreamMode === 'regenerate'
+                    ? '正在调用模型一键生成未锁定区块...'
+                    : '正在调用模型执行 AI 微调...')}
+              </span>
             </div>
           )}
           {refineThinkingText && (
@@ -1260,7 +1553,8 @@ export function CardDetailPanel({
                 >
                   <span className="inline-flex items-center gap-1.5">
                     <Brain className="h-3.5 w-3.5 text-accent" />
-                    AI 微调思考过程（{refineThinkingText.length} 字）
+                    {cardStreamMode === 'regenerate' ? '一键 AI 生成思考过程' : 'AI 微调思考过程'}（
+                    {refineThinkingText.length} 字）
                   </span>
                   {refineThinkingExpanded ? (
                     <ChevronUp className="h-3.5 w-3.5" />
@@ -1268,11 +1562,12 @@ export function CardDetailPanel({
                     <ChevronDown className="h-3.5 w-3.5" />
                   )}
                 </button>
-                {busyAction !== 'refine' && (
+                {busyAction !== 'refine' && busyAction !== 'regenerate' && (
                   <button
                     type="button"
                     title="关闭思考记录"
                     onClick={() => {
+                      setCardStreamMode(null);
                       setRefineThinkingText('');
                       setRefineProgressText('');
                     }}
@@ -1440,6 +1735,9 @@ export function CardDetailPanel({
               <div className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
                 <Dice5 className="h-3.5 w-3.5 text-accent" />
                 <span>TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)</span>
+                <span className="rounded bg-subtle px-1.5 py-0.5 text-[10px] font-normal text-content-muted">
+                  已豁免精简 · 支持手工修改
+                </span>
               </div>
               {canUpdate && (
                 <div className="flex flex-wrap gap-1.5">
@@ -1447,28 +1745,97 @@ export function CardDetailPanel({
                     type="button"
                     disabled={busyAction !== null}
                     onClick={() => handleGenerateTrpg('coc7e')}
-                    className="rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
                   >
+                    {busyAction === 'trpg-coc7e' && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
                     {busyAction === 'trpg-coc7e' ? '推演中...' : 'AI 推演 CoC 7e'}
                   </button>
                   <button
                     type="button"
                     disabled={busyAction !== null}
                     onClick={() => handleGenerateTrpg('dnd5e')}
-                    className="rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
                   >
+                    {busyAction === 'trpg-dnd5e' && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
                     {busyAction === 'trpg-dnd5e' ? '推演中...' : 'AI 推演 D&D 5e'}
                   </button>
                 </div>
               )}
             </div>
 
+            {(busyAction === 'trpg-coc7e' ||
+              busyAction === 'trpg-dnd5e' ||
+              trpgProgressText ||
+              trpgThinkingText) && (
+              <div className="mb-2.5 space-y-2 rounded-sm border border-line bg-surface p-2.5 text-xs">
+                {(busyAction === 'trpg-coc7e' ||
+                  busyAction === 'trpg-dnd5e' ||
+                  trpgProgressText) && (
+                  <div className="flex items-center gap-2 font-medium text-status-info">
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    <span>
+                      {trpgProgressText ||
+                        `正在调用模型推演 ${trpgStreamSystem === 'dnd5e' ? 'D&D 5e' : 'CoC 7e'} 规则面板...`}
+                    </span>
+                  </div>
+                )}
+                {trpgThinkingText && (
+                  <div className="rounded-sm border border-line-subtle bg-canvas">
+                    <div className="flex items-center justify-between px-2.5 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setTrpgThinkingExpanded((prev) => !prev)}
+                        className="flex flex-1 items-center justify-between text-left text-[11px] font-semibold text-content-secondary hover:text-content-primary"
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          <Brain className="h-3.5 w-3.5 text-accent" />
+                          TRPG 规则推演思考过程（{trpgThinkingText.length} 字）
+                        </span>
+                        {trpgThinkingExpanded ? (
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                      {busyAction !== 'trpg-coc7e' && busyAction !== 'trpg-dnd5e' && (
+                        <button
+                          type="button"
+                          title="关闭思考记录"
+                          onClick={() => {
+                            setTrpgStreamSystem(null);
+                            setTrpgThinkingText('');
+                            setTrpgProgressText('');
+                          }}
+                          className="ml-2 text-content-muted hover:text-content-primary"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {trpgThinkingExpanded && (
+                      <pre
+                        ref={trpgThinkingBoxRef}
+                        className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line-subtle px-2.5 py-2 font-mono text-[11px] leading-relaxed text-content-secondary"
+                      >
+                        {trpgThinkingText}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {typeof card.content.extensions.trpg === 'object' &&
             card.content.extensions.trpg !== null ? (
-              <TrpgPanelView trpg={card.content.extensions.trpg as Record<string, unknown>} />
+              <TrpgPanelView
+                trpg={card.content.extensions.trpg as Record<string, unknown>}
+                canEdit={canUpdate && !editing && busyAction === null}
+                saving={busyAction === 'save-trpg'}
+                onSave={handleSaveTrpg}
+              />
             ) : (
               <p className="text-xs text-content-muted">
-                当前角色尚未绑定 TRPG 数值面板。点击右上角「AI 推演 CoC 7e / D&amp;D 5e」可根据人设自动生成真实属性并解锁跑团车卡表与 Foundry VTT 导出。
+                当前角色尚未绑定 TRPG 数值面板。点击右上角「AI 推演 CoC 7e / D&amp;D 5e」可根据人设自动生成真实属性并解锁跑团车卡表、手动编辑与 Foundry VTT 导出。
               </p>
             )}
           </div>
@@ -1816,28 +2183,43 @@ export function CardDetailPanel({
               <span>
                 {selectedSourceIndices.length > 0
                   ? `已勾选 ${selectedSourceIndices.length} / ${card.sources.length} 条引用，将精准注入「AI 微调」与各区块「AI 生成」`
-                  : `共 ${card.sources.length} 条引用（未单独勾选时默认优先参考最新加入的引用）`}
+                  : `共 ${card.sources.length} 条引用（默认折叠展示，点击单条「展开」可阅读全文；未勾选时优先参考最新资料）`}
               </span>
-              {canUpdate && (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSourceIndices(card.sources.map((_, idx) => idx))}
-                    className="text-accent hover:underline"
-                  >
-                    全选用于生成
-                  </button>
-                  {selectedSourceIndices.length > 0 && (
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedSourceIndices(
+                      expandedSourceIndices.length === card.sources.length
+                        ? []
+                        : card.sources.map((_, idx) => idx),
+                    )
+                  }
+                  className="text-content-secondary hover:text-accent"
+                >
+                  {expandedSourceIndices.length === card.sources.length ? '全部折叠' : '全部展开'}
+                </button>
+                {canUpdate && (
+                  <>
                     <button
                       type="button"
-                      onClick={() => setSelectedSourceIndices([])}
-                      className="text-content-muted hover:text-content-primary"
+                      onClick={() => setSelectedSourceIndices(card.sources.map((_, idx) => idx))}
+                      className="text-accent hover:underline"
                     >
-                      清空勾选
+                      全选用于生成
                     </button>
-                  )}
-                </div>
-              )}
+                    {selectedSourceIndices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSourceIndices([])}
+                        className="text-content-muted hover:text-content-primary"
+                      >
+                        清空勾选
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           )}
 
@@ -1849,6 +2231,7 @@ export function CardDetailPanel({
             ) : (
               card.sources.map((src, idx) => {
                 const isSelected = selectedSourceIndices.includes(idx);
+                const isExpanded = expandedSourceIndices.includes(idx);
                 return (
                   <div
                     key={`${src.title}-${idx}`}
@@ -1859,7 +2242,7 @@ export function CardDetailPanel({
                     }`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         {canUpdate && (
                           <input
                             type="checkbox"
@@ -1891,6 +2274,29 @@ export function CardDetailPanel({
                         )}
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedSourceIndices((prev) =>
+                              prev.includes(idx)
+                                ? prev.filter((item) => item !== idx)
+                                : [...prev, idx],
+                            )
+                          }
+                          className="inline-flex items-center gap-0.5 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-content-secondary hover:border-accent hover:text-accent"
+                        >
+                          {isExpanded ? (
+                            <>
+                              <ChevronUp className="h-3 w-3" />
+                              收起
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-3 w-3" />
+                              展开 ({src.snippet.length} 字)
+                            </>
+                          )}
+                        </button>
                         {src.url && /^https?:\/\//i.test(src.url) && (
                           <a
                             href={src.url}
@@ -1915,9 +2321,15 @@ export function CardDetailPanel({
                         )}
                       </div>
                     </div>
-                    <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-content-secondary">
-                      {src.snippet}
-                    </p>
+                    {isExpanded ? (
+                      <p className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap rounded-sm border border-line-subtle bg-surface p-2.5 text-xs leading-relaxed text-content-secondary">
+                        {src.snippet}
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 line-clamp-2 whitespace-pre-wrap text-xs leading-relaxed text-content-secondary">
+                        {src.snippet}
+                      </p>
+                    )}
                   </div>
                 );
               })
@@ -2150,11 +2562,166 @@ export function CardDetailPanel({
           </div>
         </div>
       )}
+
+      {/* Regenerate confirmation modal */}
+      {regenerateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <div className="w-full max-w-md rounded-lg border border-line bg-elevated p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-4 w-4 text-accent" />
+                <h3 className="text-sm font-semibold text-content-primary">
+                  确认执行「一键 AI 生成」？
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRegenerateModalOpen(false)}
+                className="text-content-muted hover:text-content-primary"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-2.5 text-xs text-content-secondary">
+              <p>
+                将结合当前人设、已锁定区块以及
+                {selectedSourceIndices.length > 0
+                  ? `已勾选的 ${selectedSourceIndices.length} 条参考资料`
+                  : '最新参考资料'}
+                ，协同重写所有<strong className="text-content-primary">未锁定</strong>的角色卡区块。
+              </p>
+
+              <div className="rounded-sm border border-line-subtle bg-canvas p-2.5 space-y-1.5 text-[11px]">
+                <div>
+                  <span className="font-semibold text-content-primary">即将重写的区块：</span>
+                  {LOCKABLE_FIELDS.filter((f) => !lockedFields.includes(f.key)).length > 0
+                    ? LOCKABLE_FIELDS.filter((f) => !lockedFields.includes(f.key))
+                        .map((f) => f.label)
+                        .join('、')
+                    : '（无，所有区块均已锁定）'}
+                </div>
+                {lockedFields.length > 0 && (
+                  <div className="text-status-warning">
+                    <span className="font-semibold">已锁定（跳过保护）：</span>
+                    {LOCKABLE_FIELDS.filter((f) => lockedFields.includes(f.key))
+                      .map((f) => f.label)
+                      .join('、') || lockedFields.join('、')}
+                  </div>
+                )}
+                <div className="text-content-muted">
+                  注：角色名称与 TRPG 规则面板属性将自动原样保留；生成前会保存历史快照，随时可点击「撤回上一版」恢复。
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-medium text-content-primary">
+                  补充整体生成要求（可选）
+                </label>
+                <textarea
+                  rows={2}
+                  value={regenerateInstruction}
+                  onChange={(e) => setRegenerateInstruction(e.target.value)}
+                  placeholder="例如：整体文风更偏冷峻写实，强化后期剧情转折..."
+                  className="w-full rounded-sm border border-line bg-surface p-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRegenerateModalOpen(false)}
+                className="h-8 rounded-sm border border-line px-3 text-xs text-content-secondary hover:bg-subtle"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={
+                  LOCKABLE_FIELDS.filter((f) => !lockedFields.includes(f.key)).length === 0
+                }
+                onClick={() => void handleConfirmRegenerate()}
+                className="inline-flex h-8 items-center gap-1 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+                确认开始生成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Lossy semantic compress warning modal */}
+      {compressModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <div className="w-full max-w-md rounded-lg border border-line bg-elevated p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-status-warning" />
+                <h3 className="text-sm font-semibold text-content-primary">
+                  有损语义精简风险提示
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompressModalOpen(false)}
+                className="text-content-muted hover:text-content-primary"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-2.5 text-xs leading-relaxed text-content-secondary">
+              <div className="rounded-sm border border-status-warning/40 bg-status-warning/10 p-2.5 text-status-warning">
+                <strong>注意：精简并非“无损压缩”。</strong>
+                系统将调用大模型把正文浓缩至约 1200 tokens，过程中可能会删减部分背景细节、对话范例或口癖描写，<strong>角色扮演精准度可能会受到一定影响</strong>。
+              </div>
+              <p>
+                当前角色卡约 <strong className="font-mono text-content-primary">{card.tokenCount} tokens</strong>。
+              </p>
+              <ul className="list-disc space-y-1 pl-4 text-[11px] text-content-muted">
+                <li>「TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)」不计入上下文 Token，本次精简将<strong>完整豁免</strong>，不会被改写。</li>
+                <li>所有已锁定的区块将保持原样，不参与精简。</li>
+                <li>精简前系统会自动保存当前版本快照，若效果不理想可随时点击「撤回上一版」。</li>
+              </ul>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCompressModalOpen(false)}
+                className="h-8 rounded-sm border border-line px-3 text-xs text-content-secondary hover:bg-subtle"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmCompress()}
+                className="inline-flex h-8 items-center gap-1 rounded-sm bg-status-warning px-3 text-xs font-medium text-content-inverse hover:opacity-90"
+              >
+                <Minimize2 className="h-3.5 w-3.5" />
+                已知晓风险，确认精简
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
-function TrpgPanelView({ trpg }: { trpg: Record<string, unknown> }) {
+function TrpgPanelView({
+  trpg,
+  canEdit,
+  saving,
+  onSave,
+}: {
+  trpg: Record<string, unknown>;
+  canEdit: boolean;
+  saving: boolean;
+  onSave: (nextTrpg: Record<string, unknown>) => Promise<void>;
+}) {
   const sysText = String(trpg.system ?? '');
   const isCoc =
     sysText.toLowerCase().includes('cthulhu') ||
@@ -2168,6 +2735,366 @@ function TrpgPanelView({ trpg }: { trpg: Record<string, unknown> }) {
   const asArr = (val: unknown): string[] =>
     Array.isArray(val) ? val.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
 
+  const [editingTrpg, setEditingTrpg] = useState(false);
+  const [jsonMode, setJsonMode] = useState(false);
+  const [trpgDraft, setTrpgDraft] = useState<Record<string, unknown>>(() => structuredClone(trpg));
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(trpg, null, 2));
+  const [trpgEditError, setTrpgEditError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setTrpgDraft(structuredClone(trpg));
+    setJsonText(JSON.stringify(trpg, null, 2));
+    setEditingTrpg(false);
+    setJsonMode(false);
+    setTrpgEditError(null);
+  }, [trpg]);
+
+  const handleEnterEdit = () => {
+    setTrpgDraft(structuredClone(trpg));
+    setJsonText(JSON.stringify(trpg, null, 2));
+    setTrpgEditError(null);
+    setEditingTrpg(true);
+  };
+
+  const handleSaveTrpgEdit = async () => {
+    setTrpgEditError(null);
+    let payload: Record<string, unknown> = trpgDraft;
+    if (jsonMode) {
+      try {
+        const parsed = JSON.parse(jsonText);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          setTrpgEditError('JSON 根节点必须是对象');
+          return;
+        }
+        payload = parsed as Record<string, unknown>;
+      } catch (err) {
+        setTrpgEditError(err instanceof Error ? `JSON 格式无效：${err.message}` : 'JSON 格式无效');
+        return;
+      }
+    }
+    try {
+      await onSave(payload);
+      setEditingTrpg(false);
+    } catch {
+      // Error already surfaced via parent handler
+    }
+  };
+
+  if (editingTrpg) {
+    const cocOrder = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU'] as const;
+    const cocDerivedOrder = ['HP', 'MP', 'SAN', 'Luck', 'Move'] as const;
+    const dndOrder = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'] as const;
+    const dndCombatOrder = ['AC', 'MaxHP', 'Speed', 'ProficiencyBonus'] as const;
+
+    const draftChars = asRec(trpgDraft.characteristics);
+    const draftDerived = asRec(trpgDraft.derived);
+    const draftAbilities = asRec(trpgDraft.abilityScores);
+    const draftCombat = asRec(trpgDraft.combat);
+
+    return (
+      <div className="space-y-3 rounded-sm border border-accent/40 bg-surface p-3 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-subtle pb-2">
+          <span className="font-semibold text-content-primary">
+            编辑 {isCoc ? 'CoC 7e 调查员' : 'D&D 5e 冒险者'}属性
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              if (!jsonMode) {
+                setJsonText(JSON.stringify(trpgDraft, null, 2));
+                setJsonMode(true);
+              } else {
+                try {
+                  const parsed = JSON.parse(jsonText);
+                  if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+                    setTrpgDraft(parsed as Record<string, unknown>);
+                  }
+                } catch {
+                  // Ignore invalid intermediate JSON when switching back
+                }
+                setJsonMode(false);
+              }
+              setTrpgEditError(null);
+            }}
+            className="rounded border border-line bg-canvas px-2 py-0.5 text-[11px] text-content-secondary hover:border-accent hover:text-accent"
+          >
+            {jsonMode ? '切换表单编辑' : '切换原始 JSON'}
+          </button>
+        </div>
+
+        {trpgEditError && (
+          <div className="rounded-sm border border-status-danger/40 bg-status-danger/10 px-2.5 py-1.5 text-[11px] text-status-danger">
+            {trpgEditError}
+          </div>
+        )}
+
+        {jsonMode ? (
+          <textarea
+            rows={12}
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+            className="w-full rounded-sm border border-line bg-canvas p-2 font-mono text-[11px] leading-relaxed text-content-primary outline-none focus:border-accent"
+          />
+        ) : isCoc ? (
+          <div className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">职业 (occupation)</span>
+                <input
+                  type="text"
+                  value={String(trpgDraft.occupation ?? '')}
+                  onChange={(e) => setTrpgDraft({ ...trpgDraft, occupation: e.target.value })}
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">年代 (era)</span>
+                <input
+                  type="text"
+                  value={String(trpgDraft.era ?? '')}
+                  onChange={(e) => setTrpgDraft({ ...trpgDraft, era: e.target.value })}
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+            </div>
+
+            <div>
+              <span className="mb-1 block text-[11px] text-content-muted">基础属性 (0-99)</span>
+              <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8">
+                {cocOrder.map((k) => {
+                  const val = Number(draftChars[k] ?? 50);
+                  return (
+                    <div key={k} className="rounded-sm border border-line bg-canvas p-1.5 text-center">
+                      <div className="text-[10px] font-medium text-content-muted">{k}</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={200}
+                        value={Number.isFinite(val) ? val : 50}
+                        onChange={(e) => {
+                          const nextVal = Math.max(0, Number(e.target.value) || 0);
+                          setTrpgDraft({
+                            ...trpgDraft,
+                            characteristics: { ...draftChars, [k]: nextVal },
+                          });
+                        }}
+                        className="mt-0.5 h-6 w-full rounded-sm border border-line bg-surface text-center font-mono text-xs font-semibold text-content-primary outline-none focus:border-accent"
+                      />
+                      <div className="mt-0.5 font-mono text-[10px] text-content-muted">
+                        {Math.floor(val / 2)} / {Math.floor(val / 5)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <span className="mb-1 block text-[11px] text-content-muted">派生属性</span>
+              <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
+                {cocDerivedOrder.map((k) => (
+                  <label key={k} className="space-y-0.5">
+                    <span className="block text-[10px] text-content-muted">{k}</span>
+                    <input
+                      type="number"
+                      value={Number(draftDerived[k] ?? 0)}
+                      onChange={(e) =>
+                        setTrpgDraft({
+                          ...trpgDraft,
+                          derived: { ...draftDerived, [k]: Number(e.target.value) || 0 },
+                        })
+                      }
+                      className="h-7 w-full rounded-sm border border-line bg-canvas px-2 font-mono text-xs text-content-primary outline-none focus:border-accent"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <label className="block space-y-1">
+              <span className="block text-[11px] text-content-muted">核心技能（逗号、顿号或换行分隔）</span>
+              <textarea
+                rows={2}
+                value={asArr(trpgDraft.keySkills).join('、')}
+                onChange={(e) =>
+                  setTrpgDraft({
+                    ...trpgDraft,
+                    keySkills: e.target.value
+                      .split(/[、,，\n]+/)
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+                className="w-full rounded-sm border border-line bg-canvas p-2 text-xs text-content-primary outline-none focus:border-accent"
+              />
+            </label>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid gap-2 sm:grid-cols-4">
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">等级 (level)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={Number(trpgDraft.level ?? 1)}
+                  onChange={(e) =>
+                    setTrpgDraft({ ...trpgDraft, level: Math.max(1, Number(e.target.value) || 1) })
+                  }
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 font-mono text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">种族 (race)</span>
+                <input
+                  type="text"
+                  value={String(trpgDraft.race ?? '')}
+                  onChange={(e) => setTrpgDraft({ ...trpgDraft, race: e.target.value })}
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">职业 (className)</span>
+                <input
+                  type="text"
+                  value={String(trpgDraft.className ?? '')}
+                  onChange={(e) => setTrpgDraft({ ...trpgDraft, className: e.target.value })}
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="block text-[11px] text-content-muted">阵营 (alignment)</span>
+                <input
+                  type="text"
+                  value={String(trpgDraft.alignment ?? '')}
+                  onChange={(e) => setTrpgDraft({ ...trpgDraft, alignment: e.target.value })}
+                  className="h-7 w-full rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+            </div>
+
+            <div>
+              <span className="mb-1 block text-[11px] text-content-muted">六维属性 (1-30)</span>
+              <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+                {dndOrder.map((k) => {
+                  const score = Number(draftAbilities[k] ?? 10);
+                  const mod = Math.floor((score - 10) / 2);
+                  return (
+                    <div key={k} className="rounded-sm border border-line bg-canvas p-1.5 text-center">
+                      <div className="text-[10px] font-medium text-content-muted">{k}</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={Number.isFinite(score) ? score : 10}
+                        onChange={(e) => {
+                          const nextScore = Math.max(1, Number(e.target.value) || 1);
+                          setTrpgDraft({
+                            ...trpgDraft,
+                            abilityScores: { ...draftAbilities, [k]: nextScore },
+                          });
+                        }}
+                        className="mt-0.5 h-6 w-full rounded-sm border border-line bg-surface text-center font-mono text-xs font-semibold text-content-primary outline-none focus:border-accent"
+                      />
+                      <div className="mt-0.5 font-mono text-[10px] text-accent">
+                        {mod >= 0 ? `+${mod}` : String(mod)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <span className="mb-1 block text-[11px] text-content-muted">战斗数值</span>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {dndCombatOrder.map((k) => (
+                  <label key={k} className="space-y-0.5">
+                    <span className="block text-[10px] text-content-muted">{k}</span>
+                    <input
+                      type="text"
+                      value={String(draftCombat[k] ?? '')}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const parsed = k === 'Speed' ? raw : Number(raw);
+                        setTrpgDraft({
+                          ...trpgDraft,
+                          combat: {
+                            ...draftCombat,
+                            [k]: k !== 'Speed' && raw.trim() !== '' && Number.isFinite(parsed) ? parsed : raw,
+                          },
+                        });
+                      }}
+                      className="h-7 w-full rounded-sm border border-line bg-canvas px-2 font-mono text-xs text-content-primary outline-none focus:border-accent"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="block space-y-1">
+                <span className="block text-[11px] text-content-muted">熟练项（顿号、逗号或换行分隔）</span>
+                <textarea
+                  rows={2}
+                  value={asArr(trpgDraft.proficiencies).join('、')}
+                  onChange={(e) =>
+                    setTrpgDraft({
+                      ...trpgDraft,
+                      proficiencies: e.target.value
+                        .split(/[、,，\n]+/)
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  className="w-full rounded-sm border border-line bg-canvas p-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="block text-[11px] text-content-muted">特性与专长（顿号、逗号或换行分隔）</span>
+                <textarea
+                  rows={2}
+                  value={asArr(trpgDraft.featuresAndTraits).join('、')}
+                  onChange={(e) =>
+                    setTrpgDraft({
+                      ...trpgDraft,
+                      featuresAndTraits: e.target.value
+                        .split(/[、,，\n]+/)
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  className="w-full rounded-sm border border-line bg-canvas p-2 text-xs text-content-primary outline-none focus:border-accent"
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-line-subtle pt-2">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => setEditingTrpg(false)}
+            className="h-7 rounded-sm border border-line px-2.5 text-[11px] text-content-secondary hover:bg-subtle"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void handleSaveTrpgEdit()}
+            className="inline-flex h-7 items-center gap-1 rounded-sm bg-status-success px-2.5 text-[11px] font-medium text-content-inverse hover:opacity-90 disabled:opacity-50"
+          >
+            <Save className="h-3 w-3" />
+            {saving ? '保存中...' : '保存 TRPG 属性'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (isCoc) {
     const chars = asRec(trpg.characteristics);
     const derived = asRec(trpg.derived);
@@ -2176,19 +3103,31 @@ function TrpgPanelView({ trpg }: { trpg: Record<string, unknown> }) {
 
     return (
       <div className="space-y-2.5 text-xs">
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-content-secondary">
-          <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
-            {sysText || 'Call of Cthulhu 7e'}
-          </span>
-          {Boolean(trpg.occupation) && (
-            <span>
-              职业：<strong className="text-content-primary">{String(trpg.occupation)}</strong>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-secondary">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
+              {sysText || 'Call of Cthulhu 7e'}
             </span>
-          )}
-          {Boolean(trpg.era) && (
-            <span>
-              年代：<strong className="text-content-primary">{String(trpg.era)}</strong>
-            </span>
+            {Boolean(trpg.occupation) && (
+              <span>
+                职业：<strong className="text-content-primary">{String(trpg.occupation)}</strong>
+              </span>
+            )}
+            {Boolean(trpg.era) && (
+              <span>
+                年代：<strong className="text-content-primary">{String(trpg.era)}</strong>
+              </span>
+            )}
+          </div>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={handleEnterEdit}
+              className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-content-secondary hover:border-accent hover:text-accent"
+            >
+              <Edit3 className="h-3 w-3" />
+              编辑属性
+            </button>
           )}
         </div>
 
@@ -2256,29 +3195,41 @@ function TrpgPanelView({ trpg }: { trpg: Record<string, unknown> }) {
 
   return (
     <div className="space-y-2.5 text-xs">
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-content-secondary">
-        <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
-          {sysText || 'D&D 5e'}
-        </span>
-        {Boolean(trpg.level) && (
-          <span>
-            Lv.<strong className="text-content-primary">{String(trpg.level)}</strong>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-secondary">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
+            {sysText || 'D&D 5e'}
           </span>
-        )}
-        {Boolean(trpg.race) && (
-          <span>
-            种族：<strong className="text-content-primary">{String(trpg.race)}</strong>
-          </span>
-        )}
-        {Boolean(trpg.className) && (
-          <span>
-            职业：<strong className="text-content-primary">{String(trpg.className)}</strong>
-          </span>
-        )}
-        {Boolean(trpg.alignment) && (
-          <span>
-            阵营：<strong className="text-content-primary">{String(trpg.alignment)}</strong>
-          </span>
+          {Boolean(trpg.level) && (
+            <span>
+              Lv.<strong className="text-content-primary">{String(trpg.level)}</strong>
+            </span>
+          )}
+          {Boolean(trpg.race) && (
+            <span>
+              种族：<strong className="text-content-primary">{String(trpg.race)}</strong>
+            </span>
+          )}
+          {Boolean(trpg.className) && (
+            <span>
+              职业：<strong className="text-content-primary">{String(trpg.className)}</strong>
+            </span>
+          )}
+          {Boolean(trpg.alignment) && (
+            <span>
+              阵营：<strong className="text-content-primary">{String(trpg.alignment)}</strong>
+            </span>
+          )}
+        </div>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={handleEnterEdit}
+            className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-content-secondary hover:border-accent hover:text-accent"
+          >
+            <Edit3 className="h-3 w-3" />
+            编辑属性
+          </button>
         )}
       </div>
 

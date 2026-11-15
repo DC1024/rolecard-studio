@@ -379,6 +379,7 @@ export async function refineRoleCard(
     schema: RoleCardContentSchema,
     schemaHint: '完整的 RoleCardContent JSON 对象',
     temperature: 0.35,
+    actionLabel: '执行整卡局部微调',
     onStrategyDowngraded: deps.onStrategyDowngraded,
     onProgress: deps.onProgress,
     onReasoningDelta: deps.onReasoningDelta,
@@ -427,23 +428,25 @@ export async function compressRoleCard(
     locked.length > 0
       ? `\n已锁定字段必须原样保留不得精简：${locked.join(', ')}`
       : '';
+  const { extensions: originalExtensions, ...compressibleContent } = current;
 
   const result = await completeStructuredJson(deps.llmPort, {
     slot: deps.llmSlot,
     schema: RoleCardContentSchema,
     schemaHint: '精简后的 RoleCardContent JSON 对象',
     temperature: 0.25,
+    actionLabel: '执行语义精简（跳过 TRPG 面板与锁定字段）',
     onStrategyDowngraded: deps.onStrategyDowngraded,
     onProgress: deps.onProgress,
     onReasoningDelta: deps.onReasoningDelta,
     messages: [
       {
         role: 'system',
-        content: `你是角色卡无损压缩专家。请在不丢失核心人设、口癖、关键人际关系与开场白质感的前提下，去除冗余修饰语，将整卡文本压缩至约 ${targetMaxTokens} Tokens 以内。${lockNotice}`,
+        content: `你是角色卡语义精简专家。请在不丢失核心人设、口癖、关键人际关系与开场白质感的前提下，去除冗余修饰语，将整卡文本精简至约 ${targetMaxTokens} Tokens 以内。注意：此过程属于有损语义压缩，请尽量保留角色核心识别度。${lockNotice}`,
       },
       {
         role: 'user',
-        content: `待精简角色卡 JSON（当前约 ${beforeTokens} Tokens）：\n${JSON.stringify(current, null, 2)}`,
+        content: `待精简角色卡 JSON（当前约 ${beforeTokens} Tokens，已跳过不参与 Token 统计的 extensions 面板）：\n${JSON.stringify(compressibleContent, null, 2)}`,
       },
     ],
   });
@@ -452,14 +455,18 @@ export async function compressRoleCard(
     return result;
   }
 
-  const protectedContent = preserveLockedFields(current, result.value.data, locked);
+  const withPreservedExtensions: RoleCardContent = {
+    ...result.value.data,
+    extensions: structuredClone(originalExtensions),
+  };
+  const protectedContent = preserveLockedFields(current, withPreservedExtensions, locked);
   const afterTokens = estimateCardTokens(protectedContent);
 
   return ok({
     content: protectedContent,
     beforeTokens,
     afterTokens,
-    diffSummary: `无损精简 (${beforeTokens} -> ${afterTokens} Tokens)`,
+    diffSummary: `语义精简 (${beforeTokens} -> ${afterTokens} Tokens)`,
   });
 }
 
@@ -527,6 +534,12 @@ const CARD_FIELD_META: Record<
     guidance: '总结使用建议、推荐交互方式、核心设定要点或考据说明，返回简洁清晰的备注文本。',
     schemaHint: '{ "value": "创作与使用备注" }',
   },
+  tags: {
+    label: '角色标签',
+    guidance:
+      '结合角色的人设、所属作品/世界观、性格特质、外貌与职业定位，提炼 4~8 个精准简短的中文分类标签（每个标签 2~8 个字，不带 # 号，不要输出整句解释）。',
+    schemaHint: '{ "value": ["标签1", "标签2", "标签3", "标签4"] }',
+  },
 };
 
 export interface GenerateCardFieldDeps {
@@ -569,9 +582,11 @@ export async function generateCardField(
         ? z.object({ value: z.array(RelationshipEntrySchema) })
         : field === 'alternate_greetings'
           ? z.object({ value: z.array(z.string().trim().min(1)) })
-          : field === 'summary' || field === 'personality'
-            ? z.object({ value: z.string().trim().min(1) })
-            : z.object({ value: z.string() });
+          : field === 'tags'
+            ? z.object({ value: z.array(z.string().trim().min(1).max(32)).min(1).max(20) })
+            : field === 'summary' || field === 'personality'
+              ? z.object({ value: z.string().trim().min(1) })
+              : z.object({ value: z.string() });
 
   const systemLines = [
     '你是 RoleCard Studio 角色卡精细化创作助手。请在不破坏角色整体人设一致性的前提下，专门为目标区块生成高质量内容。',
@@ -602,6 +617,7 @@ export async function generateCardField(
     schema: fieldValueSchema,
     schemaHint: meta.schemaHint,
     temperature: 0.5,
+    actionLabel: `生成「${meta.label}」`,
     onStrategyDowngraded: deps.onStrategyDowngraded,
     onProgress: deps.onProgress,
     onReasoningDelta: deps.onReasoningDelta,
@@ -616,13 +632,152 @@ export async function generateCardField(
   }
 
   const nextContent = structuredClone(current);
-  (nextContent as Record<string, unknown>)[field] = result.value.data.value;
+  let diffSummary = `AI 单区块生成: ${meta.label}`;
+  if (field === 'tags') {
+    const incoming = Array.isArray(result.value.data.value)
+      ? (result.value.data.value as string[])
+      : [];
+    const mergedTags = mergeCardTagsDedupe(current.tags, incoming);
+    const addedCount = Math.max(0, mergedTags.length - mergeCardTagsDedupe(current.tags, []).length);
+    nextContent.tags = mergedTags;
+    diffSummary = `AI 生成标签：追加 ${addedCount} 个（共 ${mergedTags.length} 个）`;
+  } else {
+    (nextContent as Record<string, unknown>)[field] = result.value.data.value;
+  }
 
   return ok({
     content: nextContent,
     field,
     fieldLabel: meta.label,
-    diffSummary: `AI 单区块生成: ${meta.label}`,
+    diffSummary,
     tokenCount: estimateCardTokens(nextContent),
+  });
+}
+
+export function mergeCardTagsDedupe(
+  existing: readonly string[],
+  generated: readonly string[],
+  maxTags = 30,
+): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const raw of [...existing, ...generated]) {
+    const clean = raw.replace(/^#+/, '').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(clean.slice(0, 32));
+    }
+    if (merged.length >= maxTags) break;
+  }
+  return merged;
+}
+
+export interface RegenerateCardDeps {
+  llmPort: LlmCompletionPort;
+  llmSlot: LlmSlotRuntimeConfig;
+  lockedFields?: readonly string[];
+  sources?: readonly SourceEntry[];
+  sourceIndices?: readonly number[];
+  workName?: string;
+  cardType?: CardType;
+  entityType?: EntityType;
+  instruction?: string;
+  customSystemPrompt?: string;
+  onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
+}
+
+export async function regenerateRoleCard(
+  current: RoleCardContent,
+  deps: RegenerateCardDeps,
+): Promise<
+  Result<
+    {
+      content: RoleCardContent;
+      regeneratedFields: string[];
+      skippedLockedFields: string[];
+      diffSummary: string;
+      tokenCount: number;
+    },
+    CoreError
+  >
+> {
+  const locked = deps.lockedFields ?? [];
+  const lockedSet = new Set(locked);
+  const editableKeys = CARD_LOCKABLE_KEYS.filter((k) => k !== 'name');
+  const unlockedKeys = editableKeys.filter((k) => !lockedSet.has(k));
+  const skippedLockedFields = editableKeys.filter((k) => lockedSet.has(k));
+
+  if (unlockedKeys.length === 0) {
+    return err({
+      code: 'ALL_FIELDS_LOCKED',
+      message: '所有可编辑区块均已锁定，请至少解锁一个区块后再执行一键生成',
+      status: 400,
+    });
+  }
+
+  const { extensions: originalExtensions, ...baseCard } = current;
+  const sourceSnippets = selectSourcesForGeneration(deps.sources, deps.sourceIndices);
+
+  const systemLines = [
+    '你是 RoleCard Studio 资深角色卡重构专家。请根据现有角色设定与参考资料，对未锁定的全部角色卡区块进行高质量协同重写与丰富，确保人设、语言风格、背景与开场白高度统一。',
+    `角色名称必须保持为「${current.name}」。`,
+    `本次需要生成/更新的区块：${unlockedKeys.join(', ')}`,
+    skippedLockedFields.length > 0
+      ? `以下字段已被用户锁定，严禁修改其内容，输出时请保持原样一致：${skippedLockedFields.join(', ')}`
+      : '当前无锁定字段，请协同优化全部内容区块（tags 请提炼 4~8 个精准简短中文标签）。',
+    'extensions 字段无需改动，输出 `{}` 或保留即可。',
+  ];
+  if (deps.customSystemPrompt?.trim()) {
+    systemLines.push(`全局附加风格要求：${deps.customSystemPrompt.trim()}`);
+  }
+
+  const userParts = [
+    `角色名称：${current.name}`,
+    deps.workName ? `所属作品/世界观：${deps.workName}` : '',
+    deps.cardType ? `卡片规格：${deps.cardType}` : '',
+    deps.entityType ? `实体类型：${deps.entityType === 'real_person' ? '现实人物' : '虚构角色'}` : '',
+    `当前角色卡基线（供保持角色一致性与参考已锁定字段）：\n${JSON.stringify(baseCard, null, 2)}`,
+    sourceSnippets ? `参考与考据资料：\n${sourceSnippets}` : '',
+    deps.instruction?.trim() ? `用户附加生成要求：${deps.instruction.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const result = await completeStructuredJson(deps.llmPort, {
+    slot: deps.llmSlot,
+    schema: RoleCardContentSchema,
+    schemaHint: '完整的 RoleCardContent JSON 对象',
+    temperature: 0.45,
+    actionLabel: `一键生成未锁定区块（${unlockedKeys.length} 项）`,
+    onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
+    messages: [
+      { role: 'system', content: systemLines.join('\n') },
+      { role: 'user', content: userParts },
+    ],
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  const mergedExtensions: RoleCardContent = {
+    ...result.value.data,
+    name: current.name,
+    extensions: structuredClone(originalExtensions),
+  };
+  const protectedContent = preserveLockedFields(current, mergedExtensions, locked);
+
+  return ok({
+    content: protectedContent,
+    regeneratedFields: unlockedKeys,
+    skippedLockedFields,
+    diffSummary: `一键 AI 生成 (${unlockedKeys.length} 项更新${skippedLockedFields.length > 0 ? `，跳过 ${skippedLockedFields.length} 项锁定` : ''})`,
+    tokenCount: estimateCardTokens(protectedContent),
   });
 }

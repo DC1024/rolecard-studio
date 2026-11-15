@@ -114,6 +114,7 @@ export const CardGeneratableFieldSchema = z.enum([
   'mes_example',
   'system_prompt',
   'creator_notes',
+  'tags',
 ]);
 export type CardGeneratableField = z.infer<typeof CardGeneratableFieldSchema>;
 
@@ -123,6 +124,28 @@ export const GenerateCardFieldRequestSchema = z.object({
   sourceIndices: z.array(z.number().int().min(0)).max(20).optional(),
 });
 export type GenerateCardFieldRequest = z.infer<typeof GenerateCardFieldRequestSchema>;
+
+export const RegenerateCardRequestSchema = z.object({
+  instruction: z.string().trim().max(1000).optional().default(''),
+  sourceIndices: z.array(z.number().int().min(0)).max(20).optional(),
+});
+export type RegenerateCardRequest = z.infer<typeof RegenerateCardRequestSchema>;
+
+export const CardRevisionSummarySchema = z.object({
+  id: z.string(),
+  cardId: z.string(),
+  action: z.string(),
+  summary: z.string(),
+  tokenCount: z.number().int().min(0),
+  createdBy: z.string(),
+  createdAt: z.string(),
+});
+export type CardRevisionSummary = z.infer<typeof CardRevisionSummarySchema>;
+
+export const RollbackCardRequestSchema = z.object({
+  revisionId: z.string().trim().min(1).optional(),
+});
+export type RollbackCardRequest = z.infer<typeof RollbackCardRequestSchema>;
 
 export const CardTextSourceInputSchema = z.object({
   title: z.string().trim().max(120).optional().default(''),

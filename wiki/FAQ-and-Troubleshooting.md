@@ -78,8 +78,13 @@
 ## 4. 安全、升级与数据备份注意事项
 
 ### Q10：跨版本升级后，旧数据库能直接兼容吗？
-- **可以**。服务端启动时会自动执行增量表结构检查（`ensureColumnExists`），例如升级至 `v1.3.0` 时会自动为存量 `role_cards` 表补充 `token_image_url` 与 `token_crop_json` 列，无需手动跑迁移脚本。
+- **可以**。服务端启动时会自动执行增量表结构与补表检查（`ensureColumnExists` / `CREATE TABLE IF NOT EXISTS`），例如升级至 `v1.3.0` 自动补齐 `token_image_url` 与 `token_crop_json` 列，升级至 `v1.7.0` 自动初始化 `role_card_revisions` 历史快照表，无需手动跑迁移脚本。
 - 若旧卡原本仅有 `imageUrl` 尚未单独裁剪过 `1:1` Token，导出 `vtt_token_png` 或 `foundry_dnd5e_json` 时会自动回退到现有立绘；随时打开该卡片点击 **「1:1 Token」** 补裁即可。
+
+### Q10.1：「语义精简」会丢失细节或破坏 TRPG 规则面板吗？如果不满意如何撤回？
+- **有损提示**：语义精简属于**有损压缩**，追求极低 Token 上限时可能删减细节描写从而影响角色扮演精准度，请先锁定（🔒）不想被改动的核心区块。
+- **TRPG 面板豁免**：自 `v1.7.0` 起，`extensions`（含 CoC 7e / D&D 5e 规则面板）不参与 `tokenCount` 计算且在精简时自动剥离并原样恢复，不会被压缩破坏。
+- **随时撤回**：每次 AI 生成、微调、精简或手动保存前都会保存一份历史快照，随时可在详情页顶部点击 **「撤回上一版」** 或从历史快照列表恢复。
 
 ### Q11：日常运维有哪些必须注意的安全事项？
 1. **严禁丢失 `.master.key`**：`ROLECARD_DATA_DIR/.master.key` 负责解密所有入库密钥，备份时必须与 `rolecard.db`、`.db-wal`、`uploads/` 打包保存在一起。

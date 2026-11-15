@@ -26,6 +26,7 @@ import {
   mergeLorebooksToCharacterBook,
   preserveLockedFields,
   refineRoleCard,
+  regenerateRoleCard,
   resolveProviderBaseUrl,
   runPlaytestTurn,
   toCharaCardV3,
@@ -42,6 +43,7 @@ import {
   type LorebookEntry,
   PlaytestRequestSchema,
   RefineCardRequestSchema,
+  RegenerateCardRequestSchema,
   SearchCardSourcesRequestSchema,
   UpdateCardContentSchema,
   type RoleCardContent,
@@ -54,6 +56,7 @@ import { z } from 'zod';
 import { getNow, type ServerContext } from '../context.js';
 import { generationLogs, roleCards, userServiceConfigs } from '../db/schema.js';
 import { guardPermission, sendCoreError, type AppEnv } from '../middleware/auth.js';
+import { saveCardRevisionSnapshot } from './card-revisions.js';
 import { serializeCardRow } from './cards.js';
 import { loadRuntimeServiceConfig, loadScopedFetch, resolveScopedFetch } from './config.js';
 import { loadLinkedLorebooksForCard } from './lorebooks.js';
@@ -64,6 +67,22 @@ export const cardM1Routes = new Hono<AppEnv>();
 const CompressRequestSchema = z.object({
   targetMaxTokens: z.number().int().min(150).max(8000).default(1200),
 });
+
+const FIELD_PROGRESS_LABELS: Record<string, string> = {
+  summary: '角色简介',
+  personality: '性格特征',
+  appearance: '外貌立绘',
+  background: '背景故事',
+  scenario: '场景设定',
+  speech_style: '语言风格与口癖',
+  relationships: '人际关系网',
+  first_mes: '默认开场白',
+  alternate_greetings: '备选开场白',
+  mes_example: '对话示例',
+  system_prompt: '系统提示词',
+  creator_notes: '作者备注',
+  tags: '角色标签',
+};
 
 function parseJsonArray<T>(raw: string | null | undefined): T[] {
   if (!raw) return [];
@@ -112,6 +131,7 @@ cardM1Routes.put('/cards/:id', zValidator('json', UpdateCardContentSchema), asyn
   const id = c.req.param('id');
   const input = c.req.valid('json');
   const ctx = c.get('ctx');
+  const actorUserId = c.get('actor')?.userId ?? 'guest';
 
   const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
   const row = rows[0];
@@ -127,20 +147,32 @@ cardM1Routes.put('/cards/:id', zValidator('json', UpdateCardContentSchema), asyn
   ];
   nextContent.tags = nextTags;
 
+  const nextContentJson = JSON.stringify(nextContent);
+  const nextTagsJson = JSON.stringify(nextTags);
+  const contentOrTagsChanged = row.contentJson !== nextContentJson || row.tagsJson !== nextTagsJson;
+
   const nowIso = getNow(ctx).toISOString();
   const diffSummary = computeCardDiffSummary(currentContent, nextContent);
   const tokenCount = estimateCardTokens(nextContent);
+
+  if (contentOrTagsChanged) {
+    await saveCardRevisionSnapshot(ctx, row, {
+      action: 'manual_edit',
+      summary: diffSummary === '无字段实质变更' ? '手动保存编辑' : diffSummary,
+      createdBy: actorUserId,
+    });
+  }
 
   await ctx.db
     .update(roleCards)
     .set({
       characterName: nextContent.name,
-      tagsJson: JSON.stringify(nextTags),
-      contentJson: JSON.stringify(nextContent),
+      tagsJson: nextTagsJson,
+      contentJson: nextContentJson,
       lockedFieldsJson: JSON.stringify(lockedFields),
-      diffSummary,
+      diffSummary: contentOrTagsChanged ? diffSummary : row.diffSummary,
       tokenCount,
-      version: row.version + 1,
+      version: contentOrTagsChanged ? row.version + 1 : row.version,
       updatedAt: nowIso,
     })
     .where(eq(roleCards.id, id));
@@ -202,7 +234,7 @@ cardM1Routes.post('/cards/:id/refine', zValidator('json', RefineCardRequestSchem
     const startedAt = Date.now();
     await hooks?.onProgress?.({
       step: 'preparing',
-      message: '正在整理角色卡设定与已选参考资料...',
+      message: `正在整理角色卡设定与已选参考资料，准备调用 ${runtime.primaryLlm.model} 执行整卡局部微调...`,
     });
 
     const result = await refineRoleCard(currentContent, instruction, {
@@ -244,7 +276,13 @@ cardM1Routes.post('/cards/:id/refine', zValidator('json', RefineCardRequestSchem
 
     await hooks?.onProgress?.({
       step: 'persisting',
-      message: '结构化校验通过，正在保存微调结果...',
+      message: `「执行整卡局部微调」结构化校验通过，正在保存结果...`,
+    });
+
+    await saveCardRevisionSnapshot(ctx, row, {
+      action: 'refine',
+      summary: result.value.diffSummary,
+      createdBy: actorUserId,
     });
 
     await ctx.db
@@ -307,7 +345,10 @@ cardM1Routes.post('/cards/:id/refine', zValidator('json', RefineCardRequestSchem
               sentThinkingHeader = true;
               await stream.writeSSE({
                 event: 'progress',
-                data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
+                data: JSON.stringify({
+                  step: 'thinking',
+                  message: `${runtime.primaryLlm.model} 正在思考推演（执行整卡局部微调）...`,
+                }),
               });
             }
             await stream.writeSSE({
@@ -393,6 +434,7 @@ cardM1Routes.post(
         idleTimeoutMs: runtime.llmRequestTimeoutSeconds * 1000,
       });
 
+    const fieldLabel = FIELD_PROGRESS_LABELS[field] ?? field;
     const runGenerateField = async (hooks?: {
       onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
       onReasoningDelta?: (delta: string) => void | Promise<void>;
@@ -400,7 +442,7 @@ cardM1Routes.post(
       const startedAt = Date.now();
       await hooks?.onProgress?.({
         step: 'preparing',
-        message: '正在组装上下文与参考资料...',
+        message: `正在组装上下文与参考资料，准备调用 ${runtime.primaryLlm.model} 生成「${fieldLabel}」...`,
       });
 
       const result = await generateCardField(currentContent, field, {
@@ -444,13 +486,20 @@ cardM1Routes.post(
 
       await hooks?.onProgress?.({
         step: 'persisting',
-        message: '结构化校验通过，正在保存区块内容...',
+        message: `「生成「${fieldLabel}」」结构化校验通过，正在保存结果...`,
+      });
+
+      await saveCardRevisionSnapshot(ctx, row, {
+        action: 'generate_field',
+        summary: result.value.diffSummary,
+        createdBy: actorUserId,
       });
 
       const nextVersion = row.version + 1;
       await ctx.db
         .update(roleCards)
         .set({
+          tagsJson: JSON.stringify(result.value.content.tags),
           contentJson: JSON.stringify(result.value.content),
           diffSummary: result.value.diffSummary,
           tokenCount: result.value.tokenCount,
@@ -515,13 +564,16 @@ cardM1Routes.post(
               });
             },
             onReasoningDelta: async (delta) => {
-              if (!sentThinkingHeader) {
-                sentThinkingHeader = true;
-                await stream.writeSSE({
-                  event: 'progress',
-                  data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
-                });
-              }
+            if (!sentThinkingHeader) {
+              sentThinkingHeader = true;
+              await stream.writeSSE({
+                event: 'progress',
+                data: JSON.stringify({
+                  step: 'thinking',
+                  message: `${runtime.primaryLlm.model} 正在思考推演（生成「${fieldLabel}」）...`,
+                }),
+              });
+            }
               await stream.writeSSE({
                 event: 'thinking',
                 data: JSON.stringify({ delta }),
@@ -615,6 +667,12 @@ cardM1Routes.post('/cards/:id/compress', zValidator('json', CompressRequestSchem
     });
     return sendCoreError(c, result.error);
   }
+
+  await saveCardRevisionSnapshot(ctx, row, {
+    action: 'compress',
+    summary: result.value.diffSummary,
+    createdBy: actorUserId,
+  });
 
   await ctx.db
     .update(roleCards)
@@ -876,12 +934,19 @@ cardM1Routes.post('/cards/:id/mes-example', zValidator('json', AdoptMesExampleSc
   const id = c.req.param('id');
   const { userMessage, assistantMessage } = c.req.valid('json');
   const ctx = c.get('ctx');
+  const actorUserId = c.get('actor')?.userId ?? 'guest';
 
   const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
   const row = rows[0];
   if (!row) {
     return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
   }
+
+  await saveCardRevisionSnapshot(ctx, row, {
+    action: 'adopt_example',
+    summary: '采纳试聊对话片段至对话示例',
+    createdBy: actorUserId,
+  });
 
   const content = JSON.parse(row.contentJson) as RoleCardContent;
   content.mes_example = appendTurnToMesExample(content.mes_example, userMessage, assistantMessage);
@@ -1150,80 +1215,385 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
     createOpenAiCompatibleLlmPort(primaryFetch, {
       idleTimeoutMs: runtime.llmRequestTimeoutSeconds * 1000,
     });
-  const startedAt = Date.now();
-  const result = await generateTrpgAttributesForCard(currentContent, system, {
-    llmPort,
-    llmSlot: runtime.primaryLlm,
-    onStrategyDowngraded: async () => {
-      await ctx.db
-        .update(userServiceConfigs)
-        .set({ jsonModeStrategy: 'prompt', updatedAt: getNow(ctx).toISOString() })
-        .where(eq(userServiceConfigs.userId, 'global'));
-    },
-  });
+  const systemLabel = system === 'coc7e' ? 'CoC 7e 调查员规则面板' : 'D&D 5e 角色规则面板';
 
-  const nowIso = getNow(ctx).toISOString();
-  const latencyMs = Date.now() - startedAt;
+  const runTrpg = async (hooks?: {
+    onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+    onReasoningDelta?: (delta: string) => void | Promise<void>;
+  }) => {
+    const startedAt = Date.now();
+    await hooks?.onProgress?.({
+      step: 'preparing',
+      message: `正在整理「${row.characterName}」角色设定，准备调用 ${runtime.primaryLlm.model} 推演「${systemLabel}」...`,
+    });
 
-  if (!result.ok) {
+    const result = await generateTrpgAttributesForCard(currentContent, system, {
+      llmPort,
+      llmSlot: runtime.primaryLlm,
+      onProgress: hooks?.onProgress,
+      onReasoningDelta: hooks?.onReasoningDelta,
+      onStrategyDowngraded: async () => {
+        await ctx.db
+          .update(userServiceConfigs)
+          .set({ jsonModeStrategy: 'prompt', updatedAt: getNow(ctx).toISOString() })
+          .where(eq(userServiceConfigs.userId, 'global'));
+      },
+    });
+
+    const nowIso = getNow(ctx).toISOString();
+    const latencyMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+      await ctx.db.insert(generationLogs).values({
+        id: randomUUID(),
+        userId: actorUserId,
+        action: 'trpg_generate',
+        targetId: id,
+        provider: runtime.primaryLlm.provider,
+        status: 'error',
+        latencyMs,
+        errorCode: result.error.code,
+        errorMessage: result.error.message,
+        createdAt: nowIso,
+      });
+      return { ok: false as const, error: result.error };
+    }
+
+    await hooks?.onProgress?.({
+      step: 'persisting',
+      message: `「${systemLabel}」推演校验通过，正在保存规则属性...`,
+    });
+
+    const nextVersion = row.version + 1;
+    const tokenCount = estimateCardTokens(result.value.content);
+    const diffSummary = `已根据角色设定生成 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} TRPG 规则数据`;
+
+    await saveCardRevisionSnapshot(ctx, row, {
+      action: 'trpg_generate',
+      summary: diffSummary,
+      createdBy: actorUserId,
+    });
+
+    await ctx.db
+      .update(roleCards)
+      .set({
+        cardType: result.value.cardType,
+        contentJson: JSON.stringify(result.value.content),
+        diffSummary,
+        tokenCount,
+        version: nextVersion,
+        updatedAt: nowIso,
+      })
+      .where(eq(roleCards.id, id));
+
     await ctx.db.insert(generationLogs).values({
       id: randomUUID(),
       userId: actorUserId,
       action: 'trpg_generate',
       targetId: id,
       provider: runtime.primaryLlm.provider,
-      status: 'error',
+      status: 'success',
       latencyMs,
-      errorCode: result.error.code,
-      errorMessage: result.error.message,
+      errorCode: null,
+      errorMessage: null,
       createdAt: nowIso,
     });
-    return sendCoreError(c, result.error);
+
+    await publishSyncEvent(ctx, {
+      eventType: 'card.updated',
+      targetType: 'card',
+      targetId: id,
+      version: nextVersion,
+      payload: {
+        characterName: result.value.content.name,
+        diffSummary,
+      },
+    });
+
+    const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    return {
+      ok: true as const,
+      payload: { card: serializeCardRow(updatedRows[0]!) },
+    };
+  };
+
+  const wantsSse = (c.req.header('accept') ?? '').includes('text/event-stream');
+  if (wantsSse) {
+    return streamSSE(c, async (stream) => {
+      let sentThinkingHeader = false;
+      let closed = false;
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+          closed = true;
+        });
+      }, 15_000);
+      try {
+        const outcome = await runTrpg({
+          onProgress: async (evt) => {
+            await stream.writeSSE({
+              event: 'progress',
+              data: JSON.stringify({ step: evt.step, message: evt.message }),
+            });
+          },
+          onReasoningDelta: async (delta) => {
+            if (!sentThinkingHeader) {
+              sentThinkingHeader = true;
+              await stream.writeSSE({
+                event: 'progress',
+                data: JSON.stringify({
+                  step: 'thinking',
+                  message: `${runtime.primaryLlm.model} 正在思考推演（${systemLabel}）...`,
+                }),
+              });
+            }
+            await stream.writeSSE({
+              event: 'thinking',
+              data: JSON.stringify({ delta }),
+            });
+          },
+        });
+        if (!outcome.ok) {
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({
+              code: outcome.error.code,
+              message: outcome.error.message,
+              status: outcome.error.status,
+            }),
+          });
+          return;
+        }
+        await stream.writeSSE({
+          event: 'result',
+          data: JSON.stringify(outcome.payload),
+        });
+      } finally {
+        closed = true;
+        clearInterval(heartbeat);
+      }
+    });
   }
 
-  const nextVersion = row.version + 1;
-  const tokenCount = estimateCardTokens(result.value.content);
-  const diffSummary = `已根据角色设定生成 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} TRPG 规则数据`;
-
-  await ctx.db
-    .update(roleCards)
-    .set({
-      cardType: result.value.cardType,
-      contentJson: JSON.stringify(result.value.content),
-      diffSummary,
-      tokenCount,
-      version: nextVersion,
-      updatedAt: nowIso,
-    })
-    .where(eq(roleCards.id, id));
-
-  await ctx.db.insert(generationLogs).values({
-    id: randomUUID(),
-    userId: actorUserId,
-    action: 'trpg_generate',
-    targetId: id,
-    provider: runtime.primaryLlm.provider,
-    status: 'success',
-    latencyMs,
-    errorCode: null,
-    errorMessage: null,
-    createdAt: nowIso,
-  });
-
-  await publishSyncEvent(ctx, {
-    eventType: 'card.updated',
-    targetType: 'card',
-    targetId: id,
-    version: nextVersion,
-    payload: {
-      characterName: result.value.content.name,
-      diffSummary,
-    },
-  });
-
-  const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
-  return c.json({ card: serializeCardRow(updatedRows[0]!) });
+  const outcome = await runTrpg();
+  if (!outcome.ok) {
+    return sendCoreError(c, outcome.error);
+  }
+  return c.json(outcome.payload);
 });
+
+cardM1Routes.post(
+  '/cards/:id/regenerate',
+  zValidator('json', RegenerateCardRequestSchema),
+  async (c) => {
+    const denied = guardPermission(c, 'card:update');
+    if (denied) return denied;
+
+    const id = c.req.param('id');
+    const { instruction, sourceIndices } = c.req.valid('json');
+    const ctx = c.get('ctx');
+    const actorUserId = c.get('actor')?.userId ?? 'guest';
+
+    const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    const row = rows[0];
+    if (!row) {
+      return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
+    }
+
+    const runtime = await loadRuntimeServiceConfig(ctx);
+    if (!runtime) {
+      return c.json(
+        { error: { code: 'LLM_NOT_CONFIGURED', message: '尚未配置主大模型' } },
+        400,
+      );
+    }
+
+    const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
+    const lockedFields = parseJsonArray<string>(row.lockedFieldsJson);
+    const sources = parseJsonArray<SourceEntry>(row.sourcesJson);
+    const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+    const llmPort =
+      ctx.llmPort ??
+      createOpenAiCompatibleLlmPort(primaryFetch, {
+        idleTimeoutMs: runtime.llmRequestTimeoutSeconds * 1000,
+      });
+
+    const runRegenerate = async (hooks?: {
+      onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+      onReasoningDelta?: (delta: string) => void | Promise<void>;
+    }) => {
+      const startedAt = Date.now();
+      await hooks?.onProgress?.({
+        step: 'preparing',
+        message: `正在整理「${row.characterName}」未锁定区块与参考资料，准备调用 ${runtime.primaryLlm.model} 一键生成...`,
+      });
+
+      const result = await regenerateRoleCard(currentContent, {
+        llmPort,
+        llmSlot: runtime.primaryLlm,
+        lockedFields,
+        sources,
+        sourceIndices,
+        workName: row.workName,
+        cardType: row.cardType,
+        entityType: row.entityType,
+        instruction,
+        customSystemPrompt: runtime.customSystemPrompt,
+        onProgress: hooks?.onProgress,
+        onReasoningDelta: hooks?.onReasoningDelta,
+        onStrategyDowngraded: async () => {
+          await ctx.db
+            .update(userServiceConfigs)
+            .set({ jsonModeStrategy: 'prompt', updatedAt: getNow(ctx).toISOString() })
+            .where(eq(userServiceConfigs.userId, 'global'));
+        },
+      });
+
+      const nowIso = getNow(ctx).toISOString();
+      const latencyMs = Date.now() - startedAt;
+
+      if (!result.ok) {
+        await ctx.db.insert(generationLogs).values({
+          id: randomUUID(),
+          userId: actorUserId,
+          action: 'regenerate',
+          targetId: id,
+          provider: runtime.primaryLlm.provider,
+          status: 'error',
+          latencyMs,
+          errorCode: result.error.code,
+          errorMessage: result.error.message,
+          createdAt: nowIso,
+        });
+        return { ok: false as const, error: result.error };
+      }
+
+      await hooks?.onProgress?.({
+        step: 'persisting',
+        message: '「一键 AI 生成」结构化校验通过，正在保存结果...',
+      });
+
+      await saveCardRevisionSnapshot(ctx, row, {
+        action: 'regenerate',
+        summary: result.value.diffSummary,
+        createdBy: actorUserId,
+      });
+
+      const nextVersion = row.version + 1;
+      await ctx.db
+        .update(roleCards)
+        .set({
+          characterName: result.value.content.name,
+          tagsJson: JSON.stringify(result.value.content.tags),
+          contentJson: JSON.stringify(result.value.content),
+          diffSummary: result.value.diffSummary,
+          tokenCount: result.value.tokenCount,
+          version: nextVersion,
+          updatedAt: nowIso,
+        })
+        .where(eq(roleCards.id, id));
+
+      await ctx.db.insert(generationLogs).values({
+        id: randomUUID(),
+        userId: actorUserId,
+        action: 'regenerate',
+        targetId: id,
+        provider: runtime.primaryLlm.provider,
+        status: 'success',
+        latencyMs,
+        errorCode: null,
+        errorMessage: null,
+        createdAt: nowIso,
+      });
+
+      await publishSyncEvent(ctx, {
+        eventType: 'card.updated',
+        targetType: 'card',
+        targetId: id,
+        version: nextVersion,
+        payload: {
+          characterName: result.value.content.name,
+          diffSummary: result.value.diffSummary,
+        },
+      });
+
+      const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+      return {
+        ok: true as const,
+        payload: {
+          card: serializeCardRow(updatedRows[0]!),
+          regeneratedFields: result.value.regeneratedFields,
+          skippedLockedFields: result.value.skippedLockedFields,
+          diffSummary: result.value.diffSummary,
+        },
+      };
+    };
+
+    const wantsSse = (c.req.header('accept') ?? '').includes('text/event-stream');
+    if (wantsSse) {
+      return streamSSE(c, async (stream) => {
+        let sentThinkingHeader = false;
+        let closed = false;
+        const heartbeat = setInterval(() => {
+          if (closed) return;
+          void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+            closed = true;
+          });
+        }, 15_000);
+        try {
+          const outcome = await runRegenerate({
+            onProgress: async (evt) => {
+              await stream.writeSSE({
+                event: 'progress',
+                data: JSON.stringify({ step: evt.step, message: evt.message }),
+              });
+            },
+            onReasoningDelta: async (delta) => {
+              if (!sentThinkingHeader) {
+                sentThinkingHeader = true;
+                await stream.writeSSE({
+                  event: 'progress',
+                  data: JSON.stringify({
+                    step: 'thinking',
+                    message: `${runtime.primaryLlm.model} 正在思考推演（一键生成未锁定区块）...`,
+                  }),
+                });
+              }
+              await stream.writeSSE({
+                event: 'thinking',
+                data: JSON.stringify({ delta }),
+              });
+            },
+          });
+          if (!outcome.ok) {
+            await stream.writeSSE({
+              event: 'error',
+              data: JSON.stringify({
+                code: outcome.error.code,
+                message: outcome.error.message,
+                status: outcome.error.status,
+              }),
+            });
+            return;
+          }
+          await stream.writeSSE({
+            event: 'result',
+            data: JSON.stringify(outcome.payload),
+          });
+        } finally {
+          closed = true;
+          clearInterval(heartbeat);
+        }
+      });
+    }
+
+    const outcome = await runRegenerate();
+    if (!outcome.ok) {
+      return sendCoreError(c, outcome.error);
+    }
+    return c.json(outcome.payload);
+  },
+);
 
 function sourceDedupeKey(src: SourceEntry): string {
   if (src.url?.trim()) {

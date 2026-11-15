@@ -1052,8 +1052,8 @@ export function SettingsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/80 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[88vh] w-full max-w-3xl flex-col rounded-xl border border-line bg-elevated shadow-2xl">
-        <div className="flex items-center justify-between border-b border-line-subtle px-5 py-3.5">
+      <div className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-line-subtle px-5 py-3.5">
           <div className="flex items-center gap-2">
             <Settings className="h-4 w-4 text-accent" />
             <h3 className="text-sm font-semibold text-content-primary">模型与系统设置中心</h3>
@@ -1068,7 +1068,7 @@ export function SettingsModal({
         </div>
 
         {/* 5 Tabs */}
-        <div className="flex gap-1 overflow-x-auto border-b border-line-subtle px-5">
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-line-subtle px-5">
           {tabs
             .filter((t) => !t.adminOnly || isAdmin)
             .map((t) => (
@@ -1087,7 +1087,7 @@ export function SettingsModal({
             ))}
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           {banner && (
             <div className="flex items-center gap-2 rounded-sm border border-status-success/40 bg-status-success/10 px-3 py-2 text-xs text-status-success">
               <CheckCircle2 className="h-3.5 w-3.5" />
@@ -2051,7 +2051,7 @@ export function SettingsModal({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-line-subtle px-5 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line-subtle px-5 py-3">
           <button
             type="button"
             onClick={onClose}

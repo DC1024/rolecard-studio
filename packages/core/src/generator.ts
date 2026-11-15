@@ -264,6 +264,7 @@ export async function generateRoleCard(
     schema: RoleCardContentSchema,
     schemaHint: buildSchemaHintForCardType(input.cardType),
     temperature,
+    actionLabel: `生成「${input.characterName}」完整角色卡`,
     onStrategyDowngraded: deps.onStrategyDowngraded,
     onProgress: deps.onProgress,
     onReasoningDelta: deps.onReasoningDelta,
@@ -410,9 +411,12 @@ export async function generateTrpgAttributesForCard(
     llmPort: LlmCompletionPort;
     llmSlot: LlmSlotRuntimeConfig;
     onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+    onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+    onReasoningDelta?: (delta: string) => void | Promise<void>;
   },
 ): Promise<Result<{ cardType: CardType; content: RoleCardContent }, CoreError>> {
   const targetCardType: CardType = system === 'coc7e' ? 'trpg_coc7' : 'trpg_dnd5e';
+  const systemLabel = system === 'coc7e' ? 'CoC 7e 调查员规则面板' : 'D&D 5e 角色规则面板';
   const systemPrompt = [
     '你是资深 TRPG 规则构筑师。请根据下方角色设定，生成贴合该角色背景、性格、体格与能力的真实 TRPG 车卡数据，严禁照抄默认模板数字。',
     ...describeCardTypeSpec(targetCardType),
@@ -468,7 +472,10 @@ export async function generateTrpgAttributesForCard(
     schema: TrpgOnlySchema,
     schemaHint,
     temperature: 0.3,
+    actionLabel: `推演「${systemLabel}」`,
     onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
   });
 
   if (!completion.ok) {

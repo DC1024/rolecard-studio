@@ -259,3 +259,22 @@ export const portraitStylePresets = sqliteTable('portrait_style_presets', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const roleCardRevisions = sqliteTable('role_card_revisions', {
+  id: text('id').primaryKey(),
+  cardId: text('card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  action: text('action').notNull(),
+  summary: text('summary').notNull().default(''),
+  characterName: text('character_name').notNull(),
+  cardType: text('card_type', {
+    enum: ['general', 'sillytavern_v3', 'trpg_coc7', 'trpg_dnd5e', 'custom'],
+  }).notNull(),
+  tagsJson: text('tags_json').notNull().default('[]'),
+  contentJson: text('content_json').notNull(),
+  lockedFieldsJson: text('locked_fields_json').notNull().default('[]'),
+  tokenCount: integer('token_count').notNull().default(0),
+  createdBy: text('created_by').notNull().default('guest'),
+  createdAt: text('created_at').notNull(),
+});

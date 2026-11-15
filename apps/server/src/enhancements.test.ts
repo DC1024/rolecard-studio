@@ -499,11 +499,16 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
         };
         const joined = body.messages?.map((m) => m.content).join('\n') ?? '';
 
+        if (joined.includes('角色视觉美术总监')) {
+          capturedUserPrompts.push(joined);
+        }
+
         if (body.stream) {
           const encoder = new TextEncoder();
+          const streamContent = joined.includes('凯尔希') ? JSON.stringify(baseCard) : 'OK';
           const chunks = [
             `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '正在验证 DeepSeek Reasoner 通道...' } }] })}\n\n`,
-            `data: ${JSON.stringify({ choices: [{ delta: { content: 'OK' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: streamContent }, finish_reason: 'stop' }] })}\n\n`,
             'data: [DONE]\n\n',
           ];
           return new Response(
@@ -518,7 +523,6 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
         }
 
         if (joined.includes('角色视觉美术总监')) {
-          capturedUserPrompts.push(joined);
           return new Response(
             JSON.stringify({
               choices: [
@@ -2197,6 +2201,278 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
     expect(fieldSseText).toContain('先分析角色性格与语境');
     expect(fieldSseText).toContain('event: result');
     expect(fieldSseText).toContain('SSE 生成的性格特征内容');
+
+    dbHandle.close();
+  });
+
+  it('supports AI tag append-dedupe, TRPG SSE thinking & manual edit, compress TRPG exemption, whole-card regenerate, and revision rollback', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const trpgData = {
+      system: 'Call of Cthulhu 7e',
+      occupation: '医药学者',
+      era: '泰拉历',
+      characteristics: { STR: 45, CON: 60, SIZ: 50, DEX: 65, APP: 70, INT: 95, POW: 90, EDU: 95 },
+      derived: { HP: 11, MP: 18, SAN: 80, Luck: 55, Move: 8 },
+      keySkills: ['医学 85%', '神秘学 80%'],
+    };
+
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          stream?: boolean;
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        const sys = body.messages?.find((m) => m.role === 'system')?.content ?? '';
+        const joined = body.messages?.map((m) => m.content ?? '').join('\n') ?? '';
+
+        let payloadObj: Record<string, unknown>;
+        let thinkingText = '';
+
+        if (sys.includes('目标区块：角色标签')) {
+          payloadObj = { value: ['#罗德岛', '医疗', '泰拉学者', 'Mon3tr'] };
+          thinkingText = '提炼角色标签...';
+        } else if (sys.includes('目标区块：开场白')) {
+          payloadObj = { value: '统一文案后的新开场白，博士。' };
+          thinkingText = '设计角色开场白...';
+        } else if (sys.includes('TRPG 规则构筑师')) {
+          payloadObj = { trpg: trpgData };
+          thinkingText = '推演 CoC 7e 调查员属性与衍生数值...';
+        } else if (sys.includes('资深角色卡重构专家')) {
+          payloadObj = {
+            ...baseCard,
+            summary: '一键重生成后的简介',
+            personality: '被模型擅自改动的性格（应被锁定保护）',
+            first_mes: '一键重生成后的开场白',
+            tags: ['重生成标签'],
+          };
+          thinkingText = '协同重写所有未锁定区块...';
+        } else if (sys.includes('语义精简专家')) {
+          expect(joined).not.toContain('医药学者');
+          payloadObj = {
+            ...baseCard,
+            summary: '语义精简后的简介',
+          };
+        } else {
+          payloadObj = { value: '生成结果' };
+        }
+
+        if (body.stream) {
+          const encoder = new TextEncoder();
+          const chunks = [
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: thinkingText || '思考中...' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(payloadObj) }, finish_reason: 'stop' }] })}\n\n`,
+            'data: [DONE]\n\n',
+          ];
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                for (const c of chunks) controller.enqueue(encoder.encode(c));
+                controller.close();
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(payloadObj) }, finish_reason: 'stop' }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+      }),
+    });
+
+    // 1. Import card
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const imported = (await importRes.json()) as { card: { id: string; content: RoleCardContent } };
+    const cardId = imported.card.id;
+
+    // 2. Generate tags (append + dedupe) and check both card detail and list tags_json sync
+    const tagGenRes = await app.request(`/api/v1/cards/${cardId}/generate-field`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ field: 'tags' }),
+    });
+    expect(tagGenRes.status).toBe(200);
+    const tagGenJson = (await tagGenRes.json()) as { card: { tags: string[] } };
+    expect(tagGenJson.card.tags).toEqual(['医疗', '罗德岛', '泰拉学者', 'Mon3tr']);
+
+    // 3. Unified SSE progress format for dialogue field (first_mes) includes model & field label
+    const firstMesSseRes = await app.request(`/api/v1/cards/${cardId}/generate-field`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({ field: 'first_mes' }),
+    });
+    expect(firstMesSseRes.status).toBe(200);
+    const firstMesSseText = await firstMesSseRes.text();
+    expect(firstMesSseText).toContain('gpt-4o-mini');
+    expect(firstMesSseText).toContain('开场白');
+
+    // 4. TRPG SSE streaming emits progress (with model), thinking, and persists extensions.trpg
+    const trpgSseRes = await app.request(`/api/v1/cards/${cardId}/trpg`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({ system: 'coc7e' }),
+    });
+    expect(trpgSseRes.status).toBe(200);
+    const trpgSseText = await trpgSseRes.text();
+    expect(trpgSseText).toContain('event: progress');
+    expect(trpgSseText).toContain('gpt-4o-mini');
+    expect(trpgSseText).toContain('event: thinking');
+    expect(trpgSseText).toContain('推演 CoC 7e 调查员属性与衍生数值');
+    expect(trpgSseText).toContain('event: result');
+
+    // 5. Manual edit of TRPG stats + lock personality
+    const detailAfterTrpg = (await (
+      await app.request(`/api/v1/cards/${cardId}`, { headers: { cookie: adminCookie } })
+    ).json()) as { card: { content: RoleCardContent; tags: string[] } };
+
+    const manualTrpgContent: RoleCardContent = {
+      ...detailAfterTrpg.card.content,
+      extensions: {
+        ...detailAfterTrpg.card.content.extensions,
+        trpg: {
+          ...trpgData,
+          occupation: '手动修正：巴别塔主治医师',
+        },
+      },
+    };
+    const manualSaveRes = await app.request(`/api/v1/cards/${cardId}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        content: manualTrpgContent,
+        lockedFields: ['personality'],
+        tags: detailAfterTrpg.card.tags,
+      }),
+    });
+    expect(manualSaveRes.status).toBe(200);
+
+    // 6. Compress exempts TRPG extensions
+    const compressRes = await app.request(`/api/v1/cards/${cardId}/compress`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ targetMaxTokens: 500 }),
+    });
+    expect(compressRes.status).toBe(200);
+    const compressJson = (await compressRes.json()) as {
+      card: { content: RoleCardContent };
+    };
+    expect(
+      (compressJson.card.content.extensions.trpg as { occupation?: string }).occupation,
+    ).toBe('手动修正：巴别塔主治医师');
+    expect(compressJson.card.content.summary).toBe('语义精简后的简介');
+
+    // 7. Whole-card regenerate (SSE) preserves locked personality and TRPG extensions
+    const regenSseRes = await app.request(`/api/v1/cards/${cardId}/regenerate`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({ instruction: '保持冷峻' }),
+    });
+    expect(regenSseRes.status).toBe(200);
+    const regenSseText = await regenSseRes.text();
+    expect(regenSseText).toContain('协同重写所有未锁定区块');
+    expect(regenSseText).toContain('一键重生成后的简介');
+
+    const afterRegenDetail = (await (
+      await app.request(`/api/v1/cards/${cardId}`, { headers: { cookie: adminCookie } })
+    ).json()) as { card: { content: RoleCardContent; version: number } };
+    expect(afterRegenDetail.card.content.summary).toBe('一键重生成后的简介');
+    expect(afterRegenDetail.card.content.personality).toBe(baseCard.personality);
+    expect(
+      (afterRegenDetail.card.content.extensions.trpg as { occupation?: string }).occupation,
+    ).toBe('手动修正：巴别塔主治医师');
+
+    // 8. Revisions list & rollback to previous version (before regenerate)
+    const revListRes = await app.request(`/api/v1/cards/${cardId}/revisions`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(revListRes.status).toBe(200);
+    const revListJson = (await revListRes.json()) as {
+      revisions: Array<{ id: string; action: string; summary: string }>;
+    };
+    expect(revListJson.revisions.length).toBeGreaterThanOrEqual(5);
+    expect(revListJson.revisions[0]?.action).toBe('regenerate');
+
+    const rollbackRes = await app.request(`/api/v1/cards/${cardId}/rollback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({}),
+    });
+    expect(rollbackRes.status).toBe(200);
+    const rollbackJson = (await rollbackRes.json()) as {
+      card: { content: RoleCardContent; version: number };
+    };
+    expect(rollbackJson.card.content.summary).toBe('语义精简后的简介');
+    expect(rollbackJson.card.version).toBeGreaterThan(afterRegenDetail.card.version);
 
     dbHandle.close();
   });
