@@ -185,7 +185,7 @@ describe('layered retrieval & 3-level JSON repair', () => {
           { status: 200 },
         );
       }
-      if (url.includes('prop=extracts')) {
+      if (url.includes('extracts')) {
         return new Response(
           JSON.stringify({
             query: {

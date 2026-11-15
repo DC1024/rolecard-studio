@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import type {
   ImpressionEventDto,
+  NotificationChannelDto,
+  NotificationChannelSettings,
+  NotificationChannelType,
   RippleProposalDto,
   SyncEventDto,
   SyncEventType,
@@ -8,18 +11,25 @@ import type {
 } from '@rolecard/shared';
 import {
   Activity,
+  AlertCircle,
   Bell,
   Check,
+  CheckCircle2,
+  Copy,
   GitBranch,
   KeyRound,
+  Mail,
+  Pencil,
   Plus,
   Radio,
   RefreshCw,
+  Send,
   Trash2,
   Webhook,
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useToast } from '../hooks/useToast';
 
 interface ReviewSyncPanelProps {
   canResolveReview: boolean;
@@ -30,11 +40,70 @@ interface ReviewSyncPanelProps {
 }
 
 const ALL_EVENT_TYPES: { id: SyncEventType; label: string }[] = [
+  { id: 'review.pending', label: '待审核提醒 (新提案)' },
   { id: 'card.updated', label: '卡片更新' },
   { id: 'card.evolved', label: '人设演化' },
   { id: 'lorebook.updated', label: '世界书变更' },
   { id: 'ripple.approved', label: '关系涟漪生效' },
 ];
+
+const CHANNEL_TYPE_META: {
+  id: NotificationChannelType;
+  label: string;
+  hint: string;
+}[] = [
+  { id: 'smtp', label: '邮件 (SMTP)', hint: '原生 TLS/STARTTLS SMTP 投递，适合个人邮箱/企业邮箱' },
+  { id: 'feishu', label: '飞书机器人', hint: '自定义群机器人 Webhook，可选签名密钥' },
+  { id: 'wecom', label: '企业微信机器人', hint: '企业微信群机器人 Webhook URL' },
+  { id: 'dingtalk', label: '钉钉机器人', hint: '钉钉自定义机器人 Webhook，支持加签 Secret' },
+  { id: 'telegram', label: 'Telegram Bot', hint: '需 Bot Token 与 Chat ID（支持自定义反代 API 基址）' },
+  { id: 'discord', label: 'Discord Webhook', hint: '频道 Webhook URL，直接发送富文本卡片' },
+  { id: 'bark', label: 'Bark (iOS)', hint: '填入服务器地址与 Device Key 推送 iOS 通知' },
+  { id: 'serverchan', label: 'Server酱', hint: '填入 SendKey 推送微信服务号消息' },
+  { id: 'webhook', label: '通用 Webhook', hint: '发送标准 JSON 事件载荷，可选 HMAC-SHA256 签名' },
+];
+
+function createEmptyChannelSettings(): NotificationChannelSettings {
+  return {
+    smtpHost: '',
+    smtpPort: 465,
+    smtpSecure: true,
+    smtpUser: '',
+    smtpPass: '',
+    smtpFrom: '',
+    smtpTo: '',
+    webhookUrl: '',
+    secret: '',
+    telegramBotToken: '',
+    telegramChatId: '',
+    telegramApiBaseUrl: 'https://api.telegram.org',
+    barkServerUrl: 'https://api.day.app',
+    barkDeviceKey: '',
+    barkGroup: 'RoleCardStudio',
+    serverChanSendKey: '',
+  };
+}
+
+function dtoToEditableSettings(ch: NotificationChannelDto): NotificationChannelSettings {
+  return {
+    smtpHost: ch.settingsMasked.smtpHost,
+    smtpPort: ch.settingsMasked.smtpPort,
+    smtpSecure: ch.settingsMasked.smtpSecure,
+    smtpUser: ch.settingsMasked.smtpUser,
+    smtpPass: '',
+    smtpFrom: ch.settingsMasked.smtpFrom,
+    smtpTo: ch.settingsMasked.smtpTo,
+    webhookUrl: ch.settingsMasked.webhookUrl,
+    secret: '',
+    telegramBotToken: '',
+    telegramChatId: ch.settingsMasked.telegramChatId,
+    telegramApiBaseUrl: ch.settingsMasked.telegramApiBaseUrl || 'https://api.telegram.org',
+    barkServerUrl: ch.settingsMasked.barkServerUrl || 'https://api.day.app',
+    barkDeviceKey: '',
+    barkGroup: ch.settingsMasked.barkGroup || 'RoleCardStudio',
+    serverChanSendKey: '',
+  };
+}
 
 export function ReviewSyncPanel({
   canResolveReview,
@@ -43,10 +112,12 @@ export function ReviewSyncPanel({
   onNotify,
   onRefreshCards,
 }: ReviewSyncPanelProps) {
-  const [tab, setTab] = useState<'reviews' | 'sync'>('reviews');
+  const { copyWithToast } = useToast();
+  const [tab, setTab] = useState<'reviews' | 'notifications' | 'sync'>('reviews');
   const [impressions, setImpressions] = useState<ImpressionEventDto[]>([]);
   const [ripples, setRipples] = useState<RippleProposalDto[]>([]);
   const [subscriptions, setSubscriptions] = useState<SyncSubscriptionDto[]>([]);
+  const [channels, setChannels] = useState<NotificationChannelDto[]>([]);
   const [events, setEvents] = useState<SyncEventDto[]>([]);
   const [sseConnected, setSseConnected] = useState(false);
 
@@ -54,21 +125,37 @@ export function ReviewSyncPanel({
   const [subUrl, setSubUrl] = useState('');
   const [subEvents, setSubEvents] = useState<SyncEventType[]>(['card.updated', 'card.evolved']);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+
+  const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
+  const [editingChannelMasked, setEditingChannelMasked] = useState<
+    NotificationChannelDto['settingsMasked'] | null
+  >(null);
+  const [chName, setChName] = useState('');
+  const [chType, setChType] = useState<NotificationChannelType>('feishu');
+  const [chEnabled, setChEnabled] = useState(true);
+  const [chEvents, setChEvents] = useState<SyncEventType[]>(['review.pending', 'card.evolved']);
+  const [chSettings, setChSettings] = useState<NotificationChannelSettings>(
+    createEmptyChannelSettings,
+  );
+  const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setError(null);
     try {
-      const [revRes, subRes, evtRes] = await Promise.all([
+      const [revRes, subRes, evtRes, chRes] = await Promise.all([
         api.listReviews(),
         api.listSyncSubscriptions(),
         api.listSyncEvents(0, 30),
+        api.listNotificationChannels(),
       ]);
       setImpressions(revRes.impressions);
       setRipples(revRes.ripples);
       setSubscriptions(subRes.items);
       setEvents([...evtRes.items].reverse());
+      setChannels(chRes.items);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载审核与同步数据失败');
     }
@@ -88,10 +175,15 @@ export function ReviewSyncPanel({
     const handleSyncEvt = (evt: MessageEvent) => {
       try {
         const parsed = JSON.parse(String(evt.data)) as SyncEventDto;
+        let isNewEvent = false;
         setEvents((prev) => {
           if (prev.some((p) => p.id === parsed.id)) return prev;
+          isNewEvent = true;
           return [parsed, ...prev].slice(0, 30);
         });
+        if (isNewEvent && parsed.eventType === 'review.pending') {
+          void loadData();
+        }
       } catch {
         // ignore malformed frames
       }
@@ -105,7 +197,7 @@ export function ReviewSyncPanel({
       source.close();
       setSseConnected(false);
     };
-  }, []);
+  }, [loadData]);
 
   const handleResolveImpression = async (id: string, decision: 'approve' | 'reject') => {
     setBusy(true);
@@ -178,6 +270,107 @@ export function ReviewSyncPanel({
     }
   };
 
+  const resetChannelForm = () => {
+    setEditingChannelId(null);
+    setEditingChannelMasked(null);
+    setChName('');
+    setChType('feishu');
+    setChEnabled(true);
+    setChEvents(['review.pending', 'card.evolved']);
+    setChSettings(createEmptyChannelSettings());
+  };
+
+  const handleEditChannel = (ch: NotificationChannelDto) => {
+    setEditingChannelId(ch.id);
+    setEditingChannelMasked(ch.settingsMasked);
+    setChName(ch.name);
+    setChType(ch.channelType);
+    setChEnabled(ch.enabled);
+    setChEvents(ch.events.length > 0 ? ch.events : ['review.pending']);
+    setChSettings(dtoToEditableSettings(ch));
+  };
+
+  const handleSaveChannel = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!chName.trim() || chEvents.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = {
+        name: chName.trim(),
+        channelType: chType,
+        enabled: chEnabled,
+        events: chEvents,
+        settings: chSettings,
+      };
+      if (editingChannelId) {
+        await api.updateNotificationChannel(editingChannelId, payload);
+        onNotify(`已更新通知渠道：${chName.trim()}`);
+      } else {
+        await api.createNotificationChannel(payload);
+        onNotify(`已添加通知渠道：${chName.trim()}`);
+      }
+      resetChannelForm();
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存通知渠道失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleToggleChannelEnabled = async (ch: NotificationChannelDto) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateNotificationChannel(ch.id, {
+        name: ch.name,
+        channelType: ch.channelType,
+        enabled: !ch.enabled,
+        events: ch.events.length > 0 ? ch.events : ['review.pending'],
+        settings: dtoToEditableSettings(ch),
+      });
+      onNotify(`${ch.name} 已${ch.enabled ? '暂停' : '启用'}`);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '切换渠道状态失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTestChannel = async (ch: NotificationChannelDto) => {
+    setTestingChannelId(ch.id);
+    setError(null);
+    try {
+      const res = await api.testNotificationChannel(ch.id);
+      onNotify(`测试通知发送成功 (${ch.name})：${res.message}`);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '测试通知发送失败');
+      await loadData();
+    } finally {
+      setTestingChannelId(null);
+    }
+  };
+
+  const handleDeleteChannel = async (ch: NotificationChannelDto) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteNotificationChannel(ch.id);
+      if (editingChannelId === ch.id) {
+        resetChannelForm();
+      }
+      onNotify(`已删除通知渠道：${ch.name}`);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除通知渠道失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const pendingCount =
     impressions.filter((i) => i.status === 'pending_review').length +
     ripples.filter((r) => r.status === 'pending_review').length;
@@ -225,7 +418,7 @@ export function ReviewSyncPanel({
         </div>
       </div>
 
-      <div className="flex gap-1 border-b border-line-subtle">
+      <div className="flex flex-wrap gap-1 border-b border-line-subtle">
         <button
           type="button"
           onClick={() => setTab('reviews')}
@@ -236,6 +429,17 @@ export function ReviewSyncPanel({
           }`}
         >
           审核收件箱 ({pendingCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('notifications')}
+          className={`border-b-2 px-3 py-2 text-xs font-medium transition ${
+            tab === 'notifications'
+              ? 'border-accent text-accent'
+              : 'border-transparent text-content-secondary hover:text-content-primary'
+          }`}
+        >
+          多渠道审核通知 ({channels.length})
         </button>
         <button
           type="button"
@@ -398,6 +602,453 @@ export function ReviewSyncPanel({
             )}
           </div>
         </div>
+      ) : tab === 'notifications' ? (
+        <div className="space-y-4">
+          <div className="rounded-md border border-accent/25 bg-accent/5 px-3 py-2 text-xs text-content-secondary">
+            所有已启用的发信渠道具备<strong className="text-content-primary">相同优先级</strong>，当产生待审核提案（
+            <code className="font-mono text-[11px]">review.pending</code>）或人设演化事件时将并发推送，任一渠道失败不影响其余渠道投递。
+          </div>
+
+          {canUpdate && (
+            <form
+              onSubmit={handleSaveChannel}
+              className="space-y-3 rounded-md border border-line bg-canvas p-3.5 text-xs"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 font-semibold text-content-primary">
+                  <Mail className="h-3.5 w-3.5 text-accent" />
+                  {editingChannelId ? '编辑通知渠道' : '新增审核通知渠道'}
+                </div>
+                {editingChannelId && (
+                  <button
+                    type="button"
+                    onClick={resetChannelForm}
+                    className="inline-flex items-center gap-1 text-[11px] text-content-muted hover:text-content-primary"
+                  >
+                    <X className="h-3 w-3" />
+                    取消编辑
+                  </button>
+                )}
+              </div>
+
+              <div className="grid gap-2.5 sm:grid-cols-3">
+                <input
+                  type="text"
+                  required
+                  value={chName}
+                  onChange={(e) => setChName(e.target.value)}
+                  placeholder="渠道名称，如：我的邮件 / 审核飞书群"
+                  className="h-8 rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent"
+                />
+                <select
+                  value={chType}
+                  disabled={Boolean(editingChannelId)}
+                  onChange={(e) => setChType(e.target.value as NotificationChannelType)}
+                  className="h-8 rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent disabled:opacity-60"
+                >
+                  {CHANNEL_TYPE_META.map((meta) => (
+                    <option key={meta.id} value={meta.id}>
+                      {meta.label}
+                    </option>
+                  ))}
+                </select>
+                <label className="flex h-8 cursor-pointer items-center justify-between rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary">
+                  <span>启用该渠道</span>
+                  <input
+                    type="checkbox"
+                    checked={chEnabled}
+                    onChange={(e) => setChEnabled(e.target.checked)}
+                    className="h-4 w-4 accent-accent"
+                  />
+                </label>
+              </div>
+
+              <p className="text-[11px] text-content-muted">
+                {CHANNEL_TYPE_META.find((m) => m.id === chType)?.hint}
+              </p>
+
+              {chType === 'smtp' && (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <input
+                    type="text"
+                    required
+                    value={chSettings.smtpHost}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, smtpHost: e.target.value }))
+                    }
+                    placeholder="SMTP 主机，如 smtp.qq.com"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    required
+                    value={chSettings.smtpPort}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({
+                        ...prev,
+                        smtpPort: Number(e.target.value) || 465,
+                      }))
+                    }
+                    placeholder="端口 (465 / 587 / 25)"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <label className="flex h-8 cursor-pointer items-center justify-between rounded-sm border border-line bg-surface px-2.5 text-xs text-content-secondary">
+                    <span>TLS / STARTTLS 加密</span>
+                    <input
+                      type="checkbox"
+                      checked={chSettings.smtpSecure}
+                      onChange={(e) =>
+                        setChSettings((prev) => ({ ...prev, smtpSecure: e.target.checked }))
+                      }
+                      className="accent-accent"
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    value={chSettings.smtpUser}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, smtpUser: e.target.value }))
+                    }
+                    placeholder="登录用户名（可选）"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="password"
+                    value={chSettings.smtpPass}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, smtpPass: e.target.value }))
+                    }
+                    placeholder={
+                      editingChannelMasked?.hasSmtpPass
+                        ? `授权码/密码（已配置 ${editingChannelMasked.smtpPassMasked}，留空不修改）`
+                        : 'SMTP 密码或授权码'
+                    }
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="email"
+                    required
+                    value={chSettings.smtpFrom}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, smtpFrom: e.target.value }))
+                    }
+                    placeholder="发件人邮箱 From"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="text"
+                    required
+                    value={chSettings.smtpTo}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, smtpTo: e.target.value }))
+                    }
+                    placeholder="收件人邮箱 To（多个可用逗号分隔）"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary sm:col-span-3"
+                  />
+                </div>
+              )}
+
+              {(chType === 'feishu' ||
+                chType === 'wecom' ||
+                chType === 'dingtalk' ||
+                chType === 'discord' ||
+                chType === 'webhook') && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    type="url"
+                    required
+                    value={chSettings.webhookUrl}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, webhookUrl: e.target.value }))
+                    }
+                    placeholder="https://... 机器人 / Webhook 地址"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  {(chType === 'feishu' || chType === 'dingtalk' || chType === 'webhook') && (
+                    <input
+                      type="password"
+                      value={chSettings.secret}
+                      onChange={(e) =>
+                        setChSettings((prev) => ({ ...prev, secret: e.target.value }))
+                      }
+                      placeholder={
+                        editingChannelMasked?.hasSecret
+                          ? `签名密钥（已配置 ${editingChannelMasked.secretMasked}，留空不修改）`
+                          : '签名密钥 Secret（可选）'
+                      }
+                      className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                    />
+                  )}
+                </div>
+              )}
+
+              {chType === 'telegram' && (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <input
+                    type="password"
+                    required={!editingChannelMasked?.hasTelegramBotToken}
+                    value={chSettings.telegramBotToken}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, telegramBotToken: e.target.value }))
+                    }
+                    placeholder={
+                      editingChannelMasked?.hasTelegramBotToken
+                        ? `Bot Token（已配置 ${editingChannelMasked.telegramBotTokenMasked}，留空不修改）`
+                        : 'Bot Token（如 123456:ABC...）'
+                    }
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="text"
+                    required
+                    value={chSettings.telegramChatId}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, telegramChatId: e.target.value }))
+                    }
+                    placeholder="Chat ID（如 -100123456789）"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="url"
+                    value={chSettings.telegramApiBaseUrl}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, telegramApiBaseUrl: e.target.value }))
+                    }
+                    placeholder="https://api.telegram.org"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                </div>
+              )}
+
+              {chType === 'bark' && (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <input
+                    type="url"
+                    required
+                    value={chSettings.barkServerUrl}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, barkServerUrl: e.target.value }))
+                    }
+                    placeholder="https://api.day.app"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="password"
+                    required={!editingChannelMasked?.hasBarkDeviceKey}
+                    value={chSettings.barkDeviceKey}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, barkDeviceKey: e.target.value }))
+                    }
+                    placeholder={
+                      editingChannelMasked?.hasBarkDeviceKey
+                        ? `Device Key（已配置 ${editingChannelMasked.barkDeviceKeyMasked}，留空不修改）`
+                        : 'Bark Device Key'
+                    }
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                  <input
+                    type="text"
+                    value={chSettings.barkGroup}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, barkGroup: e.target.value }))
+                    }
+                    placeholder="通知分组名（默认 RoleCardStudio）"
+                    className="h-8 rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary"
+                  />
+                </div>
+              )}
+
+              {chType === 'serverchan' && (
+                <div>
+                  <input
+                    type="password"
+                    required={!editingChannelMasked?.hasServerChanSendKey}
+                    value={chSettings.serverChanSendKey}
+                    onChange={(e) =>
+                      setChSettings((prev) => ({ ...prev, serverChanSendKey: e.target.value }))
+                    }
+                    placeholder={
+                      editingChannelMasked?.hasServerChanSendKey
+                        ? `Server酱 SendKey（已配置 ${editingChannelMasked.serverChanSendKeyMasked}，留空不修改）`
+                        : 'Server酱 SendKey（如 SCT...）'
+                    }
+                    className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {ALL_EVENT_TYPES.map((evt) => {
+                    const checked = chEvents.includes(evt.id);
+                    return (
+                      <label
+                        key={evt.id}
+                        className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] text-content-secondary"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setChEvents((prev) =>
+                              checked ? prev.filter((x) => x !== evt.id) : [...prev, evt.id],
+                            )
+                          }
+                          className="accent-accent"
+                        />
+                        {evt.label}
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={busy || chEvents.length === 0}
+                  className="inline-flex h-8 items-center gap-1 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {editingChannelId ? '保存修改' : '添加渠道'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold text-content-primary">
+              已配置通知渠道 ({channels.length})
+            </h3>
+            {channels.length === 0 ? (
+              <p className="rounded-md border border-dashed border-line p-5 text-center text-xs text-content-muted">
+                尚未配置通知渠道。上方支持添加邮件 (SMTP)、飞书、企业微信、钉钉、Telegram、Discord、Bark、Server酱与通用 Webhook。
+              </p>
+            ) : (
+              <div className="grid gap-2.5 lg:grid-cols-2">
+                {channels.map((ch) => {
+                  const typeLabel =
+                    CHANNEL_TYPE_META.find((m) => m.id === ch.channelType)?.label ?? ch.channelType;
+                  return (
+                    <div
+                      key={ch.id}
+                      className="flex flex-col justify-between gap-2.5 rounded-md border border-line bg-canvas p-3 text-xs"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold text-content-primary">{ch.name}</span>
+                            <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10.5px] font-medium text-accent">
+                              {typeLabel}
+                            </span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10.5px] font-medium ${
+                                ch.enabled
+                                  ? 'bg-status-success/15 text-status-success'
+                                  : 'bg-subtle text-content-muted'
+                              }`}
+                            >
+                              {ch.enabled ? '已启用' : '已暂停'}
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate font-mono text-[11px] text-content-muted">
+                            {ch.channelType === 'smtp'
+                              ? `${ch.settingsMasked.smtpHost}:${ch.settingsMasked.smtpPort} -> ${ch.settingsMasked.smtpTo}`
+                              : ch.channelType === 'telegram'
+                                ? `Chat ${ch.settingsMasked.telegramChatId} (${ch.settingsMasked.telegramBotTokenMasked ?? ''})`
+                                : ch.channelType === 'bark'
+                                  ? `${ch.settingsMasked.barkServerUrl} [${ch.settingsMasked.barkGroup}]`
+                                  : ch.channelType === 'serverchan'
+                                    ? `SendKey ${ch.settingsMasked.serverChanSendKeyMasked ?? ''}`
+                                    : ch.settingsMasked.webhookUrl}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {ch.events.map((evtId) => (
+                              <span
+                                key={evtId}
+                                className="rounded-sm border border-line-subtle bg-surface px-1.5 py-0.5 text-[10px] text-content-secondary"
+                              >
+                                {ALL_EVENT_TYPES.find((e) => e.id === evtId)?.label ?? evtId}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-subtle pt-2">
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          {ch.lastStatus === 'success' ? (
+                            <span className="inline-flex items-center gap-1 text-status-success">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              最近投递成功
+                              {ch.lastSentAt ? ` (${new Date(ch.lastSentAt).toLocaleTimeString()})` : ''}
+                            </span>
+                          ) : ch.lastStatus === 'error' ? (
+                            <span
+                              className="inline-flex items-center gap-1 text-status-danger"
+                              title={ch.lastError ?? ''}
+                            >
+                              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                              <span className="max-w-[220px] truncate">
+                                失败：{ch.lastError ?? '未知错误'}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-content-muted">尚未投递</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          {canUpdate && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={busy || testingChannelId === ch.id}
+                                onClick={() => void handleTestChannel(ch)}
+                                className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                              >
+                                <Send className="h-3 w-3" />
+                                {testingChannelId === ch.id ? '发送中...' : '测试'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleToggleChannelEnabled(ch)}
+                                className="inline-flex h-7 items-center rounded-sm border border-line bg-surface px-2 text-[11px] text-content-secondary hover:text-content-primary"
+                              >
+                                {ch.enabled ? '暂停' : '启用'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => handleEditChannel(ch)}
+                                className="rounded-sm p-1.5 text-content-muted hover:bg-subtle hover:text-content-primary"
+                                title="编辑渠道"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleDeleteChannel(ch)}
+                              className="rounded-sm p-1.5 text-content-muted hover:bg-status-danger/10 hover:text-status-danger"
+                              title="删除渠道"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       ) : (
         <div className="space-y-4">
           {canUpdate && (
@@ -475,13 +1126,23 @@ export function ReviewSyncPanel({
                   </code>
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setCreatedSecret(null)}
-                className="text-content-muted hover:text-content-primary"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void copyWithToast(createdSecret, 'Webhook 签名密钥')}
+                  className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] text-content-primary hover:border-accent"
+                >
+                  <Copy className="h-3 w-3" />
+                  复制密钥
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreatedSecret(null)}
+                  className="text-content-muted hover:text-content-primary"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
           )}
 

@@ -1,6 +1,8 @@
+import { z } from 'zod';
 import {
   estimateCardTokens,
   RoleCardContentSchema,
+  type CardType,
   type GenerateCardRequest,
   type RoleCardContent,
   type SearchProvider,
@@ -32,6 +34,8 @@ export interface GenerateCardDeps extends RetrievalDeps {
   searchApiKey?: string;
   customSystemPrompt?: string;
   onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
 }
 
 export interface GeneratedCardOutput {
@@ -43,7 +47,39 @@ export interface GeneratedCardOutput {
   temperature: number;
 }
 
-const ROLE_CARD_SCHEMA_HINT = `{
+function buildSchemaHintForCardType(cardType: CardType): string {
+  const trpgSnippet =
+    cardType === 'trpg_coc7'
+      ? `{
+    "trpg": {
+      "system": "Call of Cthulhu 7e",
+      "occupation": "结合设定推断的调查员职业",
+      "era": "所属时代背景",
+      "characteristics": { "STR": 50, "CON": 60, "SIZ": 55, "DEX": 70, "APP": 65, "INT": 80, "POW": 75, "EDU": 75 },
+      "derived": { "HP": 11, "MP": 15, "SAN": 75, "Luck": 60, "Move": 8, "DB": "0", "Build": 0 },
+      "keySkills": ["核心技能1 75%", "核心技能2 70%", "核心技能3 65%", "核心技能4 60%", "核心技能5 55%", "核心技能6 50%"],
+      "backstory": { "ideologyBeliefs": "信念与信条", "significantPeople": "重要之人", "treasuredPossessions": "珍视之物" }
+    }
+  }`
+      : cardType === 'trpg_dnd5e'
+        ? `{
+    "trpg": {
+      "system": "D&D 5e",
+      "race": "种族",
+      "className": "职业与子职（如：魔剑士 / 游侠）",
+      "background": "背景",
+      "alignment": "九宫格阵营（如：守序善良）",
+      "level": 5,
+      "abilityScores": { "STR": 12, "DEX": 16, "CON": 14, "INT": 14, "WIS": 13, "CHA": 12 },
+      "combat": { "AC": 16, "MaxHP": 38, "HitDice": "5d8", "Speed": "30 ft", "Initiative": 3, "ProficiencyBonus": 3 },
+      "savingThrows": ["敏捷", "智力"],
+      "proficiencies": ["察觉", "奥秘", "体操", "调查"],
+      "featuresAndTraits": ["代表性职业特性或战技1", "特性2"]
+    }
+  }`
+        : `{}`;
+
+  return `{
   "name": "角色名称",
   "summary": "一句话高概念定位",
   "personality": "性格特征与行为准则",
@@ -58,8 +94,42 @@ const ROLE_CARD_SCHEMA_HINT = `{
   "scenario": "当前场景设定",
   "creator_notes": "创作与溯源备注",
   "tags": ["标签1"],
-  "extensions": {}
+  "extensions": ${trpgSnippet}
 }`;
+}
+
+function describeCardTypeSpec(cardType: CardType): string[] {
+  switch (cardType) {
+    case 'trpg_coc7':
+      return [
+        '当前卡片规格为【TRPG · Call of Cthulhu 7e 调查员车卡】：',
+        '1. 必须在 extensions.trpg 中根据该角色的体格、战斗力、智力、意志、学识与特长，推演真实的 CoC 7e 属性（characteristics 各项为 15~90 的 5 的倍数，禁止照抄示例数字），并正确计算衍生值（HP=floor((CON+SIZ)/10), MP=floor(POW/5), SAN=POW）；',
+        '2. keySkills 必须结合角色能力列出 6~8 项具体技能和百分率（如“格斗(斗殴) 70%”“神秘学 75%”）；',
+        '3. system_prompt 与 scenario 应兼顾跑团代入感与守秘人（KP）参考。',
+      ];
+    case 'trpg_dnd5e':
+      return [
+        '当前卡片规格为【TRPG · D&D 5e 冒险者车卡】：',
+        '1. 必须在 extensions.trpg 中根据该角色的战斗风格、体质、灵巧、学识、感知与魅力，推演真实的 D&D 5e 六维属性（abilityScores 3~20，禁止照抄示例数字）、合理的种族/职业/阵营/等级及 AC/MaxHP/HitDice；',
+        '2. proficiencies 与 featuresAndTraits 必须贴合角色的标志性技能、法术或武器特长；',
+        '3. 保持角色背景、阵营与战斗特征的一致性，可直接导出至 Foundry VTT 导入使用。',
+      ];
+    case 'general':
+      return [
+        '当前卡片规格为【通用角色设定档案】：',
+        '1. 侧重清晰、客观、结构化的人物档案（核心定位、性格动机、经历脉络、能力与弱点、人际网络）；',
+        '2. 保持设定严谨精炼，适用于小说创作、游戏策划、设定集归档等多种用途。',
+      ];
+    case 'sillytavern_v3':
+    default:
+      return [
+        '当前卡片规格为【SillyTavern AI 角色扮演卡 (CCV3)】：',
+        '1. 强化沉浸式互动体验：first_mes 需具备鲜活的动作描写与对话钩子；alternate_greetings 提供 2~3 种不同切入情境；',
+        '2. mes_example 需使用标准 <START> / {{user}} / {{char}} 对话格式高度还原角色口癖与思维习惯；',
+        '3. system_prompt 需明确角色的语音语调、行为准则与防 OOC（不跳戏）边界。',
+      ];
+  }
+}
 
 export async function generateRoleCard(
   input: GenerateCardRequest,
@@ -69,6 +139,10 @@ export async function generateRoleCard(
   const retrievalSources: SourceEntry[] = [];
 
   // 1. Collect Mode A / Mode C user-provided material
+  await deps.onProgress?.({
+    step: 'preparing',
+    message: '正在整理用户设定材料与参考链接...',
+  });
   if (input.mode === 'A' || input.mode === 'C') {
     if (input.referenceText.trim()) {
       userSources.push({
@@ -126,6 +200,10 @@ export async function generateRoleCard(
     (input.mode === 'A' && input.enableSupplementSearch);
 
   if (shouldRetrieve) {
+    await deps.onProgress?.({
+      step: 'retrieving',
+      message: `正在考据公开百科与联网来源（${input.characterName}${input.workName ? ` · ${input.workName}` : ''}）...`,
+    });
     const retrieved = await layeredRetrieve(
       {
         characterName: input.characterName,
@@ -134,6 +212,14 @@ export async function generateRoleCard(
         searchProvider: deps.searchProvider,
         searchApiKey: deps.searchApiKey,
         deepSearch: input.mode === 'B' || input.mode === 'C',
+        onSiteChecked: async (site, hit) => {
+          await deps.onProgress?.({
+            step: 'retrieving',
+            message: hit
+              ? `已命中 ${site.label}：${hit.title}`
+              : `已检视 ${site.label}（暂无匹配条目）`,
+          });
+        },
       },
       deps,
     );
@@ -161,6 +247,10 @@ export async function generateRoleCard(
   }
 
   const allSources: SourceEntry[] = [...userSources, ...retrievalSources];
+  await deps.onProgress?.({
+    step: 'building_prompt',
+    message: `已汇总 ${allSources.length} 条参考来源，正在组装结构化角色卡提示词...`,
+  });
   const temperature = input.mode === 'A' ? 0.55 : input.mode === 'B' ? 0.25 : 0.4;
 
   const messages = buildGenerationMessages(input, userSources, retrievalSources, deps.customSystemPrompt);
@@ -168,9 +258,11 @@ export async function generateRoleCard(
     slot: deps.llmSlot,
     messages,
     schema: RoleCardContentSchema,
-    schemaHint: ROLE_CARD_SCHEMA_HINT,
+    schemaHint: buildSchemaHintForCardType(input.cardType),
     temperature,
     onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
   });
 
   if (!completionResult.ok) {
@@ -214,6 +306,7 @@ function buildGenerationMessages(
   const systemLines = [
     '你是 RoleCard Studio 专业角色卡架构师。你必须严格依据提供的参考资料提炼结构化角色卡，严禁捏造未提供的核心事实。',
     `目标卡片规格: ${input.cardType}；实体类型: ${input.entityType === 'real_person' ? '现实人物（保持客观中立）' : '虚构角色'}。`,
+    ...describeCardTypeSpec(input.cardType),
   ];
 
   if (input.mode === 'C') {
@@ -267,4 +360,94 @@ function buildGenerationMessages(
     { role: 'system', content: systemLines.join('\n') },
     { role: 'user', content: userPrompt },
   ];
+}
+
+const TrpgOnlySchema = z.object({
+  trpg: z.record(z.unknown()),
+});
+
+export async function generateTrpgAttributesForCard(
+  content: RoleCardContent,
+  system: 'coc7e' | 'dnd5e',
+  deps: {
+    llmPort: LlmCompletionPort;
+    llmSlot: LlmSlotRuntimeConfig;
+    onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+  },
+): Promise<Result<{ cardType: CardType; content: RoleCardContent }, CoreError>> {
+  const targetCardType: CardType = system === 'coc7e' ? 'trpg_coc7' : 'trpg_dnd5e';
+  const systemPrompt = [
+    '你是资深 TRPG 规则构筑师。请根据下方角色设定，生成贴合该角色背景、性格、体格与能力的真实 TRPG 车卡数据，严禁照抄默认模板数字。',
+    ...describeCardTypeSpec(targetCardType),
+    '你必须只返回 JSON 对象：{"trpg": { ... }}',
+  ].join('\n');
+
+  const schemaHint =
+    system === 'coc7e'
+      ? `{
+  "trpg": {
+    "system": "Call of Cthulhu 7e",
+    "occupation": "调查员职业",
+    "era": "所属时代",
+    "characteristics": { "STR": 50, "CON": 60, "SIZ": 55, "DEX": 70, "APP": 65, "INT": 80, "POW": 75, "EDU": 75 },
+    "derived": { "HP": 11, "MP": 15, "SAN": 75, "Luck": 60, "Move": 8, "DB": "0", "Build": 0 },
+    "keySkills": ["核心技能1 75%", "核心技能2 70%", "核心技能3 65%"],
+    "backstory": { "ideologyBeliefs": "...", "significantPeople": "...", "treasuredPossessions": "..." }
+  }
+}`
+      : `{
+  "trpg": {
+    "system": "D&D 5e",
+    "race": "种族",
+    "className": "职业与子职",
+    "background": "背景",
+    "alignment": "阵营",
+    "level": 5,
+    "abilityScores": { "STR": 12, "DEX": 16, "CON": 14, "INT": 14, "WIS": 13, "CHA": 12 },
+    "combat": { "AC": 16, "MaxHP": 38, "HitDice": "5d8", "Speed": "30 ft", "Initiative": 3, "ProficiencyBonus": 3 },
+    "savingThrows": ["敏捷", "智力"],
+    "proficiencies": ["察觉", "奥秘", "体操"],
+    "featuresAndTraits": ["代表性职业特性或战技"]
+  }
+}`;
+
+  const userPrompt = [
+    `角色名称：${content.name}`,
+    `一句话定位：${content.summary}`,
+    `性格特征：${content.personality}`,
+    content.appearance ? `外貌特征：${content.appearance}` : '',
+    content.background ? `背景故事：${content.background}` : '',
+    content.tags.length > 0 ? `标签：${content.tags.join(', ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const completion = await completeStructuredJson(deps.llmPort, {
+    slot: deps.llmSlot,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    schema: TrpgOnlySchema,
+    schemaHint,
+    temperature: 0.3,
+    onStrategyDowngraded: deps.onStrategyDowngraded,
+  });
+
+  if (!completion.ok) {
+    return completion;
+  }
+
+  const nextContent = applyTrpgPresetFields(targetCardType, {
+    ...content,
+    extensions: {
+      ...content.extensions,
+      trpg: completion.value.data.trpg,
+    },
+  });
+
+  return ok({
+    cardType: targetCardType,
+    content: nextContent,
+  });
 }

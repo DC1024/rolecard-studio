@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { DeclarativePluginManifest } from '@rolecard/shared';
-import { CheckCircle2, Download, Puzzle, Terminal } from 'lucide-react';
+import { CheckCircle2, Copy, Download, Puzzle, Terminal } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
+import { useToast } from '../hooks/useToast';
 
 interface PluginPanelProps {
   selectedCard: RoleCardDto | null;
@@ -9,6 +10,7 @@ interface PluginPanelProps {
 }
 
 export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
+  const { notifySuccess, notifyError, copyWithToast } = useToast();
   const [plugins, setPlugins] = useState<DeclarativePluginManifest[]>([]);
   const [manifestDraft, setManifestDraft] = useState(
     JSON.stringify(
@@ -45,11 +47,14 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
       const parsed = JSON.parse(manifestDraft) as unknown;
       const res = await api.validatePlugin(parsed);
       setValidationMsg({ ok: true, text: `校验通过：${res.manifest.name} (${res.manifest.type})` });
+      notifySuccess(`插件清单「${res.manifest.name}」校验通过`);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Manifest JSON 校验失败';
       setValidationMsg({
         ok: false,
-        text: err instanceof Error ? err.message : 'Manifest JSON 校验失败',
+        text: msg,
       });
+      notifyError(msg);
     }
   };
 
@@ -85,13 +90,14 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
               {plugin.type === 'export_formatter' && selectedCard && canExport && (
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
                     window.open(
                       api.getPluginExportUrl(plugin.id, selectedCard.id),
                       '_blank',
                       'noopener,noreferrer',
-                    )
-                  }
+                    );
+                    notifySuccess(`已触发「${plugin.name}」导出 (.${plugin.exportSpec?.fileExtension})`);
+                  }}
                   className="mt-3 inline-flex h-7 items-center justify-center gap-1 rounded-sm border border-line bg-surface text-xs font-medium text-accent hover:bg-accent/10"
                 >
                   <Download className="h-3 w-3" />
@@ -136,10 +142,40 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
         </div>
 
         <div className="rounded-lg border border-line bg-surface p-4 shadow-sm">
-          <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-content-primary">
-            <Terminal className="h-3.5 w-3.5 text-accent" />
-            方向 B · 官方 MCP Server (@rolecard/mcp) 接入配置
-          </h4>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h4 className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
+              <Terminal className="h-3.5 w-3.5 text-accent" />
+              方向 B · 官方 MCP Server (@rolecard/mcp) 接入配置
+            </h4>
+            <button
+              type="button"
+              onClick={() =>
+                void copyWithToast(
+                  JSON.stringify(
+                    {
+                      mcpServers: {
+                        'rolecard-studio': {
+                          command: 'npx',
+                          args: ['@rolecard/mcp'],
+                          env: {
+                            ROLECARD_API_URL: window.location.origin,
+                            ROLECARD_API_KEY: '你的_rc_ext_密钥',
+                          },
+                        },
+                      },
+                    },
+                    null,
+                    2,
+                  ),
+                  'MCP 配置',
+                )
+              }
+              className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-canvas px-2 text-[11px] font-medium text-content-secondary hover:border-accent hover:text-accent"
+            >
+              <Copy className="h-3 w-3" />
+              复制配置
+            </button>
+          </div>
           <p className="mb-2 text-[11px] leading-relaxed text-content-secondary">
             在 Cursor / Claude Desktop 等支持 Stdio 的 MCP 客户端中配置以下 MCP Server，即可直接检索角色卡、读取世界书并导出 CCV3：
           </p>

@@ -149,16 +149,149 @@ interface MediaWikiSearchResponse {
   };
 }
 
+interface MediaWikiPageRecord {
+  pageid?: number;
+  title?: string;
+  missing?: string;
+  extract?: string;
+  fullurl?: string;
+  canonicalurl?: string;
+  pageprops?: {
+    disambiguation?: string;
+  };
+}
+
 interface MediaWikiExtractResponse {
   query?: {
-    pages?: Record<
-      string,
-      {
-        pageid?: number;
-        title?: string;
-        extract?: string;
-      }
-    >;
+    pages?: Record<string, MediaWikiPageRecord>;
+  };
+}
+
+interface MediaWikiParseResponse {
+  parse?: {
+    title?: string;
+    text?: {
+      '*'?: string;
+    };
+  };
+}
+
+export interface MediaWikiQueryOptions {
+  exactTitle?: string;
+  workName?: string;
+}
+
+function extractPlainTextFromWikiHtml(html: string): string {
+  if (!html.trim()) return '';
+  const wrapped = /<body[\s>]/i.test(html)
+    ? html
+    : `<!doctype html><html><body>${html}</body></html>`;
+  const parsed = parseHTML(wrapped);
+  const doc = parsed.document;
+  for (const selector of ['script', 'style', '.navbox', '.mw-editsection', '.toc']) {
+    for (const node of doc.querySelectorAll(selector)) {
+      node.remove();
+    }
+  }
+  return normalizeWhitespace(
+    doc.body?.textContent ?? doc.documentElement?.textContent ?? doc.textContent ?? '',
+  );
+}
+
+function scoreMediaWikiCandidate(
+  candidateTitle: string,
+  snippet: string,
+  exactTitle: string,
+  workName?: string,
+): number {
+  const titleLower = candidateTitle.trim().toLowerCase();
+  const targetLower = exactTitle.trim().toLowerCase();
+  let score = 0;
+
+  if (titleLower === targetLower) score += 200;
+  else if (titleLower.startsWith(`${targetLower} `) || titleLower.startsWith(`${targetLower}(`) || titleLower.startsWith(`${targetLower}（`)) score += 120;
+  else if (titleLower.includes(targetLower)) score += 60;
+
+  // Strongly penalize resource / animation / dialogue subpages (e.g. "演出阿米娅/spine")
+  if (candidateTitle.includes('/')) score -= 80;
+  if (/(spine|语音|台词|图鉴|立绘|模型|模板|sandbox)/i.test(candidateTitle)) score -= 40;
+
+  if (workName?.trim()) {
+    const workLower = workName.trim().toLowerCase();
+    if (titleLower.includes(workLower) || snippet.toLowerCase().includes(workLower)) {
+      score += 50;
+    }
+  }
+
+  // Prefer concise canonical titles over long derivative names
+  score -= Math.min(candidateTitle.length, 60) * 0.2;
+  return score;
+}
+
+async function fetchWikiPageParseText(
+  site: WikiSiteConfig,
+  pageid: number,
+  deps: RetrievalDeps,
+): Promise<string> {
+  const parseUrl = new URL(site.apiEndpoint);
+  parseUrl.searchParams.set('action', 'parse');
+  parseUrl.searchParams.set('pageid', String(pageid));
+  parseUrl.searchParams.set('prop', 'text');
+  parseUrl.searchParams.set('disableeditsection', '1');
+  parseUrl.searchParams.set('format', 'json');
+
+  const parseRes = await safeFetchText(parseUrl.toString(), {
+    fetchImpl: deps.fetchImpl,
+    dnsLookup: deps.dnsLookup,
+    timeoutMs: 8000,
+  });
+  if (!parseRes.ok || parseRes.value.status >= 400) {
+    return '';
+  }
+
+  try {
+    const parsed = JSON.parse(parseRes.value.bodyText) as MediaWikiParseResponse;
+    const html = parsed.parse?.text?.['*'] ?? '';
+    return extractPlainTextFromWikiHtml(html);
+  } catch {
+    return '';
+  }
+}
+
+async function buildSourceFromWikiPage(
+  site: WikiSiteConfig,
+  page: MediaWikiPageRecord,
+  fallbackTitle: string,
+  fallbackPageId: number | undefined,
+  deps: RetrievalDeps,
+): Promise<SourceEntry | null> {
+  const pageId = page.pageid ?? fallbackPageId;
+  const title = page.title ?? fallbackTitle;
+  let extract = normalizeWhitespace(page.extract ?? '');
+
+  // PRTS / template-heavy wikis strip infobox content in prop=extracts; fall back to action=parse when sparse
+  if (extract.length < 220 && pageId) {
+    const parsedText = await fetchWikiPageParseText(site, pageId, deps);
+    if (parsedText.length > extract.length) {
+      extract = parsedText;
+    }
+  }
+
+  if (!extract) {
+    return null;
+  }
+
+  const canonicalUrl =
+    page.canonicalurl ||
+    page.fullurl ||
+    (pageId ? `${site.pageBaseUrl}${pageId}` : undefined);
+
+  return {
+    title: `${title} (${site.label})`,
+    url: canonicalUrl,
+    snippet: clipToTokenBudget(extract, 2000),
+    origin: 'search_supplement',
+    provider: site.id,
   };
 }
 
@@ -166,12 +299,62 @@ export async function queryMediaWikiSite(
   site: WikiSiteConfig,
   searchTerm: string,
   deps: RetrievalDeps = {},
+  options: MediaWikiQueryOptions = {},
 ): Promise<SourceEntry | null> {
+  const exactCandidate = (options.exactTitle || searchTerm).trim();
+
+  // Phase 1: Exact page title lookup with redirect resolution & canonical URL
+  if (exactCandidate) {
+    const exactUrl = new URL(site.apiEndpoint);
+    exactUrl.searchParams.set('action', 'query');
+    exactUrl.searchParams.set('titles', exactCandidate);
+    exactUrl.searchParams.set('redirects', '1');
+    exactUrl.searchParams.set('prop', 'info|extracts|pageprops');
+    exactUrl.searchParams.set('explaintext', '1');
+    exactUrl.searchParams.set('exsectionformat', 'plain');
+    exactUrl.searchParams.set('inprop', 'url');
+    exactUrl.searchParams.set('format', 'json');
+
+    const exactRes = await safeFetchText(exactUrl.toString(), {
+      fetchImpl: deps.fetchImpl,
+      dnsLookup: deps.dnsLookup,
+      timeoutMs: 8000,
+    });
+
+    if (exactRes.ok && exactRes.value.status < 400) {
+      try {
+        const parsed = JSON.parse(exactRes.value.bodyText) as MediaWikiExtractResponse;
+        const pages = parsed.query?.pages;
+        if (pages) {
+          const page = Object.values(pages).find(
+            (p) => p && p.missing === undefined && typeof p.pageid === 'number' && p.pageid > 0,
+          );
+          const isDisambig = Boolean(page?.pageprops && 'disambiguation' in page.pageprops);
+          if (page && !isDisambig) {
+            const built = await buildSourceFromWikiPage(
+              site,
+              page,
+              exactCandidate,
+              page.pageid,
+              deps,
+            );
+            if (built) {
+              return built;
+            }
+          }
+        }
+      } catch {
+        // fall through to search phase
+      }
+    }
+  }
+
+  // Phase 2: Full-text search fallback with candidate ranking (deprioritize subpages like /spine)
   const searchUrl = new URL(site.apiEndpoint);
   searchUrl.searchParams.set('action', 'query');
   searchUrl.searchParams.set('list', 'search');
   searchUrl.searchParams.set('srsearch', searchTerm);
-  searchUrl.searchParams.set('srlimit', '1');
+  searchUrl.searchParams.set('srlimit', '5');
   searchUrl.searchParams.set('format', 'json');
 
   const searchRes = await safeFetchText(searchUrl.toString(), {
@@ -183,24 +366,32 @@ export async function queryMediaWikiSite(
     return null;
   }
 
-  let firstMatch: { pageid: number; title: string; snippet?: string } | undefined;
+  let candidates: Array<{ pageid: number; title: string; snippet?: string }> = [];
   try {
     const parsed = JSON.parse(searchRes.value.bodyText) as MediaWikiSearchResponse;
-    firstMatch = parsed.query?.search?.[0];
+    candidates = parsed.query?.search ?? [];
   } catch {
     return null;
   }
 
-  if (!firstMatch) {
+  if (candidates.length === 0) {
     return null;
   }
 
+  const ranked = [...candidates].sort((a, b) => {
+    const scoreA = scoreMediaWikiCandidate(a.title, a.snippet ?? '', exactCandidate, options.workName);
+    const scoreB = scoreMediaWikiCandidate(b.title, b.snippet ?? '', exactCandidate, options.workName);
+    return scoreB - scoreA;
+  });
+  const bestMatch = ranked[0]!;
+
   const extractUrl = new URL(site.apiEndpoint);
   extractUrl.searchParams.set('action', 'query');
-  extractUrl.searchParams.set('prop', 'extracts');
+  extractUrl.searchParams.set('prop', 'info|extracts');
   extractUrl.searchParams.set('explaintext', '1');
   extractUrl.searchParams.set('exsectionformat', 'plain');
-  extractUrl.searchParams.set('pageids', String(firstMatch.pageid));
+  extractUrl.searchParams.set('inprop', 'url');
+  extractUrl.searchParams.set('pageids', String(bestMatch.pageid));
   extractUrl.searchParams.set('format', 'json');
 
   const extractRes = await safeFetchText(extractUrl.toString(), {
@@ -216,19 +407,9 @@ export async function queryMediaWikiSite(
     const parsed = JSON.parse(extractRes.value.bodyText) as MediaWikiExtractResponse;
     const pages = parsed.query?.pages;
     if (!pages) return null;
-    const page = pages[String(firstMatch.pageid)] ?? Object.values(pages)[0];
-    const extract = normalizeWhitespace(page?.extract ?? '');
-    if (!extract) {
-      return null;
-    }
-
-    return {
-      title: `${page?.title ?? firstMatch.title} (${site.label})`,
-      url: `${site.pageBaseUrl}${firstMatch.pageid}`,
-      snippet: clipToTokenBudget(extract, 2000),
-      origin: 'search_supplement',
-      provider: site.id,
-    };
+    const page = pages[String(bestMatch.pageid)] ?? Object.values(pages)[0];
+    if (!page) return null;
+    return await buildSourceFromWikiPage(site, page, bestMatch.title, bestMatch.pageid, deps);
   } catch {
     return null;
   }
@@ -356,6 +537,7 @@ export interface LayeredRetrieveInput {
   searchApiKey?: string;
   deepSearch?: boolean;
   maxTotalTokens?: number;
+  onSiteChecked?: (site: WikiSiteConfig, hit: SourceEntry | null) => void | Promise<void>;
 }
 
 export interface LayeredRetrieveOutput {
@@ -368,9 +550,9 @@ export async function layeredRetrieve(
   input: LayeredRetrieveInput,
   deps: RetrievalDeps = {},
 ): Promise<LayeredRetrieveOutput> {
-  const queryTerm = input.workName?.trim()
-    ? `${input.characterName.trim()} ${input.workName.trim()}`
-    : input.characterName.trim();
+  const exactTitle = input.characterName.trim();
+  const workName = input.workName?.trim();
+  const queryTerm = workName ? `${exactTitle} ${workName}` : exactTitle;
 
   const sources: SourceEntry[] = [];
   let layer1Hits = 0;
@@ -379,7 +561,16 @@ export async function layeredRetrieve(
   if (input.enableLayer1Wiki !== false) {
     const sites = deps.wikiSites ?? BUILTIN_WIKI_SITES;
     const wikiResults = await Promise.all(
-      sites.map((site) => queryMediaWikiSite(site, queryTerm, deps).catch(() => null)),
+      sites.map(async (site) => {
+        const hit = await queryMediaWikiSite(site, queryTerm, deps, {
+          exactTitle,
+          workName,
+        }).catch(() => null);
+        if (input.onSiteChecked) {
+          await input.onSiteChecked(site, hit);
+        }
+        return hit;
+      }),
     );
     for (const item of wikiResults) {
       if (item) {

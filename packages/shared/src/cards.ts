@@ -95,3 +95,8 @@ export const UpdateCardTagsSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(32)).max(30),
 });
 export type UpdateCardTagsRequest = z.infer<typeof UpdateCardTagsSchema>;
+
+export const GenerateTrpgStatsSchema = z.object({
+  system: z.enum(['coc7e', 'dnd5e']),
+});
+export type GenerateTrpgStatsRequest = z.infer<typeof GenerateTrpgStatsSchema>;

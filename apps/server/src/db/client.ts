@@ -122,6 +122,7 @@ function initializeTables(sqlite: DatabaseSync): void {
       json_mode_strategy TEXT NOT NULL DEFAULT 'auto',
       chat_llm_config_encrypted TEXT,
       vision_config_encrypted TEXT,
+      image_config_encrypted TEXT,
       search_provider TEXT NOT NULL DEFAULT 'none',
       search_api_key_encrypted TEXT,
       enable_layer1_wiki INTEGER NOT NULL DEFAULT 1,
@@ -279,7 +280,44 @@ function initializeTables(sqlite: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS notification_channels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      channel_type TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      events_json TEXT NOT NULL DEFAULT '["review.pending","card.evolved"]',
+      config_encrypted TEXT NOT NULL,
+      last_status TEXT,
+      last_error TEXT,
+      last_sent_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');
+}
+
+function ensureColumnExists(
+  sqlite: DatabaseSync,
+  tableName: string,
+  columnName: string,
+  columnDef: string,
+): void {
+  const rows = sqlite.prepare(`PRAGMA table_info(${tableName});`).all() as unknown[];
+  const exists = rows.some((row) => {
+    if (Array.isArray(row)) {
+      return String(row[1] ?? '') === columnName;
+    }
+    if (typeof row === 'object' && row !== null) {
+      return String((row as { name?: unknown }).name ?? '') === columnName;
+    }
+    return false;
+  });
+  if (!exists) {
+    sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef};`);
+  }
 }
 
 export interface BootstrapSeedOptions {

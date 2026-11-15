@@ -250,7 +250,7 @@ export async function searchWikimediaCommonsImages(
 export async function generatePortraitImage(
   input: ImageGenerateRequest,
   slot: LlmSlotRuntimeConfig,
-  imageModel = 'gpt-image-1',
+  imageModel = slot.model,
   deps: VisionDeps = {},
 ): Promise<Result<{ dataUrl?: string; imageUrl?: string }, CoreError>> {
   const fetchImpl = deps.fetchImpl ?? defaultHttpFetch;

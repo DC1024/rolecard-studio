@@ -45,7 +45,7 @@ describe('M3 core evolution, sync & vision', () => {
     expect(new Date(nextA).getTime()).toBeGreaterThanOrEqual(now.getTime() + 7 * 86400_000);
 
     const fetchImpl: HttpFetchPort = async (url) => {
-      if (url.includes('prop=extracts')) {
+      if (url.includes('extracts')) {
         return new Response(
           JSON.stringify({
             query: {
@@ -158,7 +158,7 @@ describe('M3 core evolution, sync & vision', () => {
       },
       {
         fetchImpl: async (url) => {
-          if (url.includes('prop=extracts')) {
+          if (url.includes('extracts')) {
             return new Response(
               JSON.stringify({
                 query: {

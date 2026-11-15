@@ -18,6 +18,7 @@ import type {
   LorebookDto,
   LorebookEntry,
   MaskedServiceConfig,
+  NotificationChannelDto,
   PlaytestRequest,
   PlaytestResponse,
   PublishStatus,
@@ -34,8 +35,10 @@ import type {
   UpdateLorebookRequest,
   CreateLorebookRequest,
   UpdateMetaSettingsRequest,
+  UpdateMyAccountRequest,
   UpdateScheduleRequest,
   UpdateUserPermissionsRequest,
+  UpsertNotificationChannelRequest,
   UserSummary,
   VisionAnalyzeRequest,
   VisionAnalyzeResponse,
@@ -148,6 +151,13 @@ export const api = {
     return requestJson('/auth/logout', { method: 'POST' });
   },
 
+  updateMyAccount(input: UpdateMyAccountRequest): Promise<{ user: UserSummary }> {
+    return requestJson('/auth/account', {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  },
+
   getConfig(): Promise<MaskedServiceConfig> {
     return requestJson<MaskedServiceConfig>('/config');
   },
@@ -251,7 +261,10 @@ export const api = {
 
   async generateCardSse(
     input: GenerateCardRequest,
-    onProgress: (message: string) => void,
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+    },
   ): Promise<RoleCardDto> {
     const res = await fetch('/api/v1/generate', {
       method: 'POST',
@@ -282,12 +295,9 @@ export const api = {
       return json.card;
     }
 
-    const text = await res.text();
-    const blocks = text.split(/\r?\n\r?\n/);
     let finalCard: RoleCardDto | null = null;
-
-    for (const block of blocks) {
-      if (!block.trim()) continue;
+    const handleSseBlock = (block: string) => {
+      if (!block.trim()) return;
       let eventName = 'message';
       const dataLines: string[] = [];
       for (const line of block.split(/\r?\n/)) {
@@ -298,10 +308,15 @@ export const api = {
         }
       }
       const rawData = dataLines.join('\n');
-      if (!rawData) continue;
+      if (!rawData) return;
       const parsed = JSON.parse(rawData) as Record<string, unknown>;
       if (eventName === 'progress' && typeof parsed.message === 'string') {
-        onProgress(parsed.message);
+        callbacks.onProgress?.(
+          parsed.message,
+          typeof parsed.step === 'string' ? parsed.step : undefined,
+        );
+      } else if (eventName === 'thinking' && typeof parsed.delta === 'string') {
+        callbacks.onThinking?.(parsed.delta);
       } else if (eventName === 'error') {
         throw new ApiError(
           String(parsed.code ?? 'GENERATE_FAILED'),
@@ -310,6 +325,33 @@ export const api = {
         );
       } else if (eventName === 'result' && parsed.card) {
         finalCard = parsed.card as RoleCardDto;
+      }
+    };
+
+    if (res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? '';
+        for (const block of blocks) {
+          handleSseBlock(block);
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        for (const block of buffer.split(/\r?\n\r?\n/)) {
+          handleSseBlock(block);
+        }
+      }
+    } else {
+      const text = await res.text();
+      for (const block of text.split(/\r?\n\r?\n/)) {
+        handleSseBlock(block);
       }
     }
 
@@ -384,6 +426,16 @@ export const api = {
 
   getExportUrl(id: string, format: ExportFormat): string {
     return `/api/v1/cards/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+  },
+
+  generateCardTrpgStats(
+    id: string,
+    system: 'coc7e' | 'dnd5e',
+  ): Promise<{ card: RoleCardDto }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/trpg`, {
+      method: 'POST',
+      body: JSON.stringify({ system }),
+    });
   },
 
   importCard(input: ImportCardRequest): Promise<{
@@ -544,6 +596,41 @@ export const api = {
 
   deleteSyncSubscription(id: string): Promise<{ ok: boolean }> {
     return requestJson(`/sync/subscriptions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  listNotificationChannels(): Promise<{ items: NotificationChannelDto[] }> {
+    return requestJson('/notifications/channels');
+  },
+
+  createNotificationChannel(
+    input: UpsertNotificationChannelRequest,
+  ): Promise<{ channel: NotificationChannelDto }> {
+    return requestJson('/notifications/channels', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  updateNotificationChannel(
+    id: string,
+    input: UpsertNotificationChannelRequest,
+  ): Promise<{ channel: NotificationChannelDto }> {
+    return requestJson(`/notifications/channels/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  testNotificationChannel(id: string): Promise<{ ok: boolean; message: string }> {
+    return requestJson(`/notifications/channels/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+    });
+  },
+
+  deleteNotificationChannel(id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/notifications/channels/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
   },

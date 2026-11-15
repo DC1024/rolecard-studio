@@ -235,9 +235,10 @@ export function LorebookPanel({
                 {canExport && (
                   <button
                     type="button"
-                    onClick={() =>
-                      window.open(api.getLorebookExportUrl(activeBook.id), '_blank', 'noopener,noreferrer')
-                    }
+                    onClick={() => {
+                      window.open(api.getLorebookExportUrl(activeBook.id), '_blank', 'noopener,noreferrer');
+                      onNotify(`已导出世界书「${activeBook.name}」WorldInfo JSON`);
+                    }}
                     className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-content-primary hover:bg-subtle"
                   >
                     <Download className="h-3.5 w-3.5" />

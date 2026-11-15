@@ -95,7 +95,7 @@ describe('M3 Server Integration: Evolution, 1-Hop Ripple, Meta Isolation, Sync &
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
-      if (url.includes('prop=extracts')) {
+      if (url.includes('extracts')) {
         return new Response(
           JSON.stringify({
             query: {

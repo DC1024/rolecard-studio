@@ -4,6 +4,7 @@ import type {
   HttpFetchPort,
   LlmCompletionPort,
   SearchProviderPort,
+  SmtpTransportPort,
 } from '@rolecard/core';
 import type { AppDatabase } from './db/client.js';
 
@@ -16,6 +17,7 @@ export interface ServerContext {
   fetchImpl?: HttpFetchPort;
   dnsLookup?: DnsLookupPort;
   searchProviderPort?: SearchProviderPort;
+  smtpTransport?: SmtpTransportPort;
   clock?: ClockPort;
   webDistDir?: string;
   pluginsDir?: string;

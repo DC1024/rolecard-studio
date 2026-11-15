@@ -49,10 +49,13 @@ export interface LlmCompletionRequest {
   temperature: number;
   maxTokens?: number;
   jsonMode: boolean;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
+  onContentDelta?: (delta: string) => void | Promise<void>;
 }
 
 export interface LlmCompletionResponse {
   content: string;
+  reasoning?: string;
   status: number;
   rawError?: string;
   supportsJsonObjectRejected?: boolean;

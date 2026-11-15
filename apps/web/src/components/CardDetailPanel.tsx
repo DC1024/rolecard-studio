@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type {
   AutoApplyThreshold,
+  DeclarativePluginManifest,
   ExportFormat,
   RoleCardContent,
   SyncScheduleDto,
@@ -8,7 +9,10 @@ import type {
 } from '@rolecard/shared';
 import {
   Check,
+  ChevronDown,
   Clock,
+  Copy,
+  Dice5,
   Download,
   Edit3,
   ExternalLink,
@@ -17,6 +21,7 @@ import {
   MessageSquare,
   Minimize2,
   Plus,
+  Puzzle,
   RefreshCw,
   Save,
   Sparkles,
@@ -25,6 +30,52 @@ import {
   X,
 } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
+import { useToast } from '../hooks/useToast';
+
+const CARD_TYPE_LABELS: Record<RoleCardDto['cardType'], string> = {
+  'sillytavern_v3': 'AI 角色扮演 (SillyTavern CCV3)',
+  'trpg_coc7': 'TRPG · CoC 7e 调查员',
+  'trpg_dnd5e': 'TRPG · D&D 5e 冒险者',
+  general: '通用角色设定',
+  custom: '自定义规格',
+};
+
+function getTokenBadgeMeta(tokenCount: number, cardType: RoleCardDto['cardType']): {
+  className: string;
+  labelSuffix: string;
+  tooltip: string;
+} {
+  const isTrpg = cardType === 'trpg_coc7' || cardType === 'trpg_dnd5e';
+  const skyMax = isTrpg ? 800 : 600;
+  const greenMax = isTrpg ? 2400 : 1800;
+
+  if (tokenCount < 80) {
+    return {
+      className: 'border-line bg-subtle text-content-muted',
+      labelSuffix: '· 内容可能偏短',
+      tooltip: `当前 ${tokenCount} tok（< 80 tok）：内容可能偏短，建议补充角色设定或使用 AI 微调丰富细节`,
+    };
+  }
+  if (tokenCount <= skyMax) {
+    return {
+      className: 'border-status-info/40 bg-status-info/10 text-status-info',
+      labelSuffix: '· 轻量',
+      tooltip: `当前 ${tokenCount} tok（80～${skyMax} tok）：优于预期，上下文开销极低`,
+    };
+  }
+  if (tokenCount <= greenMax) {
+    return {
+      className: 'border-status-success/40 bg-status-success/10 text-status-success',
+      labelSuffix: '· 合理',
+      tooltip: `当前 ${tokenCount} tok（${skyMax + 1}～${greenMax} tok）：信息丰满且上下文占用合理`,
+    };
+  }
+  return {
+    className: 'border-status-danger/40 bg-status-danger/10 text-status-danger',
+    labelSuffix: '· 偏高',
+    tooltip: `当前 ${tokenCount} tok（> ${greenMax} tok）：Token 偏高，建议点击上方「精简」压缩上下文占用`,
+  };
+}
 
 interface CardDetailPanelProps {
   card: RoleCardDto | null;
@@ -64,6 +115,7 @@ export function CardDetailPanel({
   onOpenPlaytest,
   onOpenPortraitModal,
 }: CardDetailPanelProps) {
+  const { notifySuccess, notifyError, copyWithToast } = useToast();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<RoleCardContent | null>(null);
   const [lockedFields, setLockedFields] = useState<string[]>([]);
@@ -72,11 +124,24 @@ export function CardDetailPanel({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'dialogue' | 'sources' | 'evolution'>('profile');
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportPlugins, setExportPlugins] = useState<DeclarativePluginManifest[]>([]);
   const [schedule, setSchedule] = useState<SyncScheduleDto | null>(null);
   const [schedEnabled, setSchedEnabled] = useState(false);
   const [schedDays, setSchedDays] = useState(7);
   const [schedScope, setSchedScope] = useState<SyncScope>('canon');
   const [schedThreshold, setSchedThreshold] = useState<AutoApplyThreshold>('manual_review');
+
+  useEffect(() => {
+    api
+      .listPlugins()
+      .then((res) => {
+        setExportPlugins(res.plugins.filter((p) => p.type === 'export_formatter'));
+      })
+      .catch(() => {
+        setExportPlugins([]);
+      });
+  }, []);
 
   useEffect(() => {
     if (card) {
@@ -171,7 +236,7 @@ export function CardDetailPanel({
       await api.updateCardTags(card.id, nextTags);
       const refreshed = await api.getCard(card.id);
       setNewTag('');
-      onCardUpdated(refreshed.card);
+      onCardUpdated(refreshed.card, `已添加标签「${tag}」`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '添加标签失败');
     } finally {
@@ -187,7 +252,7 @@ export function CardDetailPanel({
       const nextTags = card.tags.filter((t) => t !== tag);
       await api.updateCardTags(card.id, nextTags);
       const refreshed = await api.getCard(card.id);
-      onCardUpdated(refreshed.card);
+      onCardUpdated(refreshed.card, `已移除标签「${tag}」`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '移除标签失败');
     } finally {
@@ -245,10 +310,39 @@ export function CardDetailPanel({
     }
   };
 
-  const handleExport = (format: ExportFormat) => {
+  const handleExport = (format: ExportFormat, label?: string) => {
     if (!canExport) return;
     window.open(api.getExportUrl(card.id, format), '_blank', 'noopener,noreferrer');
+    setExportMenuOpen(false);
+    notifySuccess(`已触发「${label ?? format}」导出`);
   };
+
+  const handlePluginExport = (plugin: DeclarativePluginManifest) => {
+    if (!canExport) return;
+    window.open(api.getPluginExportUrl(plugin.id, card.id), '_blank', 'noopener,noreferrer');
+    setExportMenuOpen(false);
+    notifySuccess(`已触发插件「${plugin.name}」导出`);
+  };
+
+  const handleGenerateTrpg = async (system: 'coc7e' | 'dnd5e') => {
+    if (!canUpdate) return;
+    setBusyAction(`trpg-${system}`);
+    setError(null);
+    try {
+      const res = await api.generateCardTrpgStats(card.id, system);
+      const label = system === 'coc7e' ? 'CoC 7e 调查员数据' : 'D&D 5e 冒险者数据';
+      onCardUpdated(res.card, `已根据角色设定生成 ${label}`);
+      notifySuccess(`已生成 ${label}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '生成 TRPG 数据失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const tokenMeta = getTokenBadgeMeta(card.tokenCount, card.cardType);
 
   const renderLockButton = (fieldKey: string) => {
     const locked = lockedFields.includes(fieldKey);
@@ -315,13 +409,25 @@ export function CardDetailPanel({
               <span className="rounded border border-line bg-subtle px-1.5 py-0.5 text-[11px] text-content-secondary">
                 {card.entityType === 'real_person' ? '现实人物' : '虚构角色'}
               </span>
-              <span className="tabular-nums rounded border border-line bg-subtle px-1.5 py-0.5 font-mono text-[11px] text-content-muted">
-                {card.tokenCount} tok
+              <span
+                title={tokenMeta.tooltip}
+                className={`tabular-nums rounded border px-1.5 py-0.5 font-mono text-[11px] font-medium ${tokenMeta.className}`}
+              >
+                {card.tokenCount} tok {tokenMeta.labelSuffix}
               </span>
+              <button
+                type="button"
+                onClick={() => void copyWithToast(JSON.stringify(card.content, null, 2), '角色卡 JSON')}
+                title="复制角色卡 JSON 到剪贴板"
+                className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-content-secondary hover:border-accent hover:text-accent"
+              >
+                <Copy className="h-3 w-3" />
+                复制 JSON
+              </button>
             </div>
 
             <p className="mt-1 text-xs text-content-secondary">
-              出处：{card.workName || '原创设定'} · 规格：{card.cardType}
+              出处：{card.workName || '原创设定'} · 规格：{CARD_TYPE_LABELS[card.cardType] ?? card.cardType}
             </p>
 
             {card.diffSummary && (
@@ -488,26 +594,154 @@ export function CardDetailPanel({
         )}
 
         {canExport && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-medium text-content-muted">导出：</span>
-            {(
-              [
-                ['tavern_png', 'CCV3 PNG'],
-                ['tavern_v3_json', 'V3 JSON'],
-                ['json', '标准 JSON'],
-                ['markdown', 'Markdown'],
-              ] as const
-            ).map(([fmt, label]) => (
-              <button
-                key={fmt}
-                type="button"
-                onClick={() => handleExport(fmt)}
-                className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent"
-              >
-                <Download className="h-3 w-3" />
-                {label}
-              </button>
-            ))}
+          <div className="relative flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleExport('tavern_png', 'SillyTavern CCV3 PNG')}
+              className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-primary hover:border-accent hover:text-accent"
+            >
+              <Download className="h-3.5 w-3.5" />
+              SillyTavern PNG
+            </button>
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen((prev) => !prev)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span>导出中心</span>
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+
+            {exportMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setExportMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-10 z-40 w-80 rounded-md border border-line bg-elevated p-3 shadow-xl">
+                  <div className="mb-2 flex items-center justify-between border-b border-line-subtle pb-1.5">
+                    <span className="text-xs font-semibold text-content-primary">
+                      按目标平台选择导出格式
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setExportMenuOpen(false)}
+                      className="text-content-muted hover:text-content-primary"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-2.5 text-xs">
+                    <div>
+                      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-content-muted">
+                        SillyTavern / AI 酒馆对话
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleExport('tavern_png', 'SillyTavern CCV3 PNG')}
+                          className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div className="font-medium">CCV3 PNG 卡片</div>
+                          <div className="text-[10px] text-content-muted">内嵌立绘与元数据</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleExport('tavern_v3_json', 'SillyTavern CCV3 JSON')}
+                          className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div className="font-medium">CCV3 JSON</div>
+                          <div className="text-[10px] text-content-muted">含关联世界书</div>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-content-muted">
+                        TRPG 跑团桌面 (VTT / 纸面)
+                      </div>
+                      <div className="space-y-1">
+                        <button
+                          type="button"
+                          onClick={() => handleExport('foundry_dnd5e_json', 'D&D 5e Foundry VTT Actor JSON')}
+                          className="flex w-full items-center justify-between rounded-sm border border-line bg-surface px-2.5 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div>
+                            <div className="font-medium">D&amp;D 5e Foundry VTT Actor</div>
+                            <div className="text-[10px] text-content-muted">标准 FVTT 导入 JSON</div>
+                          </div>
+                          <Download className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleExport('trpg_sheet_html', '可打印跑团车卡表 HTML')}
+                            className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                          >
+                            <div className="font-medium">可打印车卡表</div>
+                            <div className="text-[10px] text-content-muted">HTML / 打印 PDF</div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleExport('trpg_sheet_md', '跑团车卡 Markdown')}
+                            className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                          >
+                            <div className="font-medium">车卡笔记 MD</div>
+                            <div className="text-[10px] text-content-muted">CoC / D&amp;D 表格</div>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-content-muted">
+                        通用文档与导出插件 ({exportPlugins.length})
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleExport('json', '标准 JSON')}
+                          className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div className="font-medium">标准 JSON</div>
+                          <div className="text-[10px] text-content-muted">完整结构化数据</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleExport('markdown', 'Markdown 设定集')}
+                          className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                        >
+                          <div className="font-medium">Markdown</div>
+                          <div className="text-[10px] text-content-muted">图文设定档案</div>
+                        </button>
+                      </div>
+                      {exportPlugins.length > 0 && (
+                        <div className="mt-1.5 space-y-1">
+                          {exportPlugins.map((plugin) => (
+                            <button
+                              key={plugin.id}
+                              type="button"
+                              onClick={() => handlePluginExport(plugin)}
+                              className="flex w-full items-center justify-between rounded-sm border border-line bg-surface px-2.5 py-1.5 text-left hover:border-accent hover:text-accent"
+                            >
+                              <span className="inline-flex items-center gap-1.5 truncate font-medium">
+                                <Puzzle className="h-3 w-3 shrink-0 text-accent" />
+                                <span className="truncate">{plugin.name}</span>
+                              </span>
+                              <span className="shrink-0 font-mono text-[10px] text-content-muted">
+                                .{plugin.exportSpec?.fileExtension}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -649,17 +883,43 @@ export function CardDetailPanel({
             )}
           </div>
 
-          {typeof card.content.extensions.trpg === 'object' &&
-            card.content.extensions.trpg !== null && (
-              <div className="rounded-md border border-line-subtle bg-canvas p-3">
-                <div className="mb-1.5 text-xs font-semibold text-content-primary">
-                  TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)
-                </div>
-                <pre className="overflow-x-auto rounded-sm border border-line bg-surface p-2.5 font-mono text-[11px] text-content-secondary">
-                  {JSON.stringify(card.content.extensions.trpg, null, 2)}
-                </pre>
+          <div className="rounded-md border border-line-subtle bg-canvas p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
+                <Dice5 className="h-3.5 w-3.5 text-accent" />
+                <span>TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)</span>
               </div>
+              {canUpdate && (
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={() => handleGenerateTrpg('coc7e')}
+                    className="rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                  >
+                    {busyAction === 'trpg-coc7e' ? '推演中...' : 'AI 推演 CoC 7e'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={() => handleGenerateTrpg('dnd5e')}
+                    className="rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                  >
+                    {busyAction === 'trpg-dnd5e' ? '推演中...' : 'AI 推演 D&D 5e'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {typeof card.content.extensions.trpg === 'object' &&
+            card.content.extensions.trpg !== null ? (
+              <TrpgPanelView trpg={card.content.extensions.trpg as Record<string, unknown>} />
+            ) : (
+              <p className="text-xs text-content-muted">
+                当前角色尚未绑定 TRPG 数值面板。点击右上角「AI 推演 CoC 7e / D&amp;D 5e」可根据人设自动生成真实属性并解锁跑团车卡表与 Foundry VTT 导出。
+              </p>
             )}
+          </div>
         </div>
       )}
 
@@ -959,3 +1219,195 @@ export function CardDetailPanel({
     </section>
   );
 }
+
+function TrpgPanelView({ trpg }: { trpg: Record<string, unknown> }) {
+  const sysText = String(trpg.system ?? '');
+  const isCoc =
+    sysText.toLowerCase().includes('cthulhu') ||
+    sysText.toLowerCase().includes('coc') ||
+    (typeof trpg.characteristics === 'object' && trpg.characteristics !== null);
+
+  const asRec = (val: unknown): Record<string, unknown> =>
+    typeof val === 'object' && val !== null && !Array.isArray(val)
+      ? (val as Record<string, unknown>)
+      : {};
+  const asArr = (val: unknown): string[] =>
+    Array.isArray(val) ? val.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+
+  if (isCoc) {
+    const chars = asRec(trpg.characteristics);
+    const derived = asRec(trpg.derived);
+    const skills = asArr(trpg.keySkills);
+    const statOrder = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU'] as const;
+
+    return (
+      <div className="space-y-2.5 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-content-secondary">
+          <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
+            {sysText || 'Call of Cthulhu 7e'}
+          </span>
+          {Boolean(trpg.occupation) && (
+            <span>
+              职业：<strong className="text-content-primary">{String(trpg.occupation)}</strong>
+            </span>
+          )}
+          {Boolean(trpg.era) && (
+            <span>
+              年代：<strong className="text-content-primary">{String(trpg.era)}</strong>
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8">
+          {statOrder.map((k) => {
+            const val = Number(chars[k] ?? 50);
+            return (
+              <div
+                key={k}
+                className="rounded-sm border border-line bg-surface px-2 py-1.5 text-center"
+              >
+                <div className="text-[10px] font-medium text-content-muted">{k}</div>
+                <div className="font-mono text-sm font-semibold text-content-primary">{val}</div>
+                <div className="font-mono text-[10px] text-content-muted">
+                  {Math.floor(val / 2)} / {Math.floor(val / 5)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {Object.keys(derived).length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {(['HP', 'MP', 'SAN', 'Luck', 'Move'] as const).map((k) =>
+              derived[k] !== undefined ? (
+                <span
+                  key={k}
+                  className="rounded-sm border border-line bg-surface px-2 py-1 font-mono text-[11px] text-content-primary"
+                >
+                  {k}: <strong>{String(derived[k])}</strong>
+                </span>
+              ) : null,
+            )}
+          </div>
+        )}
+
+        {skills.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {skills.map((skill) => (
+              <span
+                key={skill}
+                className="rounded-sm bg-subtle px-2 py-0.5 text-[11px] text-content-secondary"
+              >
+                {skill}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <details className="text-[11px] text-content-muted">
+          <summary className="cursor-pointer hover:text-content-primary">查看原始 JSON</summary>
+          <pre className="mt-1.5 max-h-40 overflow-auto rounded-sm bg-surface p-2 font-mono text-[11px] text-content-secondary">
+            {JSON.stringify(trpg, null, 2)}
+          </pre>
+        </details>
+      </div>
+    );
+  }
+
+  const abilities = asRec(trpg.abilityScores);
+  const combat = asRec(trpg.combat);
+  const proficiencies = asArr(trpg.proficiencies);
+  const features = asArr(trpg.featuresAndTraits);
+  const dndOrder = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'] as const;
+
+  return (
+    <div className="space-y-2.5 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-content-secondary">
+        <span className="rounded bg-accent/10 px-2 py-0.5 font-medium text-accent">
+          {sysText || 'D&D 5e'}
+        </span>
+        {Boolean(trpg.level) && (
+          <span>
+            Lv.<strong className="text-content-primary">{String(trpg.level)}</strong>
+          </span>
+        )}
+        {Boolean(trpg.race) && (
+          <span>
+            种族：<strong className="text-content-primary">{String(trpg.race)}</strong>
+          </span>
+        )}
+        {Boolean(trpg.className) && (
+          <span>
+            职业：<strong className="text-content-primary">{String(trpg.className)}</strong>
+          </span>
+        )}
+        {Boolean(trpg.alignment) && (
+          <span>
+            阵营：<strong className="text-content-primary">{String(trpg.alignment)}</strong>
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+        {dndOrder.map((k) => {
+          const score = Number(abilities[k] ?? 10);
+          const mod = Math.floor((score - 10) / 2);
+          const modStr = mod >= 0 ? `+${mod}` : String(mod);
+          return (
+            <div
+              key={k}
+              className="rounded-sm border border-line bg-surface px-2 py-1.5 text-center"
+            >
+              <div className="text-[10px] font-medium text-content-muted">{k}</div>
+              <div className="font-mono text-sm font-semibold text-content-primary">{score}</div>
+              <div className="font-mono text-[11px] text-accent">{modStr}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {Object.keys(combat).length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {(['AC', 'MaxHP', 'Speed', 'ProficiencyBonus'] as const).map((k) =>
+            combat[k] !== undefined ? (
+              <span
+                key={k}
+                className="rounded-sm border border-line bg-surface px-2 py-1 font-mono text-[11px] text-content-primary"
+              >
+                {k}: <strong>{String(combat[k])}</strong>
+              </span>
+            ) : null,
+          )}
+        </div>
+      )}
+
+      {proficiencies.length > 0 && (
+        <div className="text-[11px] text-content-secondary">
+          <span className="font-medium text-content-primary">熟练项：</span>
+          {proficiencies.join('、')}
+        </div>
+      )}
+
+      {features.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {features.map((feat) => (
+            <span
+              key={feat}
+              className="rounded-sm bg-subtle px-2 py-0.5 text-[11px] text-content-secondary"
+            >
+              {feat}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <details className="text-[11px] text-content-muted">
+        <summary className="cursor-pointer hover:text-content-primary">查看原始 JSON</summary>
+        <pre className="mt-1.5 max-h-40 overflow-auto rounded-sm bg-surface p-2 font-mono text-[11px] text-content-secondary">
+          {JSON.stringify(trpg, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+

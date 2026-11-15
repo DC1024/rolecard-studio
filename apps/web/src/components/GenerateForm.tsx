@@ -1,23 +1,55 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type {
   CardType,
   EntityType,
   GenerateCardRequest,
   GenerationMode,
 } from '@rolecard/shared';
-import { BookOpen, Eye, Globe, Layers, Loader2, Sparkles, Upload } from 'lucide-react';
+import {
+  BookOpen,
+  Brain,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  Globe,
+  Layers,
+  Loader2,
+  Sparkles,
+  Upload,
+} from 'lucide-react';
 import { api } from '../api/client';
+import { useToast } from '../hooks/useToast';
 
 interface GenerateFormProps {
   cardType: CardType;
   canCreate: boolean;
   isConfigured: boolean;
   generating: boolean;
+  progressStep: string;
   progressText: string;
+  progressLogs: string[];
+  thinkingText: string;
   errorText: string | null;
   onCardTypeChange: (cardType: CardType) => void;
   onSubmit: (req: GenerateCardRequest) => Promise<void>;
   onOpenSettings: () => void;
+}
+
+const PROGRESS_STAGES = [
+  { id: 'preparing', label: '材料准备' },
+  { id: 'retrieving', label: '百科考据' },
+  { id: 'llm_request', label: '模型推演' },
+  { id: 'validating', label: 'Schema校验' },
+  { id: 'persisting', label: '保存入库' },
+] as const;
+
+function resolveStageIndex(step: string): number {
+  if (step === 'preparing') return 0;
+  if (step === 'retrieving' || step === 'building_prompt') return 1;
+  if (step === 'llm_request' || step === 'thinking') return 2;
+  if (step === 'validating') return 3;
+  if (step === 'persisting') return 4;
+  return 0;
 }
 
 const MODE_DESCRIPTIONS: Record<GenerationMode, string> = {
@@ -26,12 +58,41 @@ const MODE_DESCRIPTIONS: Record<GenerationMode, string> = {
   C: 'A+B 混合：以你的设定材料为第一优先级骨架，自动联网补充背景/关系并标明双溯源。',
 };
 
+const CARD_TYPE_META: Record<
+  CardType,
+  { badge: string; desc: string }
+> = {
+  'sillytavern_v3': {
+    badge: 'AI 角色扮演 (SillyTavern CCV3)',
+    desc: '重点强化沉浸开场白、备选情境、对话示例与防 OOC 系统提示词。',
+  },
+  'trpg_coc7': {
+    badge: 'TRPG 车卡 · CoC 7e 调查员',
+    desc: 'AI 将推演 8 项基础属性、HP/MP/SAN 衍生值与核心技能（支持导出跑团车卡表）。',
+  },
+  'trpg_dnd5e': {
+    badge: 'TRPG 车卡 · D&D 5e 冒险者',
+    desc: 'AI 将推演六维属性、种族职业、AC/MaxHP 与特性（支持直接导出 Foundry VTT Actor JSON）。',
+  },
+  general: {
+    badge: '通用角色设定档案',
+    desc: '输出清晰严谨的通用人设档案，适合小说创作、游戏策划与设定集归档。',
+  },
+  custom: {
+    badge: '自定义规格',
+    desc: '结合自定义指令生成结构化角色卡。',
+  },
+};
+
 export function GenerateForm({
   cardType,
   canCreate,
   isConfigured,
   generating,
+  progressStep,
   progressText,
+  progressLogs,
+  thinkingText,
   errorText,
   onCardTypeChange,
   onSubmit,
@@ -42,6 +103,14 @@ export function GenerateForm({
   const [workName, setWorkName] = useState('');
   const [entityType, setEntityType] = useState<EntityType>('fictional');
   const [referenceText, setReferenceText] = useState('');
+  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  const thinkingBoxRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    if (thinkingExpanded && thinkingBoxRef.current) {
+      thinkingBoxRef.current.scrollTop = thinkingBoxRef.current.scrollHeight;
+    }
+  }, [thinkingText, thinkingExpanded]);
   const [urlsText, setUrlsText] = useState('');
   const [tagsText, setTagsText] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
@@ -50,6 +119,7 @@ export function GenerateForm({
   const [visionUrl, setVisionUrl] = useState('');
   const [visionBusy, setVisionBusy] = useState(false);
   const [visionError, setVisionError] = useState<string | null>(null);
+  const { notifySuccess, notifyError } = useToast();
 
   const mergeSuggestedTags = (suggested: string[]) => {
     if (suggested.length === 0) return;
@@ -76,8 +146,11 @@ export function GenerateForm({
         : res.appearanceDescription;
       setVisionDescription(combined);
       mergeSuggestedTags(res.suggestedTags);
+      notifySuccess('立绘视觉反推已完成并填入设定');
     } catch (err) {
-      setVisionError(err instanceof Error ? err.message : 'Vision 图文反推失败');
+      const msg = err instanceof Error ? err.message : 'Vision 图文反推失败';
+      setVisionError(msg);
+      notifyError(msg);
     } finally {
       setVisionBusy(false);
     }
@@ -101,6 +174,7 @@ export function GenerateForm({
     if (!file) return;
     const text = await file.text();
     setReferenceText((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
+    notifySuccess(`已导入设定文件「${file.name}」`);
     e.target.value = '';
   };
 
@@ -133,21 +207,73 @@ export function GenerateForm({
 
   return (
     <section className="rounded-lg border border-line bg-surface p-5 shadow-sm">
-      <div className="mb-4 flex items-center justify-between gap-2">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-base font-semibold text-content-primary">
           <Sparkles className="h-4 w-4 text-accent" />
           创建角色卡
         </h2>
-        <select
-          value={cardType}
-          onChange={(e) => onCardTypeChange(e.target.value as CardType)}
-          className="h-7 rounded-sm border border-line bg-subtle px-2 text-xs text-content-secondary outline-none focus:border-accent"
-        >
-          <option value="sillytavern_v3">SillyTavern CCV3</option>
-          <option value="trpg_coc7">TRPG CoC 7e</option>
-          <option value="trpg_dnd5e">TRPG DnD 5e</option>
-          <option value="general">通用人物卡</option>
-        </select>
+        <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-[11px] font-medium text-accent">
+          {CARD_TYPE_META[cardType]?.badge ?? cardType}
+        </span>
+      </div>
+
+      <div className="mb-4 rounded-md border border-line-subtle bg-subtle/60 px-3 py-2 text-[11.5px] text-content-secondary">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span>
+            <strong className="text-content-primary">输出规格：</strong>
+            {CARD_TYPE_META[cardType]?.desc}
+          </span>
+          {(cardType === 'trpg_coc7' || cardType === 'trpg_dnd5e') ? (
+            <div className="inline-flex rounded-sm border border-line bg-surface p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => onCardTypeChange('trpg_coc7')}
+                className={`rounded-sm px-2 py-0.5 font-medium transition ${
+                  cardType === 'trpg_coc7'
+                    ? 'bg-accent text-content-inverse'
+                    : 'text-content-secondary hover:text-content-primary'
+                }`}
+              >
+                CoC 7e
+              </button>
+              <button
+                type="button"
+                onClick={() => onCardTypeChange('trpg_dnd5e')}
+                className={`rounded-sm px-2 py-0.5 font-medium transition ${
+                  cardType === 'trpg_dnd5e'
+                    ? 'bg-accent text-content-inverse'
+                    : 'text-content-secondary hover:text-content-primary'
+                }`}
+              >
+                D&amp;D 5e
+              </button>
+            </div>
+          ) : (
+            <div className="inline-flex gap-1 text-[11px] sm:hidden">
+              <button
+                type="button"
+                onClick={() => onCardTypeChange('sillytavern_v3')}
+                className="rounded border border-line bg-surface px-1.5 py-0.5"
+              >
+                角色扮演
+              </button>
+              <button
+                type="button"
+                onClick={() => onCardTypeChange('trpg_coc7')}
+                className="rounded border border-line bg-surface px-1.5 py-0.5"
+              >
+                TRPG
+              </button>
+              <button
+                type="button"
+                onClick={() => onCardTypeChange('general')}
+                className="rounded border border-line bg-surface px-1.5 py-0.5"
+              >
+                通用
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {!isConfigured && (
@@ -386,10 +512,76 @@ export function GenerateForm({
           </div>
         )}
 
-        {generating && progressText && (
-          <div className="flex items-center gap-2 rounded-md border border-status-info/40 bg-status-info/10 px-3 py-2 text-xs text-status-info">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span>{progressText}</span>
+        {(generating || thinkingText) && (
+          <div className="space-y-2.5 rounded-md border border-status-info/40 bg-status-info/5 p-3 text-xs">
+            {generating && (
+              <>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {PROGRESS_STAGES.map((stage, idx) => {
+                    const currentIdx = resolveStageIndex(progressStep);
+                    const done = idx < currentIdx;
+                    const active = idx === currentIdx;
+                    return (
+                      <span
+                        key={stage.id}
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+                          active
+                            ? 'bg-status-info text-content-inverse'
+                            : done
+                              ? 'bg-status-success/15 text-status-success'
+                              : 'bg-subtle text-content-muted'
+                        }`}
+                      >
+                        {idx + 1}. {stage.label}
+                      </span>
+                    );
+                  })}
+                </div>
+                {progressText && (
+                  <div className="flex items-center gap-2 font-medium text-status-info">
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    <span>{progressText}</span>
+                  </div>
+                )}
+                {progressLogs.length > 1 && (
+                  <div className="max-h-20 space-y-0.5 overflow-y-auto border-t border-line-subtle pt-1.5 text-[11px] text-content-muted">
+                    {progressLogs.slice(-5).map((log, i) => (
+                      <div key={`${i}-${log}`} className="truncate">
+                        • {log}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {thinkingText && (
+              <div className="rounded-sm border border-line bg-surface">
+                <button
+                  type="button"
+                  onClick={() => setThinkingExpanded((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] font-semibold text-content-secondary hover:text-content-primary"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Brain className="h-3.5 w-3.5 text-accent" />
+                    模型思考过程（{thinkingText.length} 字）
+                  </span>
+                  {thinkingExpanded ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                {thinkingExpanded && (
+                  <pre
+                    ref={thinkingBoxRef}
+                    className="max-h-44 overflow-y-auto whitespace-pre-wrap border-t border-line-subtle bg-canvas px-2.5 py-2 font-mono text-[11px] leading-relaxed text-content-secondary"
+                  >
+                    {thinkingText}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
         )}
 

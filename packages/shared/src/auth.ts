@@ -26,11 +26,35 @@ export const CreateUserRequestSchema = z.object({
 export type CreateUserRequest = z.infer<typeof CreateUserRequestSchema>;
 
 export const UpdateUserPermissionsSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .min(2)
+    .max(64)
+    .regex(/^[a-zA-Z0-9_.-]+$/, '用户名仅支持字母、数字及 _ . -')
+    .optional(),
   permissions: z.array(PermissionSchema).optional(),
   isActive: z.boolean().optional(),
   password: z.string().min(6).max(128).optional(),
 });
 export type UpdateUserPermissionsRequest = z.infer<typeof UpdateUserPermissionsSchema>;
+
+export const UpdateMyAccountSchema = z
+  .object({
+    currentPassword: z.string().min(6, '请输入当前密码').max(128),
+    newUsername: z
+      .string()
+      .trim()
+      .min(2, '用户名至少 2 个字符')
+      .max(64)
+      .regex(/^[a-zA-Z0-9_.-]+$/, '用户名仅支持字母、数字及 _ . -')
+      .optional(),
+    newPassword: z.string().min(6, '新密码至少 6 个字符').max(128).optional(),
+  })
+  .refine((data) => Boolean(data.newUsername || data.newPassword), {
+    message: '请至少填写新用户名或新密码中的一项',
+  });
+export type UpdateMyAccountRequest = z.infer<typeof UpdateMyAccountSchema>;
 
 export const AccessPolicySchema = z.object({
   siteAccessMode: SiteAccessModeSchema,

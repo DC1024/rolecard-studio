@@ -7,7 +7,7 @@ import type {
   MaskedServiceConfig,
   Permission,
 } from '@rolecard/shared';
-import { Bell, BookOpen, CheckCircle2, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
+import { Bell, BookOpen, FileText, FileUp, MessageSquare, Puzzle, Sparkles } from 'lucide-react';
 import { api, type CommonTagCount, type RoleCardDto } from './api/client';
 import { CardDetailPanel } from './components/CardDetailPanel';
 import { GenerateForm } from './components/GenerateForm';
@@ -22,6 +22,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { ThemeProvider } from './hooks/useTheme';
+import { ToastProvider, useToast } from './hooks/useToast';
 
 type WorkspaceView = 'generate' | 'detail' | 'playtest' | 'lorebooks' | 'plugins' | 'reviews';
 
@@ -46,8 +47,11 @@ function StudioApp() {
 
   const [generating, setGenerating] = useState(false);
   const [progressText, setProgressText] = useState('');
+  const [progressStep, setProgressStep] = useState('');
+  const [progressLogs, setProgressLogs] = useState<string[]>([]);
+  const [thinkingText, setThinkingText] = useState('');
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -62,13 +66,6 @@ function StudioApp() {
     },
     [auth],
   );
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => {
-      setToast((prev) => (prev === msg ? null : prev));
-    }, 3500);
-  }, []);
 
   const refreshAuthAndConfig = useCallback(async () => {
     try {
@@ -146,10 +143,24 @@ function StudioApp() {
 
   const handleGenerate = async (req: GenerateCardRequest) => {
     setGenerating(true);
+    setProgressStep('preparing');
     setProgressText('准备输入上下文与检索数据源...');
+    setProgressLogs(['准备输入上下文与检索数据源...']);
+    setThinkingText('');
     setGenerateError(null);
     try {
-      const created = await api.generateCardSse(req, (msg) => setProgressText(msg));
+      const created = await api.generateCardSse(req, {
+        onProgress: (msg, step) => {
+          setProgressText(msg);
+          if (step) setProgressStep(step);
+          setProgressLogs((prev) =>
+            prev[prev.length - 1] === msg ? prev : [...prev.slice(-11), msg],
+          );
+        },
+        onThinking: (delta) => {
+          setThinkingText((prev) => prev + delta);
+        },
+      });
       setSelectedCard(created);
       setView('detail');
       await refreshCards();
@@ -159,6 +170,7 @@ function StudioApp() {
     } finally {
       setGenerating(false);
       setProgressText('');
+      setProgressStep('');
     }
   };
 
@@ -316,13 +328,6 @@ function StudioApp() {
                   </button>
                 )}
               </div>
-
-              {toast && (
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-status-success/40 bg-status-success/10 px-3 py-1 text-xs font-medium text-status-success">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  {toast}
-                </div>
-              )}
             </div>
 
             {view === 'generate' && (
@@ -331,7 +336,10 @@ function StudioApp() {
                 canCreate={hasPerm('card:create')}
                 isConfigured={Boolean(config?.configured && config.primaryLlm)}
                 generating={generating}
+                progressStep={progressStep}
                 progressText={progressText}
+                progressLogs={progressLogs}
+                thinkingText={thinkingText}
                 errorText={generateError}
                 onCardTypeChange={setPreset}
                 onSubmit={handleGenerate}
@@ -460,7 +468,9 @@ function StudioApp() {
 export function App() {
   return (
     <ThemeProvider>
-      <StudioApp />
+      <ToastProvider>
+        <StudioApp />
+      </ToastProvider>
     </ThemeProvider>
   );
 }

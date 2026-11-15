@@ -19,6 +19,9 @@ export type JsonModeStrategy = z.infer<typeof JsonModeStrategySchema>;
 export const SearchProviderSchema = z.enum(['none', 'bocha', 'tavily', 'serpapi', 'bing']);
 export type SearchProvider = z.infer<typeof SearchProviderSchema>;
 
+export const LlmSlotPurposeSchema = z.enum(['primary', 'chat', 'vision', 'image']);
+export type LlmSlotPurpose = z.infer<typeof LlmSlotPurposeSchema>;
+
 export const LlmSlotInputSchema = z.object({
   provider: LlmProviderSchema,
   apiKey: z.string().max(512).optional(),
@@ -32,6 +35,7 @@ export const ServiceConfigInputSchema = z.object({
   primaryLlm: LlmSlotInputSchema,
   chatLlm: LlmSlotInputSchema.optional(),
   visionLlm: LlmSlotInputSchema.optional(),
+  imageLlm: LlmSlotInputSchema.optional(),
   searchProvider: SearchProviderSchema.default('none'),
   searchApiKey: z.string().max(512).optional(),
   enableLayer1Wiki: z.boolean().default(true),
@@ -45,7 +49,8 @@ export const LlmTestRequestSchema = z.object({
   apiKey: z.string().max(512).optional(),
   baseUrl: z.string().url().optional().or(z.literal('')),
   model: z.string().trim().min(1).max(160),
-  useSavedKeySlot: z.enum(['primary', 'chat', 'vision']).optional(),
+  slotType: LlmSlotPurposeSchema.default('primary'),
+  useSavedKeySlot: LlmSlotPurposeSchema.optional(),
 });
 export type LlmTestRequest = z.infer<typeof LlmTestRequestSchema>;
 
@@ -63,6 +68,7 @@ export interface MaskedServiceConfig {
   primaryLlm: MaskedLlmSlot | null;
   chatLlm: MaskedLlmSlot | null;
   visionLlm: MaskedLlmSlot | null;
+  imageLlm: MaskedLlmSlot | null;
   searchProvider: SearchProvider;
   searchApiKeyMasked: string | null;
   hasSearchApiKey: boolean;

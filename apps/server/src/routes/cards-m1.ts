@@ -10,7 +10,11 @@ import {
   createOpenAiCompatibleLlmPort,
   detectImageMagicBytes,
   embedCardIntoPng,
+  exportCardToFoundryDnd5eActor,
   exportCardToMarkdown,
+  exportCardToTrpgSheetHtml,
+  exportCardToTrpgSheetMarkdown,
+  generateTrpgAttributesForCard,
   isSafeImageUrl,
   mergeLorebooksToCharacterBook,
   preserveLockedFields,
@@ -25,6 +29,7 @@ import {
   CardImageUploadSchema,
   estimateCardTokens,
   ExportFormatSchema,
+  GenerateTrpgStatsSchema,
   type LorebookEntry,
   PlaytestRequestSchema,
   RefineCardRequestSchema,
@@ -367,6 +372,45 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
     return c.body(md);
   }
 
+  if (format === 'foundry_dnd5e_json') {
+    const filename = safeDownloadFilename(`${content.name}.foundry-dnd5e`, 'json');
+    const actor = exportCardToFoundryDnd5eActor(content, {
+      cardType: row.cardType,
+      workName: row.workName,
+      version: row.version,
+      imageUrl: row.imageUrl,
+    });
+    c.header('Content-Type', 'application/json; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return c.body(JSON.stringify(actor, null, 2));
+  }
+
+  if (format === 'trpg_sheet_md') {
+    const filename = safeDownloadFilename(`${content.name}.trpg-sheet`, 'md');
+    const sheetMd = exportCardToTrpgSheetMarkdown(content, {
+      cardType: row.cardType,
+      workName: row.workName,
+      version: row.version,
+      sources,
+    });
+    c.header('Content-Type', 'text/markdown; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return c.body(sheetMd);
+  }
+
+  if (format === 'trpg_sheet_html') {
+    const filename = safeDownloadFilename(`${content.name}.trpg-sheet`, 'html');
+    const sheetHtml = exportCardToTrpgSheetHtml(content, {
+      cardType: row.cardType,
+      workName: row.workName,
+      version: row.version,
+      sources,
+    });
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    c.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    return c.body(sheetHtml);
+  }
+
   const linkedBookRows = await loadLinkedLorebooksForCard(ctx, id);
   const characterBook = mergeLorebooksToCharacterBook(
     linkedBookRows.map((lb) => ({
@@ -624,6 +668,106 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
       updatedAt: nowIso,
     })
     .where(eq(roleCards.id, id));
+
+  const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+  return c.json({ card: serializeCardRow(updatedRows[0]!) });
+});
+
+cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema), async (c) => {
+  const denied = guardPermission(c, 'card:update');
+  if (denied) return denied;
+
+  const id = c.req.param('id');
+  const { system } = c.req.valid('json');
+  const ctx = c.get('ctx');
+  const actorUserId = c.get('actor')?.userId ?? 'guest';
+
+  const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+  const row = rows[0];
+  if (!row) {
+    return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
+  }
+
+  const runtime = await loadRuntimeServiceConfig(ctx);
+  if (!runtime) {
+    return c.json(
+      { error: { code: 'LLM_NOT_CONFIGURED', message: '尚未配置主大模型，无法推演 TRPG 规则数据' } },
+      400,
+    );
+  }
+
+  const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
+  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(ctx.fetchImpl);
+  const startedAt = Date.now();
+  const result = await generateTrpgAttributesForCard(currentContent, system, {
+    llmPort,
+    llmSlot: runtime.primaryLlm,
+    onStrategyDowngraded: async () => {
+      await ctx.db
+        .update(userServiceConfigs)
+        .set({ jsonModeStrategy: 'prompt', updatedAt: getNow(ctx).toISOString() })
+        .where(eq(userServiceConfigs.userId, 'global'));
+    },
+  });
+
+  const nowIso = getNow(ctx).toISOString();
+  const latencyMs = Date.now() - startedAt;
+
+  if (!result.ok) {
+    await ctx.db.insert(generationLogs).values({
+      id: randomUUID(),
+      userId: actorUserId,
+      action: 'trpg_generate',
+      targetId: id,
+      provider: runtime.primaryLlm.provider,
+      status: 'error',
+      latencyMs,
+      errorCode: result.error.code,
+      errorMessage: result.error.message,
+      createdAt: nowIso,
+    });
+    return sendCoreError(c, result.error);
+  }
+
+  const nextVersion = row.version + 1;
+  const tokenCount = estimateCardTokens(result.value.content);
+  const diffSummary = `已根据角色设定生成 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} TRPG 规则数据`;
+
+  await ctx.db
+    .update(roleCards)
+    .set({
+      cardType: result.value.cardType,
+      contentJson: JSON.stringify(result.value.content),
+      diffSummary,
+      tokenCount,
+      version: nextVersion,
+      updatedAt: nowIso,
+    })
+    .where(eq(roleCards.id, id));
+
+  await ctx.db.insert(generationLogs).values({
+    id: randomUUID(),
+    userId: actorUserId,
+    action: 'trpg_generate',
+    targetId: id,
+    provider: runtime.primaryLlm.provider,
+    status: 'success',
+    latencyMs,
+    errorCode: null,
+    errorMessage: null,
+    createdAt: nowIso,
+  });
+
+  await publishSyncEvent(ctx, {
+    eventType: 'card.updated',
+    targetType: 'card',
+    targetId: id,
+    version: nextVersion,
+    payload: {
+      characterName: result.value.content.name,
+      diffSummary,
+    },
+  });
 
   const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
   return c.json({ card: serializeCardRow(updatedRows[0]!) });

@@ -57,6 +57,9 @@ export const ExportFormatSchema = z.enum([
   'tavern_v3_json',
   'json',
   'markdown',
+  'foundry_dnd5e_json',
+  'trpg_sheet_html',
+  'trpg_sheet_md',
 ]);
 export type ExportFormat = z.infer<typeof ExportFormatSchema>;
 

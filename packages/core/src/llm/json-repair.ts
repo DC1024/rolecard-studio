@@ -122,6 +122,8 @@ export interface StructuredCompletionOptions<T> {
   temperature: number;
   maxRepairRetries?: number;
   onStrategyDowngraded?: (newStrategy: 'prompt') => void | Promise<void>;
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
 }
 
 export interface StructuredCompletionResult<T> {
@@ -157,6 +159,13 @@ export async function completeStructuredJson<T>(
 
   for (let round = 0; round <= maxRepairRetries; round++) {
     attempts += 1;
+    await options.onProgress?.({
+      step: 'llm_request',
+      message:
+        round === 0
+          ? `正在调用 ${options.slot.model} 生成结构化角色卡...`
+          : `正在执行第 ${round} 次 JSON 自愈重试...`,
+    });
     let completion = await llmPort({
       provider: options.slot.provider,
       apiKey: options.slot.apiKey,
@@ -165,6 +174,7 @@ export async function completeStructuredJson<T>(
       messages: conversation,
       temperature: options.temperature,
       jsonMode: strategy === 'json_object',
+      onReasoningDelta: options.onReasoningDelta,
     });
 
     // Level 1 -> Level 2 automatic downgrade if provider rejects response_format=json_object with HTTP 400
@@ -178,6 +188,10 @@ export async function completeStructuredJson<T>(
       if (options.onStrategyDowngraded) {
         await options.onStrategyDowngraded('prompt');
       }
+      await options.onProgress?.({
+        step: 'llm_request',
+        message: '模型网关不支持 json_object，正在自动降级为 Prompt 约束重试...',
+      });
       conversation = promptMessagesWithSchema(baseMessages);
       attempts += 1;
       completion = await llmPort({
@@ -188,6 +202,7 @@ export async function completeStructuredJson<T>(
         messages: conversation,
         temperature: options.temperature,
         jsonMode: false,
+        onReasoningDelta: options.onReasoningDelta,
       });
     }
 
@@ -198,6 +213,11 @@ export async function completeStructuredJson<T>(
         status: 502,
       });
     }
+
+    await options.onProgress?.({
+      step: 'validating',
+      message: '正在解析并校验结构化 JSON 与角色卡 Schema...',
+    });
 
     // Level 3: Clean + extract + repair + Zod validate
     const extracted = extractJsonCandidate(completion.content);

@@ -1,25 +1,31 @@
 import { randomUUID } from 'node:crypto';
 import { zValidator } from '@hono/zod-validator';
 import {
+  buildNotificationMessage,
   decryptSecret,
+  deliverNotificationToChannel,
   deliverWebhookWithRetry,
   encryptSecret,
   generateRandomToken,
   maskSecret,
+  validateNotificationChannelSettings,
   validatePublicUrl,
 } from '@rolecard/core';
 import {
   CreateSyncSubscriptionSchema,
+  type NotificationChannelDto,
+  type NotificationChannelSettings,
   type SyncEventDto,
   type SyncEventType,
   type SyncSubscriptionDto,
+  UpsertNotificationChannelSchema,
 } from '@rolecard/shared';
 import { desc, eq, gt } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getNow, type ServerContext } from '../context.js';
-import { syncEvents, syncSubscriptions } from '../db/schema.js';
+import { notificationChannels, syncEvents, syncSubscriptions } from '../db/schema.js';
 import {
   guardExternalApi,
   guardPermission,
@@ -100,10 +106,140 @@ export async function publishSyncEvent(
     }
   }
 
-  // Fire-and-forget webhook delivery for matching active subscriptions
+  // Fire-and-forget webhook & equal-priority multi-channel notifications
   void dispatchWebhooksForEvent(ctx, dto);
+  void dispatchNotificationChannelsForEvent(ctx, dto);
 
   return dto;
+}
+
+function parseChannelSettings(rawJson: string): NotificationChannelSettings {
+  try {
+    const parsed = JSON.parse(rawJson) as Partial<NotificationChannelSettings>;
+    return {
+      smtpHost: parsed.smtpHost ?? '',
+      smtpPort: typeof parsed.smtpPort === 'number' ? parsed.smtpPort : 465,
+      smtpSecure: parsed.smtpSecure ?? true,
+      smtpUser: parsed.smtpUser ?? '',
+      smtpPass: parsed.smtpPass ?? '',
+      smtpFrom: parsed.smtpFrom ?? '',
+      smtpTo: parsed.smtpTo ?? '',
+      webhookUrl: parsed.webhookUrl ?? '',
+      secret: parsed.secret ?? '',
+      telegramBotToken: parsed.telegramBotToken ?? '',
+      telegramChatId: parsed.telegramChatId ?? '',
+      telegramApiBaseUrl: parsed.telegramApiBaseUrl ?? 'https://api.telegram.org',
+      barkServerUrl: parsed.barkServerUrl ?? 'https://api.day.app',
+      barkDeviceKey: parsed.barkDeviceKey ?? '',
+      barkGroup: parsed.barkGroup ?? 'RoleCardStudio',
+      serverChanSendKey: parsed.serverChanSendKey ?? '',
+    };
+  } catch {
+    return {
+      smtpHost: '',
+      smtpPort: 465,
+      smtpSecure: true,
+      smtpUser: '',
+      smtpPass: '',
+      smtpFrom: '',
+      smtpTo: '',
+      webhookUrl: '',
+      secret: '',
+      telegramBotToken: '',
+      telegramChatId: '',
+      telegramApiBaseUrl: 'https://api.telegram.org',
+      barkServerUrl: 'https://api.day.app',
+      barkDeviceKey: '',
+      barkGroup: 'RoleCardStudio',
+      serverChanSendKey: '',
+    };
+  }
+}
+
+function toNotificationChannelDto(
+  row: typeof notificationChannels.$inferSelect,
+  masterKey: Buffer,
+): NotificationChannelDto {
+  const settings = parseChannelSettings(decryptSecret(row.configEncrypted, masterKey));
+  return {
+    id: row.id,
+    name: row.name,
+    channelType: row.channelType,
+    enabled: row.enabled,
+    events: parseEventsJson(row.eventsJson),
+    settingsMasked: {
+      smtpHost: settings.smtpHost,
+      smtpPort: settings.smtpPort,
+      smtpSecure: settings.smtpSecure,
+      smtpUser: settings.smtpUser,
+      smtpPassMasked: maskSecret(settings.smtpPass),
+      hasSmtpPass: Boolean(settings.smtpPass),
+      smtpFrom: settings.smtpFrom,
+      smtpTo: settings.smtpTo,
+      webhookUrl: settings.webhookUrl,
+      secretMasked: maskSecret(settings.secret),
+      hasSecret: Boolean(settings.secret),
+      telegramBotTokenMasked: maskSecret(settings.telegramBotToken),
+      hasTelegramBotToken: Boolean(settings.telegramBotToken),
+      telegramChatId: settings.telegramChatId,
+      telegramApiBaseUrl: settings.telegramApiBaseUrl,
+      barkServerUrl: settings.barkServerUrl,
+      barkDeviceKeyMasked: maskSecret(settings.barkDeviceKey),
+      hasBarkDeviceKey: Boolean(settings.barkDeviceKey),
+      barkGroup: settings.barkGroup,
+      serverChanSendKeyMasked: maskSecret(settings.serverChanSendKey),
+      hasServerChanSendKey: Boolean(settings.serverChanSendKey),
+    },
+    lastStatus: row.lastStatus,
+    lastError: row.lastError,
+    lastSentAt: row.lastSentAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function dispatchNotificationChannelsForEvent(
+  ctx: ServerContext,
+  event: SyncEventDto,
+): Promise<void> {
+  const rows = await ctx.db
+    .select()
+    .from(notificationChannels)
+    .where(eq(notificationChannels.enabled, true));
+
+  const matching = rows.filter((row) => parseEventsJson(row.eventsJson).includes(event.eventType));
+  if (matching.length === 0) return;
+
+  const message = buildNotificationMessage(event);
+  await Promise.allSettled(
+    matching.map(async (row) => {
+      const settings = parseChannelSettings(decryptSecret(row.configEncrypted, ctx.masterKey));
+      const res = await deliverNotificationToChannel(
+        {
+          id: row.id,
+          name: row.name,
+          channelType: row.channelType,
+          settings,
+        },
+        message,
+        {
+          fetchImpl: ctx.fetchImpl,
+          dnsLookup: ctx.dnsLookup,
+          smtpTransport: ctx.smtpTransport,
+        },
+      );
+      const nowIso = getNow(ctx).toISOString();
+      await ctx.db
+        .update(notificationChannels)
+        .set({
+          lastStatus: res.ok ? 'success' : 'error',
+          lastError: res.ok ? null : res.error.message,
+          lastSentAt: nowIso,
+          updatedAt: nowIso,
+        })
+        .where(eq(notificationChannels.id, row.id));
+    }),
+  );
 }
 
 export async function dispatchWebhooksForEvent(
@@ -352,5 +488,208 @@ syncRoutes.delete('/sync/subscriptions/:id', async (c) => {
 
   const id = c.req.param('id');
   await c.get('ctx').db.delete(syncSubscriptions).where(eq(syncSubscriptions.id, id));
+  return c.json({ ok: true });
+});
+
+syncRoutes.get('/notifications/channels', async (c) => {
+  const denied = guardPermission(c, 'card:read');
+  if (denied) return denied;
+
+  const ctx = c.get('ctx');
+  const rows = await ctx.db
+    .select()
+    .from(notificationChannels)
+    .orderBy(desc(notificationChannels.createdAt));
+
+  return c.json({
+    items: rows.map((row) => toNotificationChannelDto(row, ctx.masterKey)),
+  });
+});
+
+syncRoutes.post(
+  '/notifications/channels',
+  zValidator('json', UpsertNotificationChannelSchema),
+  async (c) => {
+    const denied = guardPermission(c, 'card:update');
+    if (denied) return denied;
+
+    const input = c.req.valid('json');
+    const ctx = c.get('ctx');
+    const check = await validateNotificationChannelSettings(
+      input.channelType,
+      input.settings,
+      ctx.dnsLookup,
+    );
+    if (!check.ok) {
+      return sendCoreError(c, check.error);
+    }
+
+    const id = randomUUID();
+    const nowIso = getNow(ctx).toISOString();
+    await ctx.db.insert(notificationChannels).values({
+      id,
+      name: input.name,
+      channelType: input.channelType,
+      enabled: input.enabled,
+      eventsJson: JSON.stringify(input.events),
+      configEncrypted: encryptSecret(JSON.stringify(input.settings), ctx.masterKey),
+      lastStatus: null,
+      lastError: null,
+      lastSentAt: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    const [created] = await ctx.db
+      .select()
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, id))
+      .limit(1);
+
+    return c.json(
+      { channel: toNotificationChannelDto(created!, ctx.masterKey) },
+      201 as ContentfulStatusCode,
+    );
+  },
+);
+
+syncRoutes.put(
+  '/notifications/channels/:id',
+  zValidator('json', UpsertNotificationChannelSchema),
+  async (c) => {
+    const denied = guardPermission(c, 'card:update');
+    if (denied) return denied;
+
+    const id = c.req.param('id');
+    const input = c.req.valid('json');
+    const ctx = c.get('ctx');
+
+    const [existing] = await ctx.db
+      .select()
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, id))
+      .limit(1);
+    if (!existing) {
+      return c.json({ error: { code: 'CHANNEL_NOT_FOUND', message: '通知渠道不存在' } }, 404);
+    }
+
+    const oldSettings = parseChannelSettings(decryptSecret(existing.configEncrypted, ctx.masterKey));
+    const mergedSettings: NotificationChannelSettings = {
+      ...input.settings,
+      smtpPass: input.settings.smtpPass?.trim() ? input.settings.smtpPass : oldSettings.smtpPass,
+      secret: input.settings.secret?.trim() ? input.settings.secret : oldSettings.secret,
+      telegramBotToken: input.settings.telegramBotToken?.trim()
+        ? input.settings.telegramBotToken
+        : oldSettings.telegramBotToken,
+      barkDeviceKey: input.settings.barkDeviceKey?.trim()
+        ? input.settings.barkDeviceKey
+        : oldSettings.barkDeviceKey,
+      serverChanSendKey: input.settings.serverChanSendKey?.trim()
+        ? input.settings.serverChanSendKey
+        : oldSettings.serverChanSendKey,
+    };
+
+    const check = await validateNotificationChannelSettings(
+      input.channelType,
+      mergedSettings,
+      ctx.dnsLookup,
+    );
+    if (!check.ok) {
+      return sendCoreError(c, check.error);
+    }
+
+    const nowIso = getNow(ctx).toISOString();
+    await ctx.db
+      .update(notificationChannels)
+      .set({
+        name: input.name,
+        channelType: input.channelType,
+        enabled: input.enabled,
+        eventsJson: JSON.stringify(input.events),
+        configEncrypted: encryptSecret(JSON.stringify(mergedSettings), ctx.masterKey),
+        updatedAt: nowIso,
+      })
+      .where(eq(notificationChannels.id, id));
+
+    const [updated] = await ctx.db
+      .select()
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, id))
+      .limit(1);
+
+    return c.json({ channel: toNotificationChannelDto(updated!, ctx.masterKey) });
+  },
+);
+
+syncRoutes.post('/notifications/channels/:id/test', async (c) => {
+  const denied = guardPermission(c, 'card:update');
+  if (denied) return denied;
+
+  const id = c.req.param('id');
+  const ctx = c.get('ctx');
+  const [row] = await ctx.db
+    .select()
+    .from(notificationChannels)
+    .where(eq(notificationChannels.id, id))
+    .limit(1);
+  if (!row) {
+    return c.json({ error: { code: 'CHANNEL_NOT_FOUND', message: '通知渠道不存在' } }, 404);
+  }
+
+  const settings = parseChannelSettings(decryptSecret(row.configEncrypted, ctx.masterKey));
+  const nowIso = getNow(ctx).toISOString();
+  const sampleEvent: SyncEventDto = {
+    cursor: 0,
+    id: `test-${randomUUID()}`,
+    eventType: 'review.pending',
+    targetType: 'card',
+    targetId: 'sample-card-id',
+    version: 1,
+    payload: {
+      reviewType: 'impression',
+      characterName: '测试角色',
+      diffSummary: '这是一条来自 RoleCard Studio 通知渠道连通性测试的模拟审核通知。',
+    },
+    createdAt: nowIso,
+  };
+
+  const res = await deliverNotificationToChannel(
+    {
+      id: row.id,
+      name: row.name,
+      channelType: row.channelType,
+      settings,
+    },
+    buildNotificationMessage(sampleEvent),
+    {
+      fetchImpl: ctx.fetchImpl,
+      dnsLookup: ctx.dnsLookup,
+      smtpTransport: ctx.smtpTransport,
+    },
+  );
+
+  await ctx.db
+    .update(notificationChannels)
+    .set({
+      lastStatus: res.ok ? 'success' : 'error',
+      lastError: res.ok ? null : res.error.message,
+      lastSentAt: nowIso,
+      updatedAt: nowIso,
+    })
+    .where(eq(notificationChannels.id, id));
+
+  if (!res.ok) {
+    return sendCoreError(c, res.error);
+  }
+
+  return c.json({ ok: true, message: res.value.detail });
+});
+
+syncRoutes.delete('/notifications/channels/:id', async (c) => {
+  const denied = guardPermission(c, 'card:delete');
+  if (denied) return denied;
+
+  const id = c.req.param('id');
+  await c.get('ctx').db.delete(notificationChannels).where(eq(notificationChannels.id, id));
   return c.json({ ok: true });
 });

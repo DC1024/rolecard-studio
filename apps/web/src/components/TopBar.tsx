@@ -8,8 +8,16 @@ import {
   Settings,
   Shield,
   Sparkles,
+  Type as TypeIcon,
 } from 'lucide-react';
-import { THEME_OPTIONS, useTheme } from '../hooks/useTheme';
+import {
+  FONT_PRESET_MAP,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  THEME_OPTIONS,
+  useTheme,
+} from '../hooks/useTheme';
+import { useToast } from '../hooks/useToast';
 
 interface TopBarProps {
   preset: CardType;
@@ -23,10 +31,22 @@ interface TopBarProps {
   onLogout: () => void;
 }
 
-const PRESET_TABS: readonly { id: CardType; label: string }[] = [
-  { id: 'sillytavern_v3', label: 'AI 角色扮演' },
-  { id: 'trpg_coc7', label: 'TRPG 车卡' },
-  { id: 'general', label: '通用设定' },
+const PRESET_TABS: readonly { id: CardType; label: string; hint: string }[] = [
+  {
+    id: 'sillytavern_v3',
+    label: 'AI 角色扮演',
+    hint: '强化沉浸式开场白、对话示例与 SillyTavern CCV3 防出戏设定',
+  },
+  {
+    id: 'trpg_coc7',
+    label: 'TRPG 车卡',
+    hint: '生成 CoC 7e / D&D 5e 真实面板数值与技能，支持 Foundry VTT 与跑团车卡表导出',
+  },
+  {
+    id: 'general',
+    label: '通用设定',
+    hint: '精炼客观的人物档案结构，适用于小说、游戏策划与设定集归档',
+  },
 ];
 
 export function TopBar({
@@ -40,8 +60,17 @@ export function TopBar({
   onOpenLogin,
   onLogout,
 }: TopBarProps) {
-  const { theme, setTheme } = useTheme();
+  const {
+    theme,
+    setTheme,
+    fontSizePx,
+    fontPreset,
+    setFontPreset,
+    setCustomFontSize,
+  } = useTheme();
+  const { notifySuccess } = useToast();
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [fontMenuOpen, setFontMenuOpen] = useState(false);
 
   const isConfigured = Boolean(config?.configured && config.primaryLlm);
   const currentThemeMeta = THEME_OPTIONS.find((t) => t.id === theme) ?? THEME_OPTIONS[0]!;
@@ -77,6 +106,7 @@ export function TopBar({
               <button
                 key={tab.id}
                 type="button"
+                title={tab.hint}
                 onClick={() => onPresetChange(tab.id)}
                 className={`rounded-sm px-2.5 py-1 text-xs font-medium transition-all ${
                   active
@@ -124,7 +154,103 @@ export function TopBar({
         <div className="relative">
           <button
             type="button"
-            onClick={() => setThemeMenuOpen((prev) => !prev)}
+            onClick={() => {
+              setFontMenuOpen((prev) => !prev);
+              setThemeMenuOpen(false);
+            }}
+            className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-xs font-medium text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
+            title="调整界面字体大小"
+          >
+            <TypeIcon className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">
+              {fontPreset === 'custom'
+                ? `${fontSizePx}px`
+                : FONT_PRESET_MAP[fontPreset].label}
+            </span>
+          </button>
+
+          {fontMenuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setFontMenuOpen(false)}
+              />
+              <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-md border border-line bg-elevated p-3 shadow-lg">
+                <div className="mb-2 flex items-center justify-between text-xs font-medium text-content-primary">
+                  <span>字体大小</span>
+                  <span className="font-mono text-[0.6875rem] text-accent">
+                    {fontSizePx}px
+                  </span>
+                </div>
+                <div className="mb-3 grid grid-cols-3 gap-1 rounded-sm border border-line bg-subtle p-0.5">
+                  {(['small', 'medium', 'large'] as const).map((key) => {
+                    const item = FONT_PRESET_MAP[key];
+                    const active = fontPreset === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          setFontPreset(key);
+                          notifySuccess(`字体已调整为「${item.label} (${item.px}px)」`);
+                        }}
+                        className={`rounded-sm py-1 text-xs font-medium transition ${
+                          active
+                            ? 'bg-surface text-accent shadow-sm'
+                            : 'text-content-secondary hover:text-content-primary'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[0.6875rem] text-content-muted">
+                    <span>自定义 ({FONT_SIZE_MIN}～{FONT_SIZE_MAX}px)</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFontPreset('medium');
+                        notifySuccess('已恢复默认字号 (16px)');
+                      }}
+                      className="text-accent hover:underline"
+                    >
+                      重置
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={FONT_SIZE_MIN}
+                      max={FONT_SIZE_MAX}
+                      step={1}
+                      value={fontSizePx}
+                      onChange={(e) => setCustomFontSize(Number(e.target.value))}
+                      className="h-1.5 flex-1 cursor-pointer accent-accent"
+                    />
+                    <input
+                      type="number"
+                      min={FONT_SIZE_MIN}
+                      max={FONT_SIZE_MAX}
+                      value={fontSizePx}
+                      onChange={(e) => setCustomFontSize(Number(e.target.value))}
+                      className="h-7 w-12 rounded-sm border border-line bg-surface px-1.5 text-center font-mono text-xs text-content-primary"
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setThemeMenuOpen((prev) => !prev);
+              setFontMenuOpen(false);
+            }}
             className="inline-flex h-8 items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary transition-colors hover:bg-subtle hover:text-content-primary"
             title="切换颜色主题"
           >
@@ -146,6 +272,7 @@ export function TopBar({
                     onClick={() => {
                       setTheme(opt.id);
                       setThemeMenuOpen(false);
+                      notifySuccess(`已切换至「${opt.label}」主题`);
                     }}
                     className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-xs transition-colors ${
                       theme === opt.id

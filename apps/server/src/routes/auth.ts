@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { zValidator } from '@hono/zod-validator';
-import { generateRandomToken, hashToken, verifyPassword } from '@rolecard/core';
-import { LoginRequestSchema, type AuthContextResponse } from '@rolecard/shared';
-import { eq } from 'drizzle-orm';
+import { generateRandomToken, hashPassword, hashToken, verifyPassword } from '@rolecard/core';
+import {
+  ALL_PERMISSIONS,
+  LoginRequestSchema,
+  UpdateMyAccountSchema,
+  type AuthContextResponse,
+} from '@rolecard/shared';
+import { and, eq, ne } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { getNow } from '../context.js';
@@ -125,4 +130,92 @@ authRoutes.get('/auth/me', async (c) => {
   };
 
   return c.json(response);
+});
+
+authRoutes.patch('/auth/account', zValidator('json', UpdateMyAccountSchema), async (c) => {
+  const actor = c.get('actor');
+  if (!actor) {
+    return c.json(
+      { error: { code: 'UNAUTHORIZED', message: '请先登录后再修改账号信息' } },
+      401,
+    );
+  }
+
+  const input = c.req.valid('json');
+  const ctx = c.get('ctx');
+  const rows = await ctx.db.select().from(users).where(eq(users.id, actor.userId)).limit(1);
+  const currentUser = rows[0];
+  if (!currentUser) {
+    return c.json({ error: { code: 'USER_NOT_FOUND', message: '当前用户不存在' } }, 404);
+  }
+
+  if (!verifyPassword(input.currentPassword, currentUser.passwordHash)) {
+    return c.json(
+      { error: { code: 'INVALID_CURRENT_PASSWORD', message: '当前密码验证失败' } },
+      401,
+    );
+  }
+
+  let nextUsername = currentUser.username;
+  if (input.newUsername && input.newUsername !== currentUser.username) {
+    const duplicate = await ctx.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.username, input.newUsername), ne(users.id, currentUser.id)))
+      .limit(1);
+    if (duplicate.length > 0) {
+      return c.json(
+        { error: { code: 'USERNAME_EXISTS', message: `用户名「${input.newUsername}」已被占用` } },
+        409,
+      );
+    }
+    nextUsername = input.newUsername;
+  }
+
+  const nextPasswordHash = input.newPassword
+    ? hashPassword(input.newPassword)
+    : currentUser.passwordHash;
+  const nowIso = getNow(ctx).toISOString();
+
+  await ctx.db
+    .update(users)
+    .set({
+      username: nextUsername,
+      passwordHash: nextPasswordHash,
+      updatedAt: nowIso,
+    })
+    .where(eq(users.id, currentUser.id));
+
+  // If password changed, revoke other sessions while keeping current session active
+  if (input.newPassword) {
+    const cookieToken = getCookie(c, SESSION_COOKIE_NAME);
+    const authHeader = c.req.header('authorization');
+    const rawToken =
+      cookieToken ??
+      (authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : null);
+    if (rawToken) {
+      await ctx.db
+        .delete(sessions)
+        .where(and(eq(sessions.userId, currentUser.id), ne(sessions.tokenHash, hashToken(rawToken))));
+    } else {
+      await ctx.db.delete(sessions).where(eq(sessions.userId, currentUser.id));
+    }
+  }
+
+  const permissions =
+    currentUser.role === 'admin'
+      ? [...ALL_PERMISSIONS]
+      : parsePermissionsJson(currentUser.permissionsJson);
+
+  return c.json({
+    user: {
+      id: currentUser.id,
+      username: nextUsername,
+      role: currentUser.role,
+      permissions,
+      isActive: currentUser.isActive,
+      createdAt: currentUser.createdAt,
+      updatedAt: nowIso,
+    },
+  });
 });

@@ -127,6 +127,20 @@ async function createSingleHopRipplesForCard(
       resolvedAt: null,
     });
   }
+  if (proposals.length > 0) {
+    await publishSyncEvent(ctx, {
+      eventType: 'review.pending',
+      targetType: 'card',
+      targetId: sourceCard.id,
+      version: sourceCard.version,
+      payload: {
+        reviewType: 'ripple',
+        rippleCount: proposals.length,
+        characterName: sourceCard.characterName,
+        diffSummary,
+      },
+    });
+  }
   return proposals.length;
 }
 
@@ -267,6 +281,19 @@ export async function executeEvolutionForCard(
       targetId: cardRow.id,
       version: nextVersion,
       payload: {
+        characterName: cardRow.characterName,
+        diffSummary: evoRes.value.diffSummary,
+      },
+    });
+  } else {
+    await publishSyncEvent(ctx, {
+      eventType: 'review.pending',
+      targetType: 'card',
+      targetId: cardRow.id,
+      version: cardRow.version,
+      payload: {
+        reviewType: 'impression',
+        impressionId,
         characterName: cardRow.characterName,
         diffSummary: evoRes.value.diffSummary,
       },

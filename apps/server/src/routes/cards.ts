@@ -85,10 +85,16 @@ function safeParseJsonArray<T>(raw: string): T[] {
   }
 }
 
+export interface GenerationStreamHooks {
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
+}
+
 export async function executeAndPersistGeneration(
   ctx: ServerContext,
   actorUserId: string,
   input: GenerateCardRequest,
+  hooks: GenerationStreamHooks = {},
 ): Promise<
   | { ok: true; card: SerializedRoleCard; output: GeneratedCardOutput }
   | { ok: false; code: string; message: string; status: number }
@@ -116,6 +122,8 @@ export async function executeAndPersistGeneration(
     searchProvider: runtime.searchProvider,
     searchApiKey: runtime.searchApiKey,
     customSystemPrompt: runtime.customSystemPrompt,
+    onProgress: hooks.onProgress,
+    onReasoningDelta: hooks.onReasoningDelta,
     onStrategyDowngraded: async () => {
       await ctx.db
         .update(userServiceConfigs)
@@ -147,6 +155,11 @@ export async function executeAndPersistGeneration(
       status: genResult.error.status,
     };
   }
+
+  await hooks.onProgress?.({
+    step: 'persisting',
+    message: '结构化校验通过，正在保存角色卡与考据溯源...',
+  });
 
   const cardId = randomUUID();
   const output = genResult.value;
@@ -222,12 +235,28 @@ cardRoutes.post('/generate', zValidator('json', GenerateCardRequestSchema), asyn
 
   if (wantsSse) {
     return streamSSE(c, async (stream) => {
-      await stream.writeSSE({
-        event: 'progress',
-        data: JSON.stringify({ step: 'retrieving', message: `正在执行模式 ${input.mode} 资料准备与考据...` }),
+      let sentThinkingHeader = false;
+      const result = await executeAndPersistGeneration(ctx, actorUserId, input, {
+        onProgress: async (evt) => {
+          await stream.writeSSE({
+            event: 'progress',
+            data: JSON.stringify({ step: evt.step, message: evt.message }),
+          });
+        },
+        onReasoningDelta: async (delta) => {
+          if (!sentThinkingHeader) {
+            sentThinkingHeader = true;
+            await stream.writeSSE({
+              event: 'progress',
+              data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
+            });
+          }
+          await stream.writeSSE({
+            event: 'thinking',
+            data: JSON.stringify({ delta }),
+          });
+        },
       });
-
-      const result = await executeAndPersistGeneration(ctx, actorUserId, input);
       if (!result.ok) {
         await stream.writeSSE({
           event: 'error',

@@ -45,6 +45,7 @@ export const userServiceConfigs = sqliteTable('user_service_configs', {
     .default('auto'),
   chatLlmConfigEncrypted: text('chat_llm_config_encrypted'),
   visionConfigEncrypted: text('vision_config_encrypted'),
+  imageConfigEncrypted: text('image_config_encrypted'),
   searchProvider: text('search_provider').notNull().default('none'),
   searchApiKeyEncrypted: text('search_api_key_encrypted'),
   enableLayer1Wiki: integer('enable_layer1_wiki', { mode: 'boolean' }).notNull().default(true),
@@ -203,7 +204,7 @@ export const syncEvents = sqliteTable('sync_events', {
   cursor: integer('cursor').primaryKey({ autoIncrement: true }),
   id: text('id').notNull().unique(),
   eventType: text('event_type', {
-    enum: ['card.updated', 'card.evolved', 'lorebook.updated', 'ripple.approved'],
+    enum: ['card.updated', 'card.evolved', 'lorebook.updated', 'ripple.approved', 'review.pending'],
   }).notNull(),
   targetType: text('target_type', { enum: ['card', 'lorebook'] }).notNull(),
   targetId: text('target_id').notNull(),
@@ -220,6 +221,22 @@ export const syncSubscriptions = sqliteTable('sync_subscriptions', {
   eventsJson: text('events_json').notNull().default('["card.updated","card.evolved"]'),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
   lastCursor: integer('last_cursor').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const notificationChannels = sqliteTable('notification_channels', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  channelType: text('channel_type', {
+    enum: ['smtp', 'feishu', 'wecom', 'dingtalk', 'telegram', 'discord', 'bark', 'serverchan', 'webhook'],
+  }).notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  eventsJson: text('events_json').notNull().default('["review.pending","card.evolved"]'),
+  configEncrypted: text('config_encrypted').notNull(),
+  lastStatus: text('last_status', { enum: ['success', 'error'] }),
+  lastError: text('last_error'),
+  lastSentAt: text('last_sent_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

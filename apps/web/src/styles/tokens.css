@@ -1,3 +1,7 @@
+:root {
+  font-size: var(--app-font-size, 16px);
+}
+
 :root,
 [data-theme='light'] {
   color-scheme: light;
@@ -18,7 +22,7 @@
   --status-success: 22 163 74;
   --status-warning: 217 119 6;
   --status-danger: 220 38 38;
-  --status-info: 2 132 199;
+  --status-info: 14 165 233;
 }
 
 [data-theme='dark'] {
@@ -62,7 +66,7 @@
   --status-success: 16 185 129;
   --status-warning: 251 191 36;
   --status-danger: 244 63 94;
-  --status-info: 6 182 212;
+  --status-info: 56 189 248;
 }
 
 [data-theme='parchment'] {
@@ -84,7 +88,7 @@
   --status-success: 21 128 61;
   --status-warning: 180 83 9;
   --status-danger: 185 28 28;
-  --status-info: 3 105 161;
+  --status-info: 2 132 199;
 }
 
 .theme-switching,

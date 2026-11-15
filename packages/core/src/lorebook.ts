@@ -144,6 +144,12 @@ export function exportLorebookToSillyTavernJson(lorebook: {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 export function applyTrpgPresetFields(
   cardType: CardType,
   content: RoleCardContent,
@@ -152,65 +158,108 @@ export function applyTrpgPresetFields(
     return content;
   }
 
-  const existingTrpg =
-    typeof content.extensions.trpg === 'object' && content.extensions.trpg !== null
-      ? (content.extensions.trpg as Record<string, unknown>)
-      : {};
+  const existingTrpg = asRecord(content.extensions.trpg);
 
   if (cardType === 'trpg_coc7') {
+    const defaultChars = {
+      STR: 55,
+      CON: 60,
+      SIZ: 60,
+      DEX: 65,
+      APP: 55,
+      INT: 75,
+      POW: 65,
+      EDU: 70,
+    };
+    const mergedChars = { ...defaultChars, ...asRecord(existingTrpg.characteristics) };
+    const defaultDerived = {
+      HP: Math.max(1, Math.floor((Number(mergedChars.CON) + Number(mergedChars.SIZ)) / 10)),
+      MP: Math.max(1, Math.floor(Number(mergedChars.POW) / 5)),
+      SAN: Number(mergedChars.POW) || 65,
+      Luck: 55,
+      Move: 8,
+    };
+    const mergedDerived = { ...defaultDerived, ...asRecord(existingTrpg.derived) };
+    const existingSkills = Array.isArray(existingTrpg.keySkills) && existingTrpg.keySkills.length > 0
+      ? existingTrpg.keySkills
+      : ['侦查 65%', '图书馆使用 70%', '心理学 60%', '话术 55%'];
+
     return {
       ...content,
       extensions: {
         ...content.extensions,
         trpg: {
-          system: 'Call of Cthulhu 7e',
-          characteristics: {
-            STR: 55,
-            CON: 60,
-            SIZ: 60,
-            DEX: 65,
-            APP: 55,
-            INT: 75,
-            POW: 65,
-            EDU: 70,
-          },
-          derived: {
-            HP: 12,
-            MP: 13,
-            SAN: 65,
-            Luck: 55,
-            Move: 8,
-          },
-          keySkills: ['侦查 65%', '图书馆使用 70%', '心理学 60%', '话术 55%'],
           ...existingTrpg,
+          system:
+            typeof existingTrpg.system === 'string' && existingTrpg.system.trim()
+              ? existingTrpg.system
+              : 'Call of Cthulhu 7e',
+          occupation:
+            typeof existingTrpg.occupation === 'string' && existingTrpg.occupation.trim()
+              ? existingTrpg.occupation
+              : '调查员',
+          era:
+            typeof existingTrpg.era === 'string' && existingTrpg.era.trim()
+              ? existingTrpg.era
+              : '1920s / 现代架空',
+          characteristics: mergedChars,
+          derived: mergedDerived,
+          keySkills: existingSkills,
         },
       },
     };
   }
+
+  const defaultAbilities = {
+    STR: 12,
+    DEX: 15,
+    CON: 14,
+    INT: 13,
+    WIS: 12,
+    CHA: 14,
+  };
+  const mergedAbilities = { ...defaultAbilities, ...asRecord(existingTrpg.abilityScores) };
+  const defaultCombat = {
+    AC: 15,
+    MaxHP: 24,
+    HitDice: '3d8',
+    Speed: '30 ft',
+  };
+  const mergedCombat = { ...defaultCombat, ...asRecord(existingTrpg.combat) };
+  const existingProfs =
+    Array.isArray(existingTrpg.proficiencies) && existingTrpg.proficiencies.length > 0
+      ? existingTrpg.proficiencies
+      : ['察觉', '说服', '隐匿', '调查'];
 
   return {
     ...content,
     extensions: {
       ...content.extensions,
       trpg: {
-        system: 'D&D 5e',
-        level: 3,
-        abilityScores: {
-          STR: 12,
-          DEX: 15,
-          CON: 14,
-          INT: 13,
-          WIS: 12,
-          CHA: 14,
-        },
-        combat: {
-          AC: 15,
-          MaxHP: 24,
-          HitDice: '3d8',
-          Speed: '30 ft',
-        },
-        proficiencies: ['察觉', '说服', '隐匿', '调查'],
         ...existingTrpg,
+        system:
+          typeof existingTrpg.system === 'string' && existingTrpg.system.trim()
+            ? existingTrpg.system
+            : 'D&D 5e',
+        race:
+          typeof existingTrpg.race === 'string' && existingTrpg.race.trim()
+            ? existingTrpg.race
+            : '人类',
+        className:
+          typeof existingTrpg.className === 'string' && existingTrpg.className.trim()
+            ? existingTrpg.className
+            : '冒险者',
+        alignment:
+          typeof existingTrpg.alignment === 'string' && existingTrpg.alignment.trim()
+            ? existingTrpg.alignment
+            : '中立善良',
+        level:
+          typeof existingTrpg.level === 'number' && Number.isFinite(existingTrpg.level)
+            ? existingTrpg.level
+            : 3,
+        abilityScores: mergedAbilities,
+        combat: mergedCombat,
+        proficiencies: existingProfs,
       },
     },
   };

@@ -19,6 +19,38 @@ export const THEME_OPTIONS: readonly ThemeOptionMeta[] = [
 ];
 
 const STORAGE_KEY = 'rc_theme';
+const FONT_SIZE_KEY = 'rc_font_size_px';
+
+export type FontSizePreset = 'small' | 'medium' | 'large' | 'custom';
+
+export const FONT_PRESET_MAP: Record<'small' | 'medium' | 'large', { label: string; px: number }> = {
+  small: { label: '小', px: 14 },
+  medium: { label: '中', px: 16 },
+  large: { label: '大', px: 18 },
+};
+
+export const FONT_SIZE_MIN = 12;
+export const FONT_SIZE_MAX = 22;
+
+function clampFontSize(px: number): number {
+  if (!Number.isFinite(px)) return 16;
+  return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(px)));
+}
+
+function readStoredFontSize(): number {
+  if (typeof window === 'undefined') return 16;
+  const raw = window.localStorage.getItem(FONT_SIZE_KEY);
+  if (!raw) return 16;
+  const parsed = Number(raw);
+  return clampFontSize(parsed);
+}
+
+function resolveFontPreset(px: number): FontSizePreset {
+  if (px === FONT_PRESET_MAP.small.px) return 'small';
+  if (px === FONT_PRESET_MAP.medium.px) return 'medium';
+  if (px === FONT_PRESET_MAP.large.px) return 'large';
+  return 'custom';
+}
 
 function resolveSystemTheme(): ResolvedTheme {
   if (typeof window === 'undefined') return 'light';
@@ -44,6 +76,10 @@ interface ThemeContextValue {
   theme: ThemeMode;
   resolvedTheme: ResolvedTheme;
   setTheme: (next: ThemeMode) => void;
+  fontSizePx: number;
+  fontPreset: FontSizePreset;
+  setFontPreset: (preset: 'small' | 'medium' | 'large') => void;
+  setCustomFontSize: (px: number) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -52,6 +88,30 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeMode>(readStoredTheme);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     theme === 'system' ? resolveSystemTheme() : theme,
+  );
+  const [fontSizePx, setFontSizePx] = useState<number>(readStoredFontSize);
+
+  const applyFontSize = useCallback((px: number) => {
+    const safe = clampFontSize(px);
+    document.documentElement.style.setProperty('--app-font-size', `${safe}px`);
+    document.documentElement.style.fontSize = `${safe}px`;
+  }, []);
+
+  const setCustomFontSize = useCallback(
+    (px: number) => {
+      const safe = clampFontSize(px);
+      setFontSizePx(safe);
+      window.localStorage.setItem(FONT_SIZE_KEY, String(safe));
+      applyFontSize(safe);
+    },
+    [applyFontSize],
+  );
+
+  const setFontPreset = useCallback(
+    (preset: 'small' | 'medium' | 'large') => {
+      setCustomFontSize(FONT_PRESET_MAP[preset].px);
+    },
+    [setCustomFontSize],
   );
 
   const applyTheme = useCallback((next: ThemeMode, animate: boolean) => {
@@ -78,6 +138,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyTheme(theme, false);
+    applyFontSize(fontSizePx);
 
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onMediaChange = () => {
@@ -93,6 +154,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setThemeState(next);
         applyTheme(next, true);
       }
+      if (e.key === FONT_SIZE_KEY) {
+        const nextPx = readStoredFontSize();
+        setFontSizePx(nextPx);
+        applyFontSize(nextPx);
+      }
     };
     window.addEventListener('storage', onStorage);
 
@@ -100,10 +166,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       media.removeEventListener('change', onMediaChange);
       window.removeEventListener('storage', onStorage);
     };
-  }, [theme, applyTheme]);
+  }, [theme, fontSizePx, applyTheme, applyFontSize]);
 
   return (
-    <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme }}>
+    <ThemeContext.Provider
+      value={{
+        theme,
+        resolvedTheme,
+        setTheme,
+        fontSizePx,
+        fontPreset: resolveFontPreset(fontSizePx),
+        setFontPreset,
+        setCustomFontSize,
+      }}
+    >
       {children}
     </ThemeContext.Provider>
   );

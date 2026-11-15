@@ -7,7 +7,7 @@ import {
   CreateUserRequestSchema,
   UpdateUserPermissionsSchema,
 } from '@rolecard/shared';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getNow } from '../context.js';
@@ -141,6 +141,22 @@ adminRoutes.patch(
     }
 
     const nowIso = getNow(ctx).toISOString();
+    let nextUsername = target.username;
+    if (input.username && input.username !== target.username) {
+      const duplicate = await ctx.db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.username, input.username), ne(users.id, targetId)))
+        .limit(1);
+      if (duplicate.length > 0) {
+        return c.json(
+          { error: { code: 'USERNAME_EXISTS', message: `用户名 ${input.username} 已存在` } },
+          409,
+        );
+      }
+      nextUsername = input.username;
+    }
+
     const nextPermissions =
       target.role === 'admin'
         ? [...ALL_PERMISSIONS]
@@ -151,6 +167,7 @@ adminRoutes.patch(
     await ctx.db
       .update(users)
       .set({
+        username: nextUsername,
         permissionsJson: JSON.stringify(nextPermissions),
         isActive: nextActive,
         passwordHash: nextPasswordHash,
@@ -160,7 +177,7 @@ adminRoutes.patch(
 
     return c.json({
       id: target.id,
-      username: target.username,
+      username: nextUsername,
       role: target.role,
       permissions: nextPermissions,
       isActive: nextActive,

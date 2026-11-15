@@ -77,19 +77,24 @@ visionRoutes.post(
     const input = c.req.valid('json');
     const ctx = c.get('ctx');
     const runtimeCfg = await loadRuntimeServiceConfig(ctx);
-    if (!runtimeCfg) {
+    if (!runtimeCfg || !runtimeCfg.imageLlm) {
       return c.json(
-        { error: { code: 'CONFIG_MISSING', message: '请先在设置中心配置模型接口后再使用 AI 生图' } },
+        {
+          error: {
+            code: 'IMAGE_MODEL_NOT_CONFIGURED',
+            message: '请先在「模型与系统设置」中配置独立的生图模型 (Image Model) 后再使用 AI 生图',
+          },
+        },
         400,
       );
     }
 
-    const chosenSlot = runtimeCfg.visionLlm ?? runtimeCfg.primaryLlm;
+    const chosenSlot = runtimeCfg.imageLlm;
     const baseUrl = resolveProviderBaseUrl(chosenSlot.provider, chosenSlot.baseUrl);
     const result = await generatePortraitImage(
       input,
       { ...chosenSlot, baseUrl },
-      'gpt-image-1',
+      chosenSlot.model,
       { fetchImpl: ctx.fetchImpl, dnsLookup: ctx.dnsLookup },
     );
     if (!result.ok) {
