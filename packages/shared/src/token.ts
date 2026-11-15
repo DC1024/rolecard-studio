@@ -2,8 +2,8 @@ import type { RoleCardContent } from './cards.js';
 
 /**
  * Lightweight, zero-WASM cross-platform token estimator.
- * CJK characters average ~0.67 tokens/char (~1.5 chars/token),
- * Latin/ASCII characters average ~0.25 tokens/char (~4 chars/token).
+ * CJK characters average ~0.72 tokens/char,
+ * Latin/ASCII characters average ~0.28 tokens/char.
  */
 export function estimateTokens(text: string): number {
   if (!text) {
@@ -12,12 +12,20 @@ export function estimateTokens(text: string): number {
   let cjkCount = 0;
   let otherCount = 0;
 
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
+  for (let i = 0; i < text.length; ) {
+    const code = text.codePointAt(i)!;
+    i += code > 0xffff ? 2 : 1;
     if (
+      (code >= 0x3000 && code <= 0x303f) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
       (code >= 0x4e00 && code <= 0x9fff) ||
       (code >= 0x3040 && code <= 0x30ff) ||
-      (code >= 0xac00 && code <= 0xd7af)
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xff66 && code <= 0xff9f) ||
+      (code >= 0x20000 && code <= 0x2fa1f) ||
+      (code >= 0x30000 && code <= 0x3347f)
     ) {
       cjkCount += 1;
     } else {
