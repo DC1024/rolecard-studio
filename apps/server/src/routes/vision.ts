@@ -509,7 +509,11 @@ visionRoutes.post(
     }
 
     const primaryFetch = resolveScopedFetch(ctx, runtimeCfg.proxyConfig, 'llm_primary');
-    const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
+    const llmPort =
+      ctx.llmPort ??
+      createOpenAiCompatibleLlmPort(primaryFetch, {
+        idleTimeoutMs: runtimeCfg.llmRequestTimeoutSeconds * 1000,
+      });
     const resolvedStylePrompt =
       input.customStylePrompt !== undefined
         ? input.customStylePrompt

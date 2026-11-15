@@ -1,5 +1,6 @@
 import type {
   AccessPolicy,
+  AddCardSourcesRequest,
   AuthContextResponse,
   CardGeneratableField,
   CardImageUploadRequest,
@@ -32,6 +33,8 @@ import type {
   ResolveProposalRequest,
   RippleProposalDto,
   RoleCardContent,
+  SearchCardSourcesRequest,
+  SearchCardSourcesResponse,
   SearchTestRequest,
   SearchTestResult,
   ServiceConfigInput,
@@ -149,6 +152,113 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   }
 
   return (await res.json()) as T;
+}
+
+async function consumeSsePost<TResult>(
+  path: string,
+  payload: unknown,
+  callbacks: {
+    onProgress?: (message: string, step?: string) => void;
+    onThinking?: (delta: string) => void;
+    onContent?: (delta: string) => void;
+  },
+  fallbackErrorMsg: string,
+): Promise<TResult> {
+  const res = await fetch(`/api/v1${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    let msg = `${fallbackErrorMsg} (HTTP ${res.status})`;
+    let code = 'HTTP_ERROR';
+    try {
+      const errBody = (await res.json()) as { error?: { code?: string; message?: string } };
+      if (errBody.error?.code) code = errBody.error.code;
+      if (errBody.error?.message) msg = errBody.error.message;
+    } catch {
+      // ignore non-json error body
+    }
+    throw new ApiError(code, msg, res.status);
+  }
+
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/event-stream')) {
+    return (await res.json()) as TResult;
+  }
+
+  let finalResult: TResult | null = null;
+  const handleSseBlock = (block: string) => {
+    if (!block.trim()) return;
+    let eventName = 'message';
+    const dataLines: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+    if (eventName === 'ping') return;
+    const rawData = dataLines.join('\n');
+    if (!rawData) return;
+    const parsed = JSON.parse(rawData) as Record<string, unknown>;
+    if (eventName === 'progress' && typeof parsed.message === 'string') {
+      callbacks.onProgress?.(
+        parsed.message,
+        typeof parsed.step === 'string' ? parsed.step : undefined,
+      );
+    } else if (eventName === 'thinking' && typeof parsed.delta === 'string') {
+      callbacks.onThinking?.(parsed.delta);
+    } else if (eventName === 'content' && typeof parsed.delta === 'string') {
+      callbacks.onContent?.(parsed.delta);
+    } else if (eventName === 'error') {
+      throw new ApiError(
+        String(parsed.code ?? 'SSE_ERROR'),
+        String(parsed.message ?? fallbackErrorMsg),
+        Number(parsed.status ?? 400),
+      );
+    } else if (eventName === 'result') {
+      finalResult = parsed as unknown as TResult;
+    }
+  };
+
+  if (res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        handleSseBlock(block);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      for (const block of buffer.split(/\r?\n\r?\n/)) {
+        handleSseBlock(block);
+      }
+    }
+  } else {
+    const text = await res.text();
+    for (const block of text.split(/\r?\n\r?\n/)) {
+      handleSseBlock(block);
+    }
+  }
+
+  if (!finalResult) {
+    throw new ApiError('EMPTY_STREAM', '未收到流式返回结果，请检查后端日志', 500);
+  }
+  return finalResult;
 }
 
 export const api = {
@@ -467,99 +577,13 @@ export const api = {
       onThinking?: (delta: string) => void;
     },
   ): Promise<RoleCardDto> {
-    const res = await fetch('/api/v1/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
-      credentials: 'include',
-      body: JSON.stringify(input),
-    });
-
-    if (!res.ok) {
-      let msg = `生成失败 (HTTP ${res.status})`;
-      let code = 'GENERATE_FAILED';
-      try {
-        const payload = (await res.json()) as { error?: { code?: string; message?: string } };
-        if (payload.error?.code) code = payload.error.code;
-        if (payload.error?.message) msg = payload.error.message;
-      } catch {
-        // ignore
-      }
-      throw new ApiError(code, msg, res.status);
-    }
-
-    const contentType = res.headers.get('content-type') ?? '';
-    if (!contentType.includes('text/event-stream')) {
-      const json = (await res.json()) as { card: RoleCardDto };
-      return json.card;
-    }
-
-    let finalCard: RoleCardDto | null = null;
-    const handleSseBlock = (block: string) => {
-      if (!block.trim()) return;
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of block.split(/\r?\n/)) {
-        if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      const rawData = dataLines.join('\n');
-      if (!rawData) return;
-      const parsed = JSON.parse(rawData) as Record<string, unknown>;
-      if (eventName === 'progress' && typeof parsed.message === 'string') {
-        callbacks.onProgress?.(
-          parsed.message,
-          typeof parsed.step === 'string' ? parsed.step : undefined,
-        );
-      } else if (eventName === 'thinking' && typeof parsed.delta === 'string') {
-        callbacks.onThinking?.(parsed.delta);
-      } else if (eventName === 'error') {
-        throw new ApiError(
-          String(parsed.code ?? 'GENERATE_FAILED'),
-          String(parsed.message ?? '生成失败'),
-          Number(parsed.status ?? 400),
-        );
-      } else if (eventName === 'result' && parsed.card) {
-        finalCard = parsed.card as RoleCardDto;
-      }
-    };
-
-    if (res.body) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split(/\r?\n\r?\n/);
-        buffer = blocks.pop() ?? '';
-        for (const block of blocks) {
-          handleSseBlock(block);
-        }
-      }
-      buffer += decoder.decode();
-      if (buffer.trim()) {
-        for (const block of buffer.split(/\r?\n\r?\n/)) {
-          handleSseBlock(block);
-        }
-      }
-    } else {
-      const text = await res.text();
-      for (const block of text.split(/\r?\n\r?\n/)) {
-        handleSseBlock(block);
-      }
-    }
-
-    if (!finalCard) {
-      throw new ApiError('EMPTY_STREAM', '未收到生成结果，请检查后端日志', 500);
-    }
-    return finalCard;
+    const res = await consumeSsePost<{ card: RoleCardDto }>(
+      '/generate',
+      input,
+      callbacks,
+      '生成失败',
+    );
+    return res.card;
   },
 
   updateCardContent(id: string, input: UpdateCardContentRequest): Promise<{ card: RoleCardDto }> {
@@ -579,11 +603,35 @@ export const api = {
   refineCard(
     id: string,
     instruction: string,
+    sourceIndices?: number[],
   ): Promise<{ card: RoleCardDto; diffSummary: string }> {
     return requestJson(`/cards/${encodeURIComponent(id)}/refine`, {
       method: 'POST',
-      body: JSON.stringify({ instruction }),
+      body: JSON.stringify({
+        instruction,
+        ...(sourceIndices && sourceIndices.length > 0 ? { sourceIndices } : {}),
+      }),
     });
+  },
+
+  refineCardSse(
+    id: string,
+    instruction: string,
+    sourceIndices: number[] | undefined,
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+    },
+  ): Promise<{ card: RoleCardDto; diffSummary: string }> {
+    return consumeSsePost<{ card: RoleCardDto; diffSummary: string }>(
+      `/cards/${encodeURIComponent(id)}/refine`,
+      {
+        instruction,
+        ...(sourceIndices && sourceIndices.length > 0 ? { sourceIndices } : {}),
+      },
+      callbacks,
+      'AI 微调失败',
+    );
   },
 
   compressCard(
@@ -670,7 +718,75 @@ export const api = {
       body: JSON.stringify({
         field: input.field,
         instruction: input.instruction ?? '',
+        ...(input.sourceIndices && input.sourceIndices.length > 0
+          ? { sourceIndices: input.sourceIndices }
+          : {}),
       }),
+    });
+  },
+
+  generateCardFieldSse(
+    id: string,
+    input: Omit<GenerateCardFieldRequest, 'instruction'> & { instruction?: string },
+    callbacks: {
+      onProgress?: (message: string, step?: string) => void;
+      onThinking?: (delta: string) => void;
+    },
+  ): Promise<{
+    card: RoleCardDto;
+    field: CardGeneratableField;
+    fieldLabel: string;
+    diffSummary: string;
+  }> {
+    return consumeSsePost<{
+      card: RoleCardDto;
+      field: CardGeneratableField;
+      fieldLabel: string;
+      diffSummary: string;
+    }>(
+      `/cards/${encodeURIComponent(id)}/generate-field`,
+      {
+        field: input.field,
+        instruction: input.instruction ?? '',
+        ...(input.sourceIndices && input.sourceIndices.length > 0
+          ? { sourceIndices: input.sourceIndices }
+          : {}),
+      },
+      callbacks,
+      '单区块 AI 生成失败',
+    );
+  },
+
+  addCardSources(
+    id: string,
+    input: Partial<AddCardSourcesRequest>,
+  ): Promise<{
+    card: RoleCardDto;
+    addedCount: number;
+    failedUrls: Array<{ url: string; message: string }>;
+  }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/sources`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  deleteCardSource(
+    id: string,
+    index: number,
+  ): Promise<{ card: RoleCardDto; removed: SourceEntry }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/sources/${index}`, {
+      method: 'DELETE',
+    });
+  },
+
+  searchCardSources(
+    id: string,
+    input: SearchCardSourcesRequest,
+  ): Promise<SearchCardSourcesResponse & { card: RoleCardDto }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/sources/search`, {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   },
 

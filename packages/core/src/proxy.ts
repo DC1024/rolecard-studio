@@ -341,7 +341,11 @@ export function getOrCreateProxyDispatcher(proxyUrl: string): Dispatcher {
   let dispatcher: Dispatcher;
 
   if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-    dispatcher = new ProxyAgent(proxyUrl);
+    dispatcher = new ProxyAgent({
+      uri: proxyUrl,
+      headersTimeout: 600_000,
+      bodyTimeout: 600_000,
+    });
   } else {
     const type: 4 | 5 = parsed.protocol.startsWith('socks4') ? 4 : 5;
     const host = parsed.hostname.replace(/^\[|\]$/g, '');

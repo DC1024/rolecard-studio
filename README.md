@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.5.0）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.6.0）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
@@ -26,7 +26,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - **Mode A（仅参考材料）**：基于输入文本、上传设定集（`.txt` / `.md` / `.json`）或经 SSRF 校验的直链 URL 提纯生成，忠实还原原作或原创 OC 设定。
   - **Mode B（仅联网检索考据）**：内置 **Layer-1 免 Key 公开百科**（萌娘百科、PRTS Wiki、Wikipedia 中英文）与可选 **Layer-2 搜索引擎**（Bocha / Tavily / SerpAPI / Bing）；无有效依据时触发硬拦截，拒绝凭空编造。
   - **Mode C（混合模式）**：以本地材料为第一优先级骨架，自动联网补充背景与关系，并保留双源引用溯源（`user_provided` / `search_supplement`）。
-  - 支持 **SSE 5 阶段实时进度与思考流展示**（材料准备 → 百科考据 → 模型推演 → Schema 校验 → 保存入库），兼容推理模型 `<think>` / `reasoning_content`。
+  - 支持 **SSE 实时进度与思考流展示**（新建 5 阶段流、单区块「AI 生成」及顶部「AI 微调」均支持实时展示推理过程），兼容 `<think>` / `<thought>` / `<reasoning>` / `reasoning_content`；采用 **流式空闲重置超时（默认 300s）+ `max_tokens` 上限可配（默认 16384）+ 截断 JSON 抢救**，稳定支持慢速海外推理模型与大设定卡。
 - **多规格预设与 TRPG 跑团支持**
   - 支持 **AI 角色扮演（SillyTavern CCV3）**、**TRPG 车卡（CoC 7e 调查员 / D&D 5e 冒险者）**、**通用设定** 与自定义规格。
   - 支持 AI 推演 CoC 7e / D&D 5e 真实数值面板与技能特性，并导出标准车卡表（HTML / Markdown）及 Foundry VTT Actor JSON。
@@ -37,7 +37,8 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
 - **独立世界书（Lorebook）与快速试聊沙盒**
   - 世界书支持独立管理、与角色卡多对多绑定，支持 **蓝灯常驻（Constant）** 与 **绿灯关键词（Selective）** 规则，导出 CCV3 时自动合并至 `character_book`。
   - 内置 **快速试聊沙盒**，支持切换主开场白 / 备选开场白、配置测试人设、实时显示本次对话命中的蓝/绿灯词条，并可将高光对话一键采纳写入 `mes_example`。
-- **版本锁定、Token 预算压缩与多格式导入导出**
+- **版本锁定、引用管理、Token 预算压缩与多格式导入导出**
+  - 支持对已有角色卡在详情页 **新增文本/URL 引用、自定义关键词联网搜料（Layer-1 百科 + Layer-2 检索）并删除过期资料**，勾选特定引用或自动优先使用最新资料驱动「AI 微调」与单区块「AI 生成」。
   - 支持逐字段锁定（`lockedFields`），防止 AI 微调或压缩覆盖核心设定；支持按目标 Token 上限智能压缩。
   - 支持导入旧版 PNG（`tEXt`/`iTXt`）与 V1/V2/V3 JSON 角色卡自动升级规范化，同时保留内嵌世界书与立绘。
   - 支持 8 种官方导出格式：`tavern_png`、`tavern_v3_json`、`json`、`markdown`、`foundry_dnd5e_json`、`vtt_token_png`、`trpg_sheet_html`、`trpg_sheet_md`。

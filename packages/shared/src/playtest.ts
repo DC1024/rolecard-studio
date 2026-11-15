@@ -52,6 +52,7 @@ export type AdoptMesExampleRequest = z.infer<typeof AdoptMesExampleSchema>;
 
 export const RefineCardRequestSchema = z.object({
   instruction: z.string().trim().min(2, '微调指令至少需要 2 个字符').max(2000),
+  sourceIndices: z.array(z.number().int().min(0)).max(20).optional(),
 });
 export type RefineCardRequest = z.infer<typeof RefineCardRequestSchema>;
 

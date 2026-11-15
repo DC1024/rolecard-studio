@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   FREE_STARTER_PRESETS,
   LLM_PROVIDER_DEFAULTS,
@@ -7,9 +8,14 @@ import {
   type RoleCardContent,
   type SyncEventDto,
 } from '@rolecard/shared';
-import { generateTrpgAttributesForCard } from './generator.js';
+import { generateRoleCard, generateTrpgAttributesForCard } from './generator.js';
 import { validateModelSlotCapability } from './llm/capabilities.js';
-import { createOpenAiCompatibleLlmPort, testLlmConnectivity } from './llm/client.js';
+import { createOpenAiCompatibleLlmPort, splitThinkTags, testLlmConnectivity } from './llm/client.js';
+import {
+  completeStructuredJson,
+  extractJsonCandidate,
+  repairTruncatedJson,
+} from './llm/json-repair.js';
 import { applyTrpgPresetFields } from './lorebook.js';
 import {
   buildNotificationMessage,
@@ -17,7 +23,11 @@ import {
   validateNotificationChannelSettings,
   type SmtpSendInput,
 } from './notifications.js';
-import { generateCardField } from './playtest.js';
+import {
+  generateCardField,
+  refineRoleCard,
+  selectSourcesForGeneration,
+} from './playtest.js';
 import { layeredRetrieve, queryMediaWikiSite, testSearchConnectivity } from './retrieval.js';
 import {
   exportCardToFoundryDnd5eActor,
@@ -1562,5 +1572,326 @@ describe('Free provider capabilities, multi-dialect image generation & OpenRoute
     expect(capturedOrTitle).toBe('RoleCard Studio');
   });
 });
+
+describe('Existing card source selection, refine injection, and single-field generation', () => {
+  it('prioritizes latest sources by default and respects explicit sourceIndices without dropping index >= 4', async () => {
+    const sources = Array.from({ length: 7 }, (_, i) => ({
+      title: `参考资料-${i + 1}`,
+      snippet: `这是第 ${i + 1} 条补充考据正文。`,
+      origin: i >= 4 ? ('user_provided' as const) : ('search_supplement' as const),
+      provider: i >= 4 ? 'user_text' : 'prts',
+    }));
+
+    // Default mode keeps latest 6 entries so newly added entries (#5-#7) are never silently dropped
+    const defaultSnippets = selectSourcesForGeneration(sources);
+    expect(defaultSnippets).toContain('参考资料-7');
+    expect(defaultSnippets).toContain('参考资料-5');
+    expect(defaultSnippets).not.toContain('参考资料-1');
+
+    // Explicit sourceIndices filters and deduplicates while ignoring out-of-range values
+    const explicitSnippets = selectSourcesForGeneration(sources, [0, 6, 6, 99, -1]);
+    expect(explicitSnippets).toContain('[参考资料 #1 · 检索补充] 参考资料-1');
+    expect(explicitSnippets).toContain('[参考资料 #7 · 用户提供] 参考资料-7');
+    expect(explicitSnippets).not.toContain('参考资料-2');
+
+    const llmSlot = {
+      provider: 'openai' as const,
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      jsonModeStrategy: 'auto' as const,
+    };
+
+    const capturedRefinePrompts: string[] = [];
+    const refineRes = await refineRoleCard(sampleContent, '结合第7条最新设定微调背景，不要改性格', {
+      llmSlot,
+      lockedFields: ['personality'],
+      sources,
+      sourceIndices: [6],
+      workName: '明日方舟',
+      llmPort: async (req) => {
+        capturedRefinePrompts.push(req.messages.map((m) => m.content).join('\n'));
+        return {
+          status: 200,
+          content: JSON.stringify({
+            ...sampleContent,
+            personality: '被错误修改的性格',
+            background: '融合第 7 条最新设定后的背景故事',
+          }),
+        };
+      },
+    });
+
+    expect(refineRes.ok).toBe(true);
+    if (!refineRes.ok) throw new Error('expected refine ok');
+    expect(capturedRefinePrompts[0]).toContain('参考资料-7');
+    expect(capturedRefinePrompts[0]).not.toContain('参考资料-2');
+    expect(refineRes.value.content.personality).toBe(sampleContent.personality);
+    expect(refineRes.value.content.background).toBe('融合第 7 条最新设定后的背景故事');
+
+    const capturedFieldPrompts: string[] = [];
+    const fieldRes = await generateCardField(sampleContent, 'creator_notes', {
+      llmSlot,
+      sources,
+      sourceIndices: [5],
+      llmPort: async (req) => {
+        capturedFieldPrompts.push(req.messages.map((m) => m.content).join('\n'));
+        return {
+          status: 200,
+          content: JSON.stringify({ value: '依据第 6 条资料更新的作者备注。' }),
+        };
+      },
+    });
+
+    expect(fieldRes.ok).toBe(true);
+    expect(capturedFieldPrompts[0]).toContain('参考资料-6');
+    expect(capturedFieldPrompts[0]).not.toContain('参考资料-1');
+  });
+});
+
+describe('Idle-reset streaming timeout, truncation rescue, and material token budget', () => {
+  it('keeps slow steady token streams alive across idle resets and aborts true stalls', async () => {
+    const encoder = new TextEncoder();
+    const steadyFetch: HttpFetchPort = async () => {
+      const stream = new ReadableStream({
+        async start(controller) {
+          const chunks = [
+            'data: {"choices":[{"delta":{"content":"<thought>slow thinking"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":" step 2</thought>"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\n',
+            'data: [DONE]\n\n',
+          ];
+          for (const chunk of chunks) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            controller.enqueue(encoder.encode(chunk));
+          }
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const steadyPort = createOpenAiCompatibleLlmPort(steadyFetch, {
+      idleTimeoutMs: 1_000,
+      totalTimeoutMs: 4_000,
+    });
+    const okRes = await steadyPort({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      temperature: 0,
+      jsonMode: false,
+      onReasoningDelta: () => {},
+      onContentDelta: () => {},
+    });
+    expect(okRes.status).toBe(200);
+    expect(okRes.content).toBe('{"ok":true}');
+    expect(okRes.reasoning).toContain('slow thinking step 2');
+
+    // Stalled stream (> idleTimeoutMs without data) should abort with idle timeout
+    const stalledFetch: HttpFetchPort = async (_url, init) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"start"}}]}\n\n'));
+          init?.signal?.addEventListener('abort', () => {
+            try {
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            } catch {
+              // ignore
+            }
+          });
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+
+    const stalledPort = createOpenAiCompatibleLlmPort(stalledFetch, {
+      idleTimeoutMs: 1_000,
+      totalTimeoutMs: 4_000,
+    });
+    const stalledRes = await stalledPort({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'hi' }],
+      temperature: 0,
+      jsonMode: false,
+      onReasoningDelta: () => {},
+      onContentDelta: () => {},
+    });
+    expect(stalledRes.status).toBe(502);
+    expect(stalledRes.rawError).toContain('流式空闲超时');
+  });
+
+  it('strips unclosed think/thought/reasoning tags, extracts last valid JSON, and repairs truncated JSON', () => {
+    const unclosed = splitThinkTags('<THOUGHT>很长很长的思考过程被截断了');
+    expect(unclosed.content).toBe('');
+    expect(unclosed.reasoning).toContain('很长很长的思考过程被截断了');
+
+    const mixed =
+      '<reasoning>分析中</reasoning>示例说明：用 {{user}} 称呼玩家。\n```json\n{"wrong": 1}\n```\n最终结果：\n```json\n{"name":"凯尔希","summary":"罗德岛医生"}\n```';
+    expect(JSON.parse(extractJsonCandidate(mixed))).toEqual({
+      name: '凯尔希',
+      summary: '罗德岛医生',
+    });
+
+    const unclosedFence = '```json\n{"name":"阿米娅","tags":["罗德岛"';
+    const candidate = extractJsonCandidate(unclosedFence);
+    const repaired = repairTruncatedJson(candidate);
+    expect(JSON.parse(repaired)).toEqual({
+      name: '阿米娅',
+      tags: ['罗德岛'],
+    });
+  });
+
+  it('handles finishReason=length truncation without snowballing and recovers with low reasoningEffort', async () => {
+    const schema = z.object({
+      name: z.string().min(1),
+      summary: z.string().min(1),
+    });
+
+    const recordedEfforts: Array<string | undefined> = [];
+    const recordedMessageCounts: number[] = [];
+    let attempt = 0;
+
+    const recoveringPort: LlmCompletionPort = async (req) => {
+      attempt += 1;
+      recordedEfforts.push(req.reasoningEffort);
+      recordedMessageCounts.push(req.messages.length);
+      if (attempt === 1) {
+        return {
+          status: 200,
+          content: '',
+          reasoning: '超过五万字的思考过程...',
+          finishReason: 'length',
+        };
+      }
+      if (req.reasoningEffort === 'low') {
+        return {
+          status: 400,
+          content: '',
+          rawError: 'reasoning_effort unsupported',
+          reasoningEffortRejected: true,
+        };
+      }
+      return {
+        status: 200,
+        content: JSON.stringify({ name: '阿米娅', summary: '罗德岛公开领袖' }),
+        finishReason: 'stop',
+      };
+    };
+
+    const recovered = await completeStructuredJson(recoveringPort, {
+      slot: {
+        provider: 'openai',
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'o3-mini',
+        jsonModeStrategy: 'auto',
+        maxTokens: 16384,
+      },
+      messages: [{ role: 'user', content: '请输出角色 JSON' }],
+      schema,
+      schemaHint: '{"name":"","summary":""}',
+      temperature: 0.4,
+    });
+
+    expect(recovered.ok).toBe(true);
+    expect(recordedEfforts[1]).toBe('low');
+    // Skipped snowballing full assistant error message on empty/truncated output
+    expect(recordedMessageCounts[1]).toBe(2);
+
+    // Persistent truncation returns LLM_OUTPUT_TRUNCATED
+    const alwaysTruncatedPort: LlmCompletionPort = async () => ({
+      status: 200,
+      content: '',
+      reasoning: '思考耗尽了所有 max_tokens',
+      finishReason: 'length',
+    });
+
+    const truncatedRes = await completeStructuredJson(alwaysTruncatedPort, {
+      slot: {
+        provider: 'openai',
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        jsonModeStrategy: 'auto',
+        maxTokens: 16384,
+      },
+      messages: [{ role: 'user', content: '请输出角色 JSON' }],
+      schema,
+      schemaHint: '{"name":"","summary":""}',
+      temperature: 0.4,
+    });
+    expect(truncatedRes.ok).toBe(false);
+    if (!truncatedRes.ok) {
+      expect(truncatedRes.error.code).toBe('LLM_OUTPUT_TRUNCATED');
+    }
+  });
+
+  it('caps total material tokens in generateRoleCard so massive retrieved sources do not overflow context', async () => {
+    let capturedPromptLength = 0;
+    const hugeSnippet = '这是一段极长的角色考据百科资料文本，包含大量细节设定。'.repeat(600);
+    const hugeSources = Array.from({ length: 8 }, (_, idx) => ({
+      title: `巨型百科词条-${idx + 1}`,
+      snippet: hugeSnippet,
+      origin: 'search_supplement' as const,
+      provider: 'wikipedia_zh',
+    }));
+
+    const res = await generateRoleCard(
+      {
+        mode: 'C',
+        characterName: '阿米娅',
+        workName: '明日方舟',
+        cardType: 'general',
+        entityType: 'fictional',
+        referenceText: '用户输入设定：'.repeat(900),
+        referenceUrls: [],
+        visionDescription: '',
+        enableSupplementSearch: true,
+        tags: ['罗德岛'],
+        lorebookIds: [],
+        customPrompt: '',
+      },
+      {
+        llmPort: async (req) => {
+          capturedPromptLength = req.messages.map((m) => m.content).join('\n').length;
+          return {
+            status: 200,
+            content: JSON.stringify(sampleContent),
+          };
+        },
+        llmSlot: {
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        enableLayer1Wiki: false,
+        wikiSites: [],
+        searchProvider: 'bocha',
+        searchApiKey: 'test-key',
+        searchProviderPort: async () => hugeSources,
+      },
+    );
+
+    expect(res.ok).toBe(true);
+    // Without budget capping, 8 x ~15000 chars + ~5400 chars would be >125k chars.
+    expect(capturedPromptLength).toBeLessThan(28000);
+  });
+});
+
+
 
 

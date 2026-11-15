@@ -48,6 +48,7 @@ export interface LlmCompletionRequest {
   messages: LlmMessage[];
   temperature: number;
   maxTokens?: number;
+  reasoningEffort?: 'low' | 'medium' | 'high';
   jsonMode: boolean;
   onReasoningDelta?: (delta: string) => void | Promise<void>;
   onContentDelta?: (delta: string) => void | Promise<void>;
@@ -56,9 +57,12 @@ export interface LlmCompletionRequest {
 export interface LlmCompletionResponse {
   content: string;
   reasoning?: string;
+  finishReason?: string;
   status: number;
   rawError?: string;
   supportsJsonObjectRejected?: boolean;
+  maxTokensRejected?: boolean;
+  reasoningEffortRejected?: boolean;
 }
 
 export interface LlmSlotRuntimeConfig {
@@ -67,6 +71,7 @@ export interface LlmSlotRuntimeConfig {
   baseUrl: string;
   model: string;
   jsonModeStrategy: JsonModeStrategy;
+  maxTokens?: number;
 }
 
 export type LlmCompletionPort = (

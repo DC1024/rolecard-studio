@@ -168,7 +168,11 @@ export async function executeEvolutionForCard(
 
   const primaryFetch = resolveScopedFetch(ctx, runtimeCfg.proxyConfig, 'llm_primary');
   const searchFetch = resolveScopedFetch(ctx, runtimeCfg.proxyConfig, 'search');
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
+  const llmPort =
+    ctx.llmPort ??
+    createOpenAiCompatibleLlmPort(primaryFetch, {
+      idleTimeoutMs: runtimeCfg.llmRequestTimeoutSeconds * 1000,
+    });
   const baseUrl = resolveProviderBaseUrl(
     runtimeCfg.primaryLlm.provider,
     runtimeCfg.primaryLlm.baseUrl,

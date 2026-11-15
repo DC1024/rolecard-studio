@@ -1,17 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   AutoApplyThreshold,
   CardGeneratableField,
   DeclarativePluginManifest,
   ExportFormat,
   RoleCardContent,
+  SourceEntry,
   SyncScheduleDto,
   SyncScope,
 } from '@rolecard/shared';
 import {
   ArrowLeft,
+  BookOpen,
+  Brain,
   Check,
   ChevronDown,
+  ChevronUp,
   CircleDot,
   Clock,
   Copy,
@@ -19,7 +23,9 @@ import {
   Download,
   Edit3,
   ExternalLink,
+  Globe,
   Image as ImageIcon,
+  Link2,
   Loader2,
   Lock,
   MessageSquare,
@@ -28,6 +34,7 @@ import {
   Puzzle,
   RefreshCw,
   Save,
+  Search,
   Sparkles,
   Trash2,
   Unlock,
@@ -141,6 +148,37 @@ export function CardDetailPanel({
   const [schedThreshold, setSchedThreshold] = useState<AutoApplyThreshold>('manual_review');
   const [metaSummaryDraft, setMetaSummaryDraft] = useState('');
 
+  // Sources management & AI generation context states
+  const [selectedSourceIndices, setSelectedSourceIndices] = useState<number[]>([]);
+  const [sourceInputMode, setSourceInputMode] = useState<'text' | 'url' | 'search'>('search');
+  const [textSourceTitle, setTextSourceTitle] = useState('');
+  const [textSourceContent, setTextSourceContent] = useState('');
+  const [urlSourceInput, setUrlSourceInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchDeep, setSearchDeep] = useState(true);
+  const [searchResults, setSearchResults] = useState<SourceEntry[]>([]);
+  const [searchMeta, setSearchMeta] = useState<{
+    query: string;
+    layer1Hits: number;
+    layer2Hits: number;
+  } | null>(null);
+  const [selectedSearchIndices, setSelectedSearchIndices] = useState<number[]>([]);
+
+  // Streaming progress & thinking states for top AI Refine and per-field AI Generate
+  const [refineProgressText, setRefineProgressText] = useState('');
+  const [refineThinkingText, setRefineThinkingText] = useState('');
+  const [refineThinkingExpanded, setRefineThinkingExpanded] = useState(true);
+  const refineThinkingBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const [fieldStreamTarget, setFieldStreamTarget] = useState<{
+    field: CardGeneratableField;
+    label: string;
+  } | null>(null);
+  const [fieldProgressText, setFieldProgressText] = useState('');
+  const [fieldThinkingText, setFieldThinkingText] = useState('');
+  const [fieldThinkingExpanded, setFieldThinkingExpanded] = useState(true);
+  const fieldThinkingBoxRef = useRef<HTMLPreElement | null>(null);
+
   useEffect(() => {
     api
       .listPlugins()
@@ -178,6 +216,48 @@ export function CardDetailPanel({
       setSchedule(null);
     }
   }, [card?.id, card?.version, card?.updatedAt]);
+
+  useEffect(() => {
+    if (card) {
+      setSearchQuery(card.workName ? `${card.characterName} ${card.workName}` : card.characterName);
+      setSearchResults([]);
+      setSearchMeta(null);
+      setSelectedSearchIndices([]);
+      setSelectedSourceIndices([]);
+      setTextSourceTitle('');
+      setTextSourceContent('');
+      setUrlSourceInput('');
+    } else {
+      setSelectedSourceIndices([]);
+      setSearchResults([]);
+      setSearchMeta(null);
+      setSelectedSearchIndices([]);
+    }
+    setRefineProgressText('');
+    setRefineThinkingText('');
+    setRefineThinkingExpanded(true);
+    setFieldStreamTarget(null);
+    setFieldProgressText('');
+    setFieldThinkingText('');
+    setFieldThinkingExpanded(true);
+  }, [card?.id]);
+
+  useEffect(() => {
+    if (refineThinkingExpanded && refineThinkingBoxRef.current) {
+      refineThinkingBoxRef.current.scrollTop = refineThinkingBoxRef.current.scrollHeight;
+    }
+  }, [refineThinkingText, refineThinkingExpanded]);
+
+  useEffect(() => {
+    if (fieldThinkingExpanded && fieldThinkingBoxRef.current) {
+      fieldThinkingBoxRef.current.scrollTop = fieldThinkingBoxRef.current.scrollHeight;
+    }
+  }, [fieldThinkingText, fieldThinkingExpanded]);
+
+  useEffect(() => {
+    if (!card) return;
+    setSelectedSourceIndices((prev) => prev.filter((idx) => idx >= 0 && idx < card.sources.length));
+  }, [card?.sources.length]);
 
   if (!card || !draft) {
     return (
@@ -276,12 +356,33 @@ export function CardDetailPanel({
     if (instruction.length < 2 || !canUpdate) return;
     setBusyAction('refine');
     setError(null);
+    setRefineProgressText('正在连接大模型并分析角色卡...');
+    setRefineThinkingText('');
+    setRefineThinkingExpanded(true);
     try {
-      const res = await api.refineCard(card.id, instruction);
+      const res = await api.refineCardSse(
+        card.id,
+        instruction,
+        selectedSourceIndices.length > 0 ? selectedSourceIndices : undefined,
+        {
+          onProgress: (message) => {
+            setRefineProgressText(message);
+          },
+          onThinking: (delta) => {
+            setRefineThinkingText((prev) => prev + delta);
+          },
+        },
+      );
       setRefineInput('');
+      setRefineProgressText('');
+      setRefineThinkingExpanded(false);
       onCardUpdated(res.card, res.diffSummary || 'AI 微调完成');
+      notifySuccess('已完成 AI 微调');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 微调失败');
+      const msg = err instanceof Error ? err.message : 'AI 微调失败';
+      setRefineProgressText('');
+      setError(msg);
+      notifyError(msg);
     } finally {
       setBusyAction(null);
     }
@@ -363,12 +464,215 @@ export function CardDetailPanel({
     }
     setBusyAction(`gen-${field}`);
     setError(null);
+    setFieldStreamTarget({ field, label });
+    setFieldProgressText(`正在准备生成「${label}」...`);
+    setFieldThinkingText('');
+    setFieldThinkingExpanded(true);
     try {
-      const res = await api.generateCardField(card.id, { field });
+      const res = await api.generateCardFieldSse(
+        card.id,
+        {
+          field,
+          sourceIndices:
+            selectedSourceIndices.length > 0 ? selectedSourceIndices : undefined,
+        },
+        {
+          onProgress: (message) => {
+            setFieldProgressText(message);
+          },
+          onThinking: (delta) => {
+            setFieldThinkingText((prev) => prev + delta);
+          },
+        },
+      );
+      setFieldProgressText('');
+      setFieldThinkingExpanded(false);
       onCardUpdated(res.card, res.diffSummary);
       notifySuccess(`已为「${res.fieldLabel}」生成新内容`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : `AI 生成「${label}」失败`;
+      setFieldProgressText('');
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const toggleSourceIndex = (idx: number) => {
+    setSelectedSourceIndices((prev) =>
+      prev.includes(idx) ? prev.filter((item) => item !== idx) : [...prev, idx].sort((a, b) => a - b),
+    );
+  };
+
+  const handleAddTextSource = async () => {
+    const content = textSourceContent.trim();
+    if (!content || !canUpdate) return;
+    setBusyAction('add-source-text');
+    setError(null);
+    try {
+      const prevLen = card.sources.length;
+      const res = await api.addCardSources(card.id, {
+        textSources: [
+          {
+            title: textSourceTitle.trim() || '用户补充设定',
+            content,
+          },
+        ],
+      });
+      if (res.card.sources.length > prevLen) {
+        const addedIndices: number[] = [];
+        for (let i = prevLen; i < res.card.sources.length; i += 1) {
+          addedIndices.push(i);
+        }
+        setSelectedSourceIndices((prev) => [...new Set([...prev, ...addedIndices])]);
+      }
+      setTextSourceTitle('');
+      setTextSourceContent('');
+      onCardUpdated(
+        res.card,
+        res.addedCount > 0 ? `已新增 ${res.addedCount} 条文本引用` : '该文本引用已存在',
+      );
+      if (res.addedCount > 0) {
+        notifySuccess(`已新增 ${res.addedCount} 条文本引用（已自动勾选用于 AI 生成/微调）`);
+      } else {
+        notifySuccess('该引用内容已存在于引用库中');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '添加文本引用失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleAddUrlSources = async () => {
+    const urls = urlSourceInput
+      .split(/[\n,]+/)
+      .map((u) => u.trim())
+      .filter(Boolean);
+    if (urls.length === 0 || !canUpdate) return;
+    setBusyAction('add-source-url');
+    setError(null);
+    try {
+      const prevLen = card.sources.length;
+      const res = await api.addCardSources(card.id, { urls: urls.slice(0, 5) });
+      if (res.card.sources.length > prevLen) {
+        const addedIndices: number[] = [];
+        for (let i = prevLen; i < res.card.sources.length; i += 1) {
+          addedIndices.push(i);
+        }
+        setSelectedSourceIndices((prev) => [...new Set([...prev, ...addedIndices])]);
+      }
+      setUrlSourceInput('');
+      onCardUpdated(res.card, `已抓取并新增 ${res.addedCount} 条网页引用`);
+      if (res.failedUrls.length > 0) {
+        notifyError(
+          `部分链接抓取失败：${res.failedUrls.map((f) => f.url).join(', ')}`,
+        );
+      } else {
+        notifySuccess(`已新增 ${res.addedCount} 条网页引用（已自动勾选用于 AI 生成/微调）`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '抓取参考链接失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleDeleteSource = async (index: number, title: string) => {
+    if (!canUpdate) return;
+    setBusyAction(`del-source-${index}`);
+    setError(null);
+    try {
+      const res = await api.deleteCardSource(card.id, index);
+      setSelectedSourceIndices((prev) =>
+        prev
+          .filter((idx) => idx !== index)
+          .map((idx) => (idx > index ? idx - 1 : idx)),
+      );
+      onCardUpdated(res.card, `已移除引用「${title}」`);
+      notifySuccess(`已移除引用「${title}」`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '移除引用失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSearchSources = async () => {
+    const q = searchQuery.trim();
+    if (!q || !canUpdate) return;
+    setBusyAction('search-sources');
+    setError(null);
+    try {
+      const res = await api.searchCardSources(card.id, {
+        query: q,
+        deepSearch: searchDeep,
+        appendToCard: false,
+      });
+      setSearchResults(res.sources);
+      setSearchMeta({
+        query: res.query,
+        layer1Hits: res.layer1Hits,
+        layer2Hits: res.layer2Hits,
+      });
+      setSelectedSearchIndices(res.sources.map((_, idx) => idx));
+      if (res.sources.length === 0) {
+        notifyError('未检索到新资料，可尝试调整关键词或开启商用搜索 API');
+      } else {
+        notifySuccess(`检索完成：共命中 ${res.sources.length} 条资料，请勾选入库`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '联网检索失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleAdoptSearchResults = async () => {
+    if (!canUpdate || selectedSearchIndices.length === 0) return;
+    const entries = selectedSearchIndices
+      .map((idx) => searchResults[idx])
+      .filter((item): item is SourceEntry => Boolean(item));
+    if (entries.length === 0) return;
+
+    setBusyAction('adopt-search-sources');
+    setError(null);
+    try {
+      const prevLen = card.sources.length;
+      const res = await api.addCardSources(card.id, { entries });
+      const newLen = res.card.sources.length;
+      if (newLen > prevLen) {
+        const addedIndices: number[] = [];
+        for (let i = prevLen; i < newLen; i += 1) {
+          addedIndices.push(i);
+        }
+        setSelectedSourceIndices((prev) => [...new Set([...prev, ...addedIndices])]);
+      }
+      setSearchResults([]);
+      setSearchMeta(null);
+      setSelectedSearchIndices([]);
+      onCardUpdated(
+        res.card,
+        res.addedCount > 0
+          ? `已将 ${res.addedCount} 条检索资料加入引用库并勾选`
+          : '所选资料已存在于引用库中',
+      );
+      notifySuccess(
+        res.addedCount > 0
+          ? `已加入 ${res.addedCount} 条检索资料（已自动勾选用于 AI 生成/微调）`
+          : '所选资料已存在',
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '保存检索资料失败';
       setError(msg);
       notifyError(msg);
     } finally {
@@ -424,6 +728,67 @@ export function CardDetailPanel({
           </button>
         )}
         {renderLockButton(field)}
+      </div>
+    );
+  };
+
+  const renderFieldStreamPanel = (field: CardGeneratableField) => {
+    const isCurrentField = fieldStreamTarget?.field === field;
+    const isGenerating = busyAction === `gen-${field}`;
+    if (!isCurrentField && !isGenerating) return null;
+    if (!isGenerating && !fieldProgressText && !fieldThinkingText) return null;
+
+    return (
+      <div className="mb-2 space-y-2 rounded-sm border border-line bg-surface p-2.5 text-xs">
+        {(isGenerating || fieldProgressText) && (
+          <div className="flex items-center gap-2 font-medium text-status-info">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+            <span>{fieldProgressText || `正在为「${fieldStreamTarget?.label ?? field}」生成内容...`}</span>
+          </div>
+        )}
+        {fieldThinkingText && (
+          <div className="rounded-sm border border-line-subtle bg-canvas">
+            <div className="flex items-center justify-between px-2.5 py-1.5">
+              <button
+                type="button"
+                onClick={() => setFieldThinkingExpanded((prev) => !prev)}
+                className="flex flex-1 items-center justify-between text-left text-[11px] font-semibold text-content-secondary hover:text-content-primary"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Brain className="h-3.5 w-3.5 text-accent" />
+                  模型思考过程（{fieldThinkingText.length} 字）
+                </span>
+                {fieldThinkingExpanded ? (
+                  <ChevronUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+              </button>
+              {!isGenerating && (
+                <button
+                  type="button"
+                  title="关闭思考记录"
+                  onClick={() => {
+                    setFieldStreamTarget(null);
+                    setFieldThinkingText('');
+                    setFieldProgressText('');
+                  }}
+                  className="ml-2 text-content-muted hover:text-content-primary"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            {fieldThinkingExpanded && (
+              <pre
+                ref={fieldThinkingBoxRef}
+                className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line-subtle px-2.5 py-2 font-mono text-[11px] leading-relaxed text-content-secondary"
+              >
+                {fieldThinkingText}
+              </pre>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -664,7 +1029,7 @@ export function CardDetailPanel({
       {/* Export bar + AI Refine bar */}
       <div className="my-3.5 flex flex-col gap-2.5 rounded-md border border-line bg-subtle p-3 lg:flex-row lg:items-center lg:justify-between">
         {canUpdate ? (
-          <div className="flex flex-1 items-center gap-2">
+          <div className="flex flex-1 flex-wrap items-center gap-2">
             <input
               type="text"
               value={refineInput}
@@ -675,9 +1040,30 @@ export function CardDetailPanel({
                   void handleRefine();
                 }
               }}
-              placeholder="AI 定向微调指令（自动尊重已锁定字段），例如：语气更慵懒冷淡一些..."
-              className="h-8 flex-1 rounded-sm border border-line bg-surface px-3 text-xs text-content-primary outline-none focus:border-accent"
+              placeholder="AI 定向微调指令（自动参考已选/最新引用，尊重已锁字段），例如：结合新增考据重写背景..."
+              className="h-8 min-w-[220px] flex-1 rounded-sm border border-line bg-surface px-3 text-xs text-content-primary outline-none focus:border-accent"
             />
+            {selectedSourceIndices.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab('sources')}
+                title="点击管理已勾选的参考引用条目"
+                className="inline-flex h-8 shrink-0 items-center gap-1 rounded-sm border border-accent/40 bg-accent/10 px-2 text-[11px] font-medium text-accent hover:bg-accent/15"
+              >
+                <BookOpen className="h-3 w-3" />
+                <span>已选 {selectedSourceIndices.length} 条引用</span>
+              </button>
+            ) : card.sources.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab('sources')}
+                title="未指定引用时将自动优先参考最新补充的资料，点击前往勾选或新增资料"
+                className="inline-flex h-8 shrink-0 items-center gap-1 rounded-sm border border-line bg-surface px-2 text-[11px] text-content-muted hover:border-accent/50 hover:text-accent"
+              >
+                <BookOpen className="h-3 w-3" />
+                <span>参考 {card.sources.length} 条引用</span>
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={busyAction !== null || refineInput.trim().length < 2}
@@ -856,6 +1242,59 @@ export function CardDetailPanel({
         )}
       </div>
 
+      {(busyAction === 'refine' || refineProgressText || refineThinkingText) && (
+        <div className="mb-3 space-y-2 rounded-md border border-line bg-subtle p-3 text-xs">
+          {(busyAction === 'refine' || refineProgressText) && (
+            <div className="flex items-center gap-2 font-medium text-status-info">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+              <span>{refineProgressText || '正在执行 AI 微调...'}</span>
+            </div>
+          )}
+          {refineThinkingText && (
+            <div className="rounded-sm border border-line bg-surface">
+              <div className="flex items-center justify-between px-2.5 py-1.5">
+                <button
+                  type="button"
+                  onClick={() => setRefineThinkingExpanded((prev) => !prev)}
+                  className="flex flex-1 items-center justify-between text-left text-[11px] font-semibold text-content-secondary hover:text-content-primary"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <Brain className="h-3.5 w-3.5 text-accent" />
+                    AI 微调思考过程（{refineThinkingText.length} 字）
+                  </span>
+                  {refineThinkingExpanded ? (
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                {busyAction !== 'refine' && (
+                  <button
+                    type="button"
+                    title="关闭思考记录"
+                    onClick={() => {
+                      setRefineThinkingText('');
+                      setRefineProgressText('');
+                    }}
+                    className="ml-2 text-content-muted hover:text-content-primary"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              {refineThinkingExpanded && (
+                <pre
+                  ref={refineThinkingBoxRef}
+                  className="max-h-44 overflow-y-auto whitespace-pre-wrap border-t border-line-subtle bg-canvas px-2.5 py-2 font-mono text-[11px] leading-relaxed text-content-secondary"
+                >
+                  {refineThinkingText}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="mb-3 rounded-sm border border-status-danger/40 bg-status-danger/10 px-3 py-2 text-xs text-status-danger">
           {error}
@@ -899,6 +1338,7 @@ export function CardDetailPanel({
                     <span className="text-xs font-semibold text-content-primary">{meta.label}</span>
                     {renderFieldActions(key, meta.label)}
                   </div>
+                  {renderFieldStreamPanel(key)}
                   {editing ? (
                     <textarea
                       rows={key === 'background' ? 4 : 3}
@@ -921,6 +1361,7 @@ export function CardDetailPanel({
               <span className="text-xs font-semibold text-content-primary">语言风格与口癖</span>
               {renderFieldActions('speech_style', '语言风格与口癖')}
             </div>
+            {renderFieldStreamPanel('speech_style')}
             {editing ? (
               <div className="space-y-2">
                 <input
@@ -972,6 +1413,7 @@ export function CardDetailPanel({
               <span className="text-xs font-semibold text-content-primary">人际关系</span>
               {renderFieldActions('relationships', '人际关系')}
             </div>
+            {renderFieldStreamPanel('relationships')}
             {card.content.relationships.length === 0 ? (
               <p className="text-xs text-content-muted">暂未记录关键人际关系</p>
             ) : (
@@ -1043,6 +1485,7 @@ export function CardDetailPanel({
                   <span className="text-xs font-semibold text-content-primary">{meta.label}</span>
                   {renderFieldActions(key, meta.label)}
                 </div>
+                {renderFieldStreamPanel(key)}
                 {editing ? (
                   <textarea
                     rows={key === 'mes_example' ? 5 : 3}
@@ -1066,6 +1509,7 @@ export function CardDetailPanel({
               </span>
               {renderFieldActions('alternate_greetings', '备选开场白')}
             </div>
+            {renderFieldStreamPanel('alternate_greetings')}
             {editing ? (
               <textarea
                 rows={4}
@@ -1104,51 +1548,381 @@ export function CardDetailPanel({
       )}
 
       {activeTab === 'sources' && (
-        <div className="space-y-2.5">
-          {card.sources.length === 0 ? (
-            <p className="text-xs text-content-muted">无外部引用条目</p>
-          ) : (
-            card.sources.map((src, idx) => (
-              <div
-                key={`${src.title}-${idx}`}
-                className="rounded-md border border-line-subtle bg-canvas p-3"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10.5px] font-semibold ${
-                        src.origin === 'user_provided'
-                          ? 'bg-accent/15 text-accent'
-                          : 'bg-status-success/15 text-status-success'
+        <div className="space-y-4">
+          {canUpdate && (
+            <div className="rounded-md border border-line-subtle bg-canvas p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
+                    <Globe className="h-3.5 w-3.5 text-accent" />
+                    补充新资料与联网搜索
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-content-muted">
+                    为已有角色卡补充新设定、抓取网页正文或联网搜索资料；入库后可直接使用「AI 微调」或各区块「AI 生成」结合新资料重写内容。
+                  </p>
+                </div>
+                <div className="inline-flex rounded-sm border border-line bg-surface p-0.5 text-[11px]">
+                  {(
+                    [
+                      ['search', '联网搜料'],
+                      ['text', '粘贴文本'],
+                      ['url', '抓取链接'],
+                    ] as const
+                  ).map(([modeKey, modeLabel]) => (
+                    <button
+                      key={modeKey}
+                      type="button"
+                      onClick={() => setSourceInputMode(modeKey)}
+                      className={`rounded-sm px-2.5 py-1 font-medium transition ${
+                        sourceInputMode === modeKey
+                          ? 'bg-accent text-content-inverse'
+                          : 'text-content-secondary hover:text-content-primary'
                       }`}
                     >
-                      {src.origin === 'user_provided' ? '[用户提供]' : '[检索补充]'}
-                    </span>
-                    <span className="text-xs font-semibold text-content-primary">{src.title}</span>
-                    {src.provider && (
-                      <span className="font-mono text-[10.5px] text-content-muted">
-                        ({src.provider})
-                      </span>
-                    )}
-                  </div>
-                  {src.url && /^https?:\/\//i.test(src.url) && (
-                    <a
-                      href={src.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                      {modeLabel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {sourceInputMode === 'search' && (
+                <div className="space-y-2.5">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleSearchSources();
+                        }
+                      }}
+                      placeholder="输入检索关键词，例如：角色名 作品名 新剧情/版本..."
+                      className="h-8 flex-1 rounded-sm border border-line bg-surface px-3 text-xs text-content-primary outline-none focus:border-accent"
+                    />
+                    <label className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-content-secondary">
+                      <input
+                        type="checkbox"
+                        checked={searchDeep}
+                        onChange={(e) => setSearchDeep(e.target.checked)}
+                        className="h-3.5 w-3.5 accent-accent"
+                      />
+                      <span>联动商用搜索 (Layer-2)</span>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={busyAction !== null || !searchQuery.trim()}
+                      onClick={handleSearchSources}
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
                     >
-                      查看来源
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
+                      {busyAction === 'search-sources' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Search className="h-3.5 w-3.5" />
+                      )}
+                      {busyAction === 'search-sources' ? '检索中...' : '联网搜料'}
+                    </button>
+                  </div>
+
+                  {searchMeta && (
+                    <div className="rounded-sm border border-line bg-surface p-2.5 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-subtle pb-2 text-[11px]">
+                        <span className="text-content-secondary">
+                          关键词 <strong className="text-content-primary">「{searchMeta.query}」</strong>
+                          ：公开百科命中 {searchMeta.layer1Hits} 条 · 商用搜索命中 {searchMeta.layer2Hits} 条（展示 {searchResults.length} 条）
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {searchResults.length > 0 && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelectedSearchIndices(
+                                    selectedSearchIndices.length === searchResults.length
+                                      ? []
+                                      : searchResults.map((_, i) => i),
+                                  )
+                                }
+                                className="text-accent hover:underline"
+                              >
+                                {selectedSearchIndices.length === searchResults.length
+                                  ? '取消全选'
+                                  : '全选'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={
+                                  busyAction !== null || selectedSearchIndices.length === 0
+                                }
+                                onClick={handleAdoptSearchResults}
+                                className="inline-flex items-center gap-1 rounded-sm bg-status-success px-2.5 py-1 text-[11px] font-medium text-content-inverse hover:opacity-90 disabled:opacity-50"
+                              >
+                                <Plus className="h-3 w-3" />
+                                {busyAction === 'adopt-search-sources'
+                                  ? '入库中...'
+                                  : `将选中 (${selectedSearchIndices.length}) 加入引用库`}
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchResults([]);
+                              setSearchMeta(null);
+                              setSelectedSearchIndices([]);
+                            }}
+                            className="text-content-muted hover:text-content-primary"
+                          >
+                            关闭
+                          </button>
+                        </div>
+                      </div>
+
+                      {searchResults.length === 0 ? (
+                        <p className="py-2 text-center text-[11px] text-content-muted">
+                          未命中相关条目。建议精简关键词（仅留角色核心名）或在设置中启用商用搜索引擎。
+                        </p>
+                      ) : (
+                        <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                          {searchResults.map((item, idx) => {
+                            const checked = selectedSearchIndices.includes(idx);
+                            return (
+                              <label
+                                key={`${item.title}-${idx}`}
+                                className={`flex cursor-pointer items-start gap-2 rounded-sm border p-2 transition ${
+                                  checked
+                                    ? 'border-accent/50 bg-accent/5'
+                                    : 'border-line-subtle bg-canvas hover:border-line'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    setSelectedSearchIndices((prev) =>
+                                      prev.includes(idx)
+                                        ? prev.filter((i) => i !== idx)
+                                        : [...prev, idx].sort((a, b) => a - b),
+                                    )
+                                  }
+                                  className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent"
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                                    <span className="font-semibold text-content-primary">
+                                      {item.title}
+                                    </span>
+                                    {item.provider && (
+                                      <span className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-content-muted">
+                                        {item.provider}
+                                      </span>
+                                    )}
+                                    {item.url && /^https?:\/\//i.test(item.url) && (
+                                      <a
+                                        href={item.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="inline-flex items-center gap-0.5 text-[10.5px] text-accent hover:underline"
+                                      >
+                                        来源 <ExternalLink className="h-2.5 w-2.5" />
+                                      </a>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-content-secondary">
+                                    {item.snippet}
+                                  </p>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-                <p className="mt-1.5 text-xs leading-relaxed text-content-secondary">
-                  {src.snippet}
-                </p>
-              </div>
-            ))
+              )}
+
+              {sourceInputMode === 'text' && (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={textSourceTitle}
+                    onChange={(e) => setTextSourceTitle(e.target.value)}
+                    placeholder="资料标题（可选，例如：官方设定集补充 / 新版本剧情）"
+                    className="h-8 w-full rounded-sm border border-line bg-surface px-3 text-xs text-content-primary outline-none focus:border-accent"
+                  />
+                  <textarea
+                    rows={3}
+                    value={textSourceContent}
+                    onChange={(e) => setTextSourceContent(e.target.value)}
+                    placeholder="粘贴新设定文本、台词摘录、人物新经历或考据段落..."
+                    className="w-full rounded-sm border border-line bg-surface p-2.5 text-xs leading-relaxed text-content-primary outline-none focus:border-accent"
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={busyAction !== null || !textSourceContent.trim()}
+                      onClick={handleAddTextSource}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+                    >
+                      {busyAction === 'add-source-text' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Plus className="h-3.5 w-3.5" />
+                      )}
+                      {busyAction === 'add-source-text' ? '保存中...' : '添加到引用库'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {sourceInputMode === 'url' && (
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={urlSourceInput}
+                    onChange={(e) => setUrlSourceInput(e.target.value)}
+                    placeholder="输入网页链接（支持一行一个，最多 5 个，例如百科词条、设定公告 URL）"
+                    className="w-full rounded-sm border border-line bg-surface p-2.5 text-xs leading-relaxed text-content-primary outline-none focus:border-accent"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-[11px] text-content-muted">
+                      <Link2 className="h-3 w-3" />
+                      将自动做 SSRF 安全校验与正文提纯，支持已配置的搜索代理
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busyAction !== null || !urlSourceInput.trim()}
+                      onClick={handleAddUrlSources}
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+                    >
+                      {busyAction === 'add-source-url' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Globe className="h-3.5 w-3.5" />
+                      )}
+                      {busyAction === 'add-source-url' ? '抓取中...' : '抓取并加入引用'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
+
+          {card.sources.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-line-subtle bg-subtle px-3 py-2 text-[11px] text-content-secondary">
+              <span>
+                {selectedSourceIndices.length > 0
+                  ? `已勾选 ${selectedSourceIndices.length} / ${card.sources.length} 条引用，将精准注入「AI 微调」与各区块「AI 生成」`
+                  : `共 ${card.sources.length} 条引用（未单独勾选时默认优先参考最新加入的引用）`}
+              </span>
+              {canUpdate && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceIndices(card.sources.map((_, idx) => idx))}
+                    className="text-accent hover:underline"
+                  >
+                    全选用于生成
+                  </button>
+                  {selectedSourceIndices.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSourceIndices([])}
+                      className="text-content-muted hover:text-content-primary"
+                    >
+                      清空勾选
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2.5">
+            {card.sources.length === 0 ? (
+              <p className="text-xs text-content-muted">
+                暂无引用条目，可在上方通过「联网搜料」「粘贴文本」或「抓取链接」补充参考资料。
+              </p>
+            ) : (
+              card.sources.map((src, idx) => {
+                const isSelected = selectedSourceIndices.includes(idx);
+                return (
+                  <div
+                    key={`${src.title}-${idx}`}
+                    className={`rounded-md border p-3 transition ${
+                      isSelected
+                        ? 'border-accent/60 bg-accent/5'
+                        : 'border-line-subtle bg-canvas'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {canUpdate && (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSourceIndex(idx)}
+                            title="勾选此引用，供「AI 微调」或单区块「AI 生成」优先参考"
+                            className="h-3.5 w-3.5 shrink-0 accent-accent"
+                          />
+                        )}
+                        <span className="font-mono text-[10.5px] text-content-muted">
+                          #{idx + 1}
+                        </span>
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-semibold ${
+                            src.origin === 'user_provided'
+                              ? 'bg-accent/15 text-accent'
+                              : 'bg-status-success/15 text-status-success'
+                          }`}
+                        >
+                          {src.origin === 'user_provided' ? '[用户提供]' : '[检索补充]'}
+                        </span>
+                        <span className="truncate text-xs font-semibold text-content-primary">
+                          {src.title}
+                        </span>
+                        {src.provider && (
+                          <span className="shrink-0 font-mono text-[10.5px] text-content-muted">
+                            ({src.provider})
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {src.url && /^https?:\/\//i.test(src.url) && (
+                          <a
+                            href={src.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+                          >
+                            查看来源
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                        {canUpdate && (
+                          <button
+                            type="button"
+                            disabled={busyAction !== null}
+                            onClick={() => void handleDeleteSource(idx, src.title)}
+                            title="从引用库删除此条"
+                            className="inline-flex items-center rounded p-1 text-content-muted transition hover:bg-status-danger/10 hover:text-status-danger disabled:opacity-45"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-content-secondary">
+                      {src.snippet}
+                    </p>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
 

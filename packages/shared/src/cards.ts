@@ -120,5 +120,40 @@ export type CardGeneratableField = z.infer<typeof CardGeneratableFieldSchema>;
 export const GenerateCardFieldRequestSchema = z.object({
   field: CardGeneratableFieldSchema,
   instruction: z.string().trim().max(500).optional().default(''),
+  sourceIndices: z.array(z.number().int().min(0)).max(20).optional(),
 });
 export type GenerateCardFieldRequest = z.infer<typeof GenerateCardFieldRequestSchema>;
+
+export const CardTextSourceInputSchema = z.object({
+  title: z.string().trim().max(120).optional().default(''),
+  content: z.string().trim().min(1, '引用文本不能为空').max(50_000),
+});
+export type CardTextSourceInput = z.infer<typeof CardTextSourceInputSchema>;
+
+export const AddCardSourcesRequestSchema = z
+  .object({
+    textSources: z.array(CardTextSourceInputSchema).max(5).optional().default([]),
+    urls: z.array(z.string().trim().url('参考链接格式无效').max(2048)).max(5).optional().default([]),
+    entries: z.array(SourceEntrySchema).max(20).optional().default([]),
+  })
+  .refine(
+    (data) => data.textSources.length > 0 || data.urls.length > 0 || data.entries.length > 0,
+    { message: '请至少提供文本引用、参考链接或检索条目之一' },
+  );
+export type AddCardSourcesRequest = z.infer<typeof AddCardSourcesRequestSchema>;
+
+export const SearchCardSourcesRequestSchema = z.object({
+  query: z.string().trim().min(1, '搜索关键词不能为空').max(200),
+  enableLayer1Wiki: z.boolean().optional(),
+  deepSearch: z.boolean().optional().default(true),
+  appendToCard: z.boolean().optional().default(false),
+});
+export type SearchCardSourcesRequest = z.infer<typeof SearchCardSourcesRequestSchema>;
+
+export interface SearchCardSourcesResponse {
+  query: string;
+  sources: SourceEntry[];
+  layer1Hits: number;
+  layer2Hits: number;
+  addedCount: number;
+}

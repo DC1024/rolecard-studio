@@ -123,6 +123,9 @@ export const LlmSlotInputSchema = z.object({
 });
 export type LlmSlotInput = z.infer<typeof LlmSlotInputSchema>;
 
+export const DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 300;
+export const DEFAULT_LLM_MAX_TOKENS = 16384;
+
 export const ServiceConfigInputSchema = z.object({
   primaryLlm: LlmSlotInputSchema,
   chatLlm: LlmSlotInputSchema.optional(),
@@ -132,6 +135,18 @@ export const ServiceConfigInputSchema = z.object({
   searchApiKey: z.string().max(512).optional(),
   enableLayer1Wiki: z.boolean().default(true),
   dailyAutoRefreshLimit: z.number().int().min(1).max(500).default(20),
+  llmRequestTimeoutSeconds: z
+    .number()
+    .int()
+    .min(30)
+    .max(3600)
+    .default(DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS),
+  llmMaxTokens: z
+    .number()
+    .int()
+    .min(1024)
+    .max(131072)
+    .default(DEFAULT_LLM_MAX_TOKENS),
   customSystemPrompt: z.string().max(4000).default(''),
   proxyConfig: ProxyConfigInputSchema.optional(),
 });
@@ -190,6 +205,8 @@ export interface MaskedServiceConfig {
   hasSearchApiKey: boolean;
   enableLayer1Wiki: boolean;
   dailyAutoRefreshLimit: number;
+  llmRequestTimeoutSeconds: number;
+  llmMaxTokens: number;
   customSystemPrompt: string;
   proxyConfig: MaskedProxyConfig;
   updatedAt: string | null;

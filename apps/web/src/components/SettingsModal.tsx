@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   ALL_PERMISSIONS,
   ALL_PROXY_SCOPES,
+  DEFAULT_LLM_MAX_TOKENS,
+  DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
   FREE_STARTER_PRESETS,
   LLM_PROVIDER_DEFAULTS,
   PERMISSION_LABELS,
@@ -173,6 +175,10 @@ export function SettingsModal({
   const [searchMasked, setSearchMasked] = useState<string | null>(null);
   const [enableLayer1Wiki, setEnableLayer1Wiki] = useState(true);
   const [dailyAutoRefreshLimit, setDailyAutoRefreshLimit] = useState(20);
+  const [llmRequestTimeoutSeconds, setLlmRequestTimeoutSeconds] = useState<number>(
+    DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
+  );
+  const [llmMaxTokens, setLlmMaxTokens] = useState<number>(DEFAULT_LLM_MAX_TOKENS);
   const [customSystemPrompt, setCustomSystemPrompt] = useState('');
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(() => makeProxyForm(null));
   const [proxyTestStatus, setProxyTestStatus] = useState<Record<string, ProxyTestDisplayState>>({});
@@ -252,6 +258,10 @@ export function SettingsModal({
       setSearchMasked(config.searchApiKeyMasked);
       setEnableLayer1Wiki(config.enableLayer1Wiki);
       setDailyAutoRefreshLimit(config.dailyAutoRefreshLimit);
+      setLlmRequestTimeoutSeconds(
+        config.llmRequestTimeoutSeconds ?? DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
+      );
+      setLlmMaxTokens(config.llmMaxTokens ?? DEFAULT_LLM_MAX_TOKENS);
       setCustomSystemPrompt(config.customSystemPrompt);
       setProxyForm(makeProxyForm(config.proxyConfig));
     }
@@ -354,6 +364,20 @@ export function SettingsModal({
     setError(null);
     setBanner(null);
     try {
+      const clampedTimeout = Math.max(
+        30,
+        Math.min(
+          3600,
+          Math.round(Number(llmRequestTimeoutSeconds) || DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS),
+        ),
+      );
+      const clampedMaxTokens = Math.max(
+        1024,
+        Math.min(
+          131072,
+          Math.round(Number(llmMaxTokens) || DEFAULT_LLM_MAX_TOKENS),
+        ),
+      );
       const saved = await api.saveConfig({
         primaryLlm: toSlotInput(primary),
         chatLlm: chatSlot.enabled ? toSlotInput(chatSlot) : undefined,
@@ -363,6 +387,8 @@ export function SettingsModal({
         searchApiKey: searchApiKey.trim() || undefined,
         enableLayer1Wiki,
         dailyAutoRefreshLimit,
+        llmRequestTimeoutSeconds: clampedTimeout,
+        llmMaxTokens: clampedMaxTokens,
         customSystemPrompt,
         proxyConfig: buildProxyConfigPayload(),
       });
@@ -1170,6 +1196,54 @@ export function SettingsModal({
                 setPrimary,
                 false,
               )}
+
+              <div className="rounded-md border border-line bg-canvas p-3.5 space-y-2.5">
+                <div>
+                  <span className="text-xs font-semibold text-content-primary">
+                    大模型生成运行参数（超时保活与输出上限）
+                  </span>
+                  <p className="mt-0.5 text-[11px] text-content-muted">
+                    适用于慢速海外模型流式吐字与长思考推理模型，保存后对全卡生成、单区块生成、AI 微调及演化立即生效
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-[11px] text-content-secondary">
+                      流式空闲超时时间（秒，30 ~ 3600）
+                    </label>
+                    <input
+                      type="number"
+                      min={30}
+                      max={3600}
+                      step={30}
+                      value={llmRequestTimeoutSeconds}
+                      onChange={(e) => setLlmRequestTimeoutSeconds(Number(e.target.value))}
+                      className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                    />
+                    <p className="mt-1 text-[10.5px] text-content-muted">
+                      默认 300 秒。只要模型持续流式吐字（即使每秒个位数 token），空闲计时器都会自动重置不会中止。
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-content-secondary">
+                      最大输出 Token 上限（max_tokens，1024 ~ 131072）
+                    </label>
+                    <input
+                      type="number"
+                      min={1024}
+                      max={131072}
+                      step={1024}
+                      value={llmMaxTokens}
+                      onChange={(e) => setLlmMaxTokens(Number(e.target.value))}
+                      className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
+                    />
+                    <p className="mt-1 text-[10.5px] text-content-muted">
+                      默认 16384。防止思考模型长篇推理耗尽默认配额导致 JSON 截断（若网关不支持会自动降级）。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {renderSlotEditor(
                 'chat',
                 '2. 试聊沙盒模型 (Chat LLM · 可选)',

@@ -1718,4 +1718,488 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports adding/searching/deleting sources on existing cards and injecting selected sources into refine & generate-field', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const publicDns: DnsLookupPort = async (host) => {
+      if (host === '127.0.0.1' || host === 'localhost') {
+        return [{ address: '127.0.0.1', family: 4 }];
+      }
+      return [{ address: '93.184.216.34', family: 4 }];
+    };
+
+    const capturedLlmPrompts: string[] = [];
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url === 'https://lore.example.com/kaltsit-update') {
+        return new Response(
+          '<html><head><title>凯尔希巴别塔补充档案</title></head><body><article><h1>凯尔希巴别塔补充档案</h1><p>凯尔希曾长期担任巴别塔的核心顾问与医疗部门负责人。</p></article></body></html>',
+          { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+        );
+      }
+      if (url.includes('prts.wiki/api.php') && url.includes('list=search')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              search: [{ pageid: 101, title: '凯尔希' }],
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('prts.wiki/api.php') && url.includes('extracts')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: {
+                '101': {
+                  pageid: 101,
+                  title: '凯尔希',
+                  extract: 'PRTS 检索摘录：凯尔希与 Mon3tr 共同守护罗德岛核心秘密。'.repeat(8),
+                },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('api.bochaai.com')) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              webPages: {
+                value: [
+                  {
+                    name: '凯尔希最新剧情解析',
+                    url: 'https://news.example.com/kaltsit-15',
+                    snippet: '第十五章中凯尔希揭示了更多源石计划的真相。',
+                  },
+                ],
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        const joined = body.messages?.map((m) => m.content ?? '').join('\n') ?? '';
+        capturedLlmPrompts.push(joined);
+
+        if (joined.includes('角色卡局部微调专家')) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      ...baseCard,
+                      personality: '会被锁定还原的性格',
+                      background: '已结合巴别塔档案与第十五章解析更新背景。',
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    value: '已参考指定考据重写的作者备注。',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: publicDns,
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    const cfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        searchProvider: 'bocha',
+        searchApiKey: 'saved-bocha-key',
+        enableLayer1Wiki: true,
+      }),
+    });
+    expect(cfgRes.status).toBe(200);
+
+    // 1. Import an existing card and lock personality
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const imported = (await importRes.json()) as {
+      card: { id: string; content: RoleCardContent; sources: Array<{ title: string }> };
+    };
+    const cardId = imported.card.id;
+    const initialCount = imported.card.sources.length;
+
+    await app.request(`/api/v1/cards/${cardId}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        content: imported.card.content,
+        lockedFields: ['personality'],
+      }),
+    });
+
+    // 2. Reject SSRF private URL on POST /sources
+    const ssrfSourceRes = await app.request(`/api/v1/cards/${cardId}/sources`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ urls: ['http://127.0.0.1:8080/internal'] }),
+    });
+    expect(ssrfSourceRes.status).toBe(400);
+
+    // 3. Add manual text + public URL source
+    const addSourceRes = await app.request(`/api/v1/cards/${cardId}/sources`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        textSources: [{ title: '手动补充台词', content: '阿米娅，现状不允许我们犹豫。' }],
+        urls: ['https://lore.example.com/kaltsit-update'],
+      }),
+    });
+    expect(addSourceRes.status).toBe(200);
+    const addSourceJson = (await addSourceRes.json()) as {
+      addedCount: number;
+      card: { sources: Array<{ title: string; snippet: string; origin: string }> };
+    };
+    expect(addSourceJson.addedCount).toBe(2);
+    expect(addSourceJson.card.sources).toHaveLength(initialCount + 2);
+    expect(addSourceJson.card.sources[initialCount + 1]?.title).toContain('凯尔希巴别塔补充档案');
+
+    // Duplicate addition is deduped
+    const dupRes = await app.request(`/api/v1/cards/${cardId}/sources`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        textSources: [{ title: '手动补充台词', content: '阿米娅，现状不允许我们犹豫。' }],
+      }),
+    });
+    expect(dupRes.status).toBe(200);
+    const dupJson = (await dupRes.json()) as { addedCount: number };
+    expect(dupJson.addedCount).toBe(0);
+
+    // 4. Online search preview (appendToCard: false) and adopt selected entries
+    const searchRes = await app.request(`/api/v1/cards/${cardId}/sources/search`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        query: '凯尔希 明日方舟',
+        deepSearch: true,
+        appendToCard: false,
+      }),
+    });
+    expect(searchRes.status).toBe(200);
+    const searchJson = (await searchRes.json()) as {
+      layer1Hits: number;
+      layer2Hits: number;
+      sources: Array<{ title: string; snippet: string; origin: string; url?: string; provider?: string }>;
+    };
+    expect(searchJson.layer1Hits).toBeGreaterThanOrEqual(1);
+    expect(searchJson.layer2Hits).toBe(1);
+
+    const adoptSearchRes = await app.request(`/api/v1/cards/${cardId}/sources`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ entries: searchJson.sources }),
+    });
+    expect(adoptSearchRes.status).toBe(200);
+    const adoptSearchJson = (await adoptSearchRes.json()) as {
+      addedCount: number;
+      card: { sources: Array<{ title: string }> };
+    };
+    expect(adoptSearchJson.addedCount).toBe(searchJson.sources.length);
+
+    // 5. Refine card using explicit sourceIndices pointing to the URL source and verify prompt injection + locked field preservation
+    const refineRes = await app.request(`/api/v1/cards/${cardId}/refine`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        instruction: '结合参考资料更新背景',
+        sourceIndices: [initialCount + 1],
+      }),
+    });
+    expect(refineRes.status).toBe(200);
+    const refineJson = (await refineRes.json()) as {
+      card: { content: RoleCardContent };
+    };
+    expect(capturedLlmPrompts[0]).toContain('凯尔希巴别塔补充档案');
+    expect(capturedLlmPrompts[0]).not.toContain('手动补充台词');
+    expect(refineJson.card.content.personality).toBe(baseCard.personality);
+    expect(refineJson.card.content.background).toContain('第十五章解析');
+
+    // 6. Generate single field using explicit sourceIndices pointing to the manual text source
+    const fieldRes = await app.request(`/api/v1/cards/${cardId}/generate-field`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        field: 'creator_notes',
+        sourceIndices: [initialCount],
+      }),
+    });
+    expect(fieldRes.status).toBe(200);
+    expect(capturedLlmPrompts[1]).toContain('手动补充台词');
+    expect(capturedLlmPrompts[1]).not.toContain('凯尔希巴别塔补充档案');
+
+    // 7. Delete a source entry and verify invalid index returns 400
+    const delBadRes = await app.request(`/api/v1/cards/${cardId}/sources/999`, {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(delBadRes.status).toBe(400);
+
+    const beforeCount = adoptSearchJson.card.sources.length;
+    const delOkRes = await app.request(`/api/v1/cards/${cardId}/sources/0`, {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(delOkRes.status).toBe(200);
+    const delOkJson = (await delOkRes.json()) as { card: { sources: unknown[] } };
+    expect(delOkJson.card.sources).toHaveLength(beforeCount - 1);
+
+    dbHandle.close();
+  });
+
+  it('persists llmRequestTimeoutSeconds & llmMaxTokens and streams SSE thinking on refine & generate-field', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    let capturedMaxTokens: number | undefined;
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          stream?: boolean;
+          max_tokens?: number;
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        capturedMaxTokens = body.max_tokens;
+        const prompt = body.messages?.map((m) => m.content ?? '').join('\n') ?? '';
+
+        const payloadObj = prompt.includes('角色卡局部微调专家')
+          ? { ...baseCard, summary: 'SSE 微调后的新简介' }
+          : { value: 'SSE 生成的性格特征内容' };
+
+        if (body.stream) {
+          const encoder = new TextEncoder();
+          const chunks = [
+            `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '先分析角色性格与语境。' } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(payloadObj) }, finish_reason: 'stop' }] })}\n\n`,
+            'data: [DONE]\n\n',
+          ];
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                for (const c of chunks) controller.enqueue(encoder.encode(c));
+                controller.close();
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          );
+        }
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify(payloadObj) }, finish_reason: 'stop' }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // 1. Reject out-of-range timeout / maxTokens
+    const invalidCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        llmRequestTimeoutSeconds: 5,
+        llmMaxTokens: 100,
+      }),
+    });
+    expect(invalidCfgRes.status).toBe(400);
+
+    // 2. Save valid llmRequestTimeoutSeconds & llmMaxTokens and verify GET /config round-trip
+    const saveCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        llmRequestTimeoutSeconds: 420,
+        llmMaxTokens: 24576,
+      }),
+    });
+    expect(saveCfgRes.status).toBe(200);
+    const savedCfgJson = (await saveCfgRes.json()) as {
+      llmRequestTimeoutSeconds: number;
+      llmMaxTokens: number;
+    };
+    expect(savedCfgJson.llmRequestTimeoutSeconds).toBe(420);
+    expect(savedCfgJson.llmMaxTokens).toBe(24576);
+
+    const getCfgRes = await app.request('/api/v1/config', {
+      headers: { cookie: adminCookie },
+    });
+    expect(getCfgRes.status).toBe(200);
+    const getCfgJson = (await getCfgRes.json()) as {
+      llmRequestTimeoutSeconds: number;
+      llmMaxTokens: number;
+    };
+    expect(getCfgJson.llmRequestTimeoutSeconds).toBe(420);
+    expect(getCfgJson.llmMaxTokens).toBe(24576);
+
+    // 3. Import card and test SSE streaming on /refine & /generate-field
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const imported = (await importRes.json()) as { card: { id: string } };
+
+    const refineSseRes = await app.request(`/api/v1/cards/${imported.card.id}/refine`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({ instruction: '强化角色简介表述' }),
+    });
+    expect(refineSseRes.status).toBe(200);
+    expect(refineSseRes.headers.get('content-type')).toContain('text/event-stream');
+    const refineSseText = await refineSseRes.text();
+    expect(refineSseText).toContain('event: progress');
+    expect(refineSseText).toContain('event: thinking');
+    expect(refineSseText).toContain('先分析角色性格与语境');
+    expect(refineSseText).toContain('event: result');
+    expect(refineSseText).toContain('SSE 微调后的新简介');
+    expect(capturedMaxTokens).toBe(24576);
+
+    const fieldSseRes = await app.request(`/api/v1/cards/${imported.card.id}/generate-field`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        cookie: adminCookie,
+      },
+      body: JSON.stringify({ field: 'personality' }),
+    });
+    expect(fieldSseRes.status).toBe(200);
+    expect(fieldSseRes.headers.get('content-type')).toContain('text/event-stream');
+    const fieldSseText = await fieldSseRes.text();
+    expect(fieldSseText).toContain('event: progress');
+    expect(fieldSseText).toContain('event: thinking');
+    expect(fieldSseText).toContain('先分析角色性格与语境');
+    expect(fieldSseText).toContain('event: result');
+    expect(fieldSseText).toContain('SSE 生成的性格特征内容');
+
+    dbHandle.close();
+  });
 });
+
+

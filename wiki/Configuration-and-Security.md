@@ -47,12 +47,15 @@
   - **魔搭 ModelScope**：自动附带 `X-ModelScope-Async-Mode: true` 发起异步任务，并以 `X-ModelScope-Task-Type: image_generation` 轮询 `GET /v1/tasks/{task_id}`（支持 `negative_prompt` 与 `size`，`testLlmConnectivity` 探测超时自动放宽至 90 秒）。
   - **短效外链服务端自动转存**：若生图接口仅返回外链 URL（如硅基/智谱/魔搭 1 小时有效链接），服务端 `POST /api/v1/images/generate` 会使用同路 `llm_image` 代理立即拉取并转为 `dataUrl` 返回，避免前端加载跨域或链接过期。
 
-### 1.3 结构化输出策略（`jsonModeStrategy`）与模型探测
+### 1.3 结构化输出策略（`jsonModeStrategy`）、运行超时与输出上限
 
 - **`auto`（推荐）**：优先使用 `response_format: { type: 'json_object' }` 请求结构化 JSON；若检测到服务商不支持该参数，系统会自动降级并记住切换为 `prompt` 策略。
 - **`json_object`**：强制要求接口支持 `json_object`。
 - **`prompt`**：仅通过系统提示词约束 JSON 输出并配合内置 JSON 修复解析器（适合部分本地模型或推理模型）。
 - **SSE 实时探测**：点击每个槽位旁的「测试连接」会发起流式探测，实时打印进度阶段与模型思考流，验证无误后可安全保存。
+- **大模型生成运行参数（设置页 → 主生成模型下方）**：
+  - **流式空闲超时时间（`llmRequestTimeoutSeconds`）**：支持 `30–3600` 秒（默认 **`300`** 秒）。采用 **「每收到新 token 即重置」的空闲超时机制**，并配备宽松的请求总耗时上限；只要海外/慢速推理模型仍在持续输出 token，就不会因总耗时较长而被误杀。
+  - **最大输出 Token 上限（`llmMaxTokens`）**：支持 `1024–131072`（默认 **`16384`**）。用于为长思考链模型留出充足的推理与 JSON 输出配额（若上游网关不支持 `max_tokens` 参数，系统会自动探测回退）；若发生 `finish_reason=length` 截断，系统会触发精简思考重试与尾部截断 JSON 抢救。
 - **高级参数**：可在同页签设置 `dailyAutoRefreshLimit`（每日自动演化上限，默认 `20`，范围 `1–500`）与 `customSystemPrompt`（全局附加生成指令，最多 4000 字符）。
 
 ---

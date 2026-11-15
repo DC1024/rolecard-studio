@@ -1,6 +1,6 @@
 # 环境要求与部署指南
 
-本文档详细介绍 **RoleCard Studio (`v1.5.0`)** 的软硬件依赖、四种主流部署方式、环境变量配置、反向代理接入以及数据持久化与迁移方案。
+本文档详细介绍 **RoleCard Studio (`v1.6.0`)** 的软硬件依赖、四种主流部署方式、环境变量配置、反向代理接入以及数据持久化与迁移方案。
 
 ---
 
@@ -39,7 +39,7 @@
 #### Linux（x64）
 1. **Debian / Ubuntu `.deb` 包**
    ```bash
-   sudo dpkg -i rolecard-studio_1.5.0_amd64.deb
+   sudo dpkg -i rolecard-studio_1.6.0_amd64.deb
    # 方式 A：命令行直接启动
    rolecard-studio
 
@@ -49,7 +49,7 @@
    ```
 2. **通用 `.tar.gz` 便携包**
    ```bash
-   tar -xzf rolecard-studio-1.5.0-linux-x64.tar.gz
+   tar -xzf rolecard-studio-1.6.0-linux-x64.tar.gz
    cd bundle
    # 前台运行
    ./start-rolecard.sh

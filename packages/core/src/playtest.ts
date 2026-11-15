@@ -269,11 +269,74 @@ export function computeCardDiffSummary(
   return `已更新字段: ${changed.join(', ')}`;
 }
 
+export interface SelectedSourceSnippet {
+  index: number;
+  source: SourceEntry;
+}
+
+export function selectSourcesForGeneration(
+  sources: readonly SourceEntry[] | undefined,
+  sourceIndices?: readonly number[],
+  maxEntries = 6,
+  maxTotalChars = 5400,
+): string {
+  const list = sources ?? [];
+  if (list.length === 0) {
+    return '';
+  }
+
+  let selected: SelectedSourceSnippet[] = [];
+  if (sourceIndices && sourceIndices.length > 0) {
+    const seen = new Set<number>();
+    for (const rawIdx of sourceIndices) {
+      if (Number.isInteger(rawIdx) && rawIdx >= 0 && rawIdx < list.length && !seen.has(rawIdx)) {
+        seen.add(rawIdx);
+        selected.push({ index: rawIdx, source: list[rawIdx]! });
+      }
+    }
+    selected = selected.slice(0, maxEntries);
+  } else {
+    // 默认优先保留最新补充的引用（倒序取最多 maxEntries 条再按原顺序排列），避免第 5 条及以后新增引用被静默截断
+    const start = Math.max(0, list.length - maxEntries);
+    for (let i = start; i < list.length; i += 1) {
+      selected.push({ index: i, source: list[i]! });
+    }
+  }
+
+  if (selected.length === 0) {
+    return '';
+  }
+
+  const perEntryBudget = Math.max(500, Math.min(1600, Math.floor(maxTotalChars / selected.length)));
+  let remainingChars = maxTotalChars;
+  const lines: string[] = [];
+
+  for (const item of selected) {
+    if (remainingChars <= 120) break;
+    const limit = Math.min(perEntryBudget, remainingChars);
+    const originLabel = item.source.origin === 'user_provided' ? '用户提供' : '检索补充';
+    const snippet =
+      item.source.snippet.length > limit
+        ? `${item.source.snippet.slice(0, Math.max(0, limit - 3)).trimEnd()}...`
+        : item.source.snippet;
+    lines.push(`[参考资料 #${item.index + 1} · ${originLabel}] ${item.source.title}: ${snippet}`);
+    remainingChars -= snippet.length;
+  }
+
+  return lines.join('\n');
+}
+
 export interface RefineCardDeps {
   llmPort: LlmCompletionPort;
   llmSlot: LlmSlotRuntimeConfig;
   lockedFields?: readonly string[];
+  sources?: readonly SourceEntry[];
+  sourceIndices?: readonly number[];
+  workName?: string;
+  customSystemPrompt?: string;
   onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
 }
 
 export async function refineRoleCard(
@@ -295,6 +358,21 @@ export async function refineRoleCard(
     locked.length > 0
       ? `\n注意：以下字段已被用户锁定，严禁修改其内容，必须原样保留：${locked.join(', ')}`
       : '';
+  const styleNotice = deps.customSystemPrompt?.trim()
+    ? `\n全局附加风格要求：${deps.customSystemPrompt.trim()}`
+    : '';
+  const sourceSnippets = selectSourcesForGeneration(deps.sources, deps.sourceIndices);
+
+  const userParts = [
+    deps.workName ? `所属作品/世界观：${deps.workName}` : '',
+    `现有角色卡 JSON：\n${JSON.stringify(current, null, 2)}`,
+    sourceSnippets
+      ? `最新参考与考据资料（若微调指令涉及补充新信息或事实考据，请优先依据以下资料更新相关设定）：\n${sourceSnippets}`
+      : '',
+    `微调指令：${instruction}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   const result = await completeStructuredJson(deps.llmPort, {
     slot: deps.llmSlot,
@@ -302,14 +380,16 @@ export async function refineRoleCard(
     schemaHint: '完整的 RoleCardContent JSON 对象',
     temperature: 0.35,
     onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
     messages: [
       {
         role: 'system',
-        content: `你是角色卡局部微调专家。请基于现有角色卡 JSON 执行用户的微调指令，仅调整需要修改的字段，保持其余设定完整一致。${lockNotice}`,
+        content: `你是角色卡局部微调专家。请基于现有角色卡 JSON 与补充参考资料执行用户的微调指令，仅调整需要修改的字段，保持其余设定完整一致。${lockNotice}${styleNotice}`,
       },
       {
         role: 'user',
-        content: `现有角色卡 JSON：\n${JSON.stringify(current, null, 2)}\n\n微调指令：${instruction}`,
+        content: userParts,
       },
     ],
   });
@@ -354,6 +434,8 @@ export async function compressRoleCard(
     schemaHint: '精简后的 RoleCardContent JSON 对象',
     temperature: 0.25,
     onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
     messages: [
       {
         role: 'system',
@@ -454,9 +536,12 @@ export interface GenerateCardFieldDeps {
   cardType?: CardType;
   entityType?: EntityType;
   sources?: readonly SourceEntry[];
+  sourceIndices?: readonly number[];
   instruction?: string;
   customSystemPrompt?: string;
   onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+  onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
+  onReasoningDelta?: (delta: string) => void | Promise<void>;
 }
 
 export async function generateCardField(
@@ -498,10 +583,7 @@ export async function generateCardField(
     systemLines.push(`全局附加风格要求：${deps.customSystemPrompt.trim()}`);
   }
 
-  const sourceSnippets = (deps.sources ?? [])
-    .slice(0, 4)
-    .map((s, idx) => `[参考资料 #${idx + 1}] ${s.title}: ${s.snippet.slice(0, 600)}`)
-    .join('\n');
+  const sourceSnippets = selectSourcesForGeneration(deps.sources, deps.sourceIndices);
 
   const userParts = [
     `角色名称：${current.name}`,
@@ -521,6 +603,8 @@ export async function generateCardField(
     schemaHint: meta.schemaHint,
     temperature: 0.5,
     onStrategyDowngraded: deps.onStrategyDowngraded,
+    onProgress: deps.onProgress,
+    onReasoningDelta: deps.onReasoningDelta,
     messages: [
       { role: 'system', content: systemLines.join('\n') },
       { role: 'user', content: userParts },

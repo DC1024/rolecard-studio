@@ -151,7 +151,11 @@ export async function executeAndPersistGeneration(
 
   const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
   const searchFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'search');
-  const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
+  const llmPort =
+    ctx.llmPort ??
+    createOpenAiCompatibleLlmPort(primaryFetch, {
+      idleTimeoutMs: runtime.llmRequestTimeoutSeconds * 1000,
+    });
   const genResult = await generateRoleCard(input, {
     llmPort,
     llmSlot: runtime.primaryLlm,
@@ -276,46 +280,58 @@ cardRoutes.post('/generate', zValidator('json', GenerateCardRequestSchema), asyn
   if (wantsSse) {
     return streamSSE(c, async (stream) => {
       let sentThinkingHeader = false;
-      const result = await executeAndPersistGeneration(ctx, actorUserId, input, {
-        onProgress: async (evt) => {
-          await stream.writeSSE({
-            event: 'progress',
-            data: JSON.stringify({ step: evt.step, message: evt.message }),
-          });
-        },
-        onReasoningDelta: async (delta) => {
-          if (!sentThinkingHeader) {
-            sentThinkingHeader = true;
+      let closed = false;
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        void stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {
+          closed = true;
+        });
+      }, 15_000);
+      try {
+        const result = await executeAndPersistGeneration(ctx, actorUserId, input, {
+          onProgress: async (evt) => {
             await stream.writeSSE({
               event: 'progress',
-              data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
+              data: JSON.stringify({ step: evt.step, message: evt.message }),
             });
-          }
-          await stream.writeSSE({
-            event: 'thinking',
-            data: JSON.stringify({ delta }),
-          });
-        },
-      });
-      if (!result.ok) {
-        await stream.writeSSE({
-          event: 'error',
-          data: JSON.stringify({ code: result.code, message: result.message, status: result.status }),
-        });
-        return;
-      }
-
-      await stream.writeSSE({
-        event: 'result',
-        data: JSON.stringify({
-          card: result.card,
-          meta: {
-            effectiveJsonStrategy: result.output.effectiveJsonStrategy,
-            attempts: result.output.attempts,
-            temperature: result.output.temperature,
           },
-        }),
-      });
+          onReasoningDelta: async (delta) => {
+            if (!sentThinkingHeader) {
+              sentThinkingHeader = true;
+              await stream.writeSSE({
+                event: 'progress',
+                data: JSON.stringify({ step: 'thinking', message: '大模型正在思考推演...' }),
+              });
+            }
+            await stream.writeSSE({
+              event: 'thinking',
+              data: JSON.stringify({ delta }),
+            });
+          },
+        });
+        if (!result.ok) {
+          await stream.writeSSE({
+            event: 'error',
+            data: JSON.stringify({ code: result.code, message: result.message, status: result.status }),
+          });
+          return;
+        }
+
+        await stream.writeSSE({
+          event: 'result',
+          data: JSON.stringify({
+            card: result.card,
+            meta: {
+              effectiveJsonStrategy: result.output.effectiveJsonStrategy,
+              attempts: result.output.attempts,
+              temperature: result.output.temperature,
+            },
+          }),
+        });
+      } finally {
+        closed = true;
+        clearInterval(heartbeat);
+      }
     });
   }
 

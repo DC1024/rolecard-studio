@@ -63,11 +63,17 @@ async function main(): Promise<void> {
     timer.unref();
   }
 
-  serve({
+  const server = serve({
     fetch: app.fetch,
     port,
     hostname,
   });
+  if ('requestTimeout' in server) {
+    server.requestTimeout = 0;
+  }
+  if ('headersTimeout' in server) {
+    server.headersTimeout = 600_000;
+  }
 
   console.info(`[RoleCard Studio] Server listening on http://${hostname}:${port}`);
 }

@@ -14,12 +14,24 @@ export { resolveProviderBaseUrl } from './provider.js';
 const PROBE_PNG_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NMQ0AAAwDoPo33arYsQQMkB6LQCAQCAQCgUAg+BIMi1X0pjxKe0gAAAAASUVORK5CYII=';
 
+const THINK_OPEN_TAGS = ['<think>', '<thought>', '<reasoning>'] as const;
+
 /**
- * Extract inline `<think>...</think>` blocks from non-streaming content.
+ * Extract inline `<think>...</think>`, `<thought>...</thought>`, or `<reasoning>...</reasoning>` blocks from non-streaming content.
  */
 export function splitThinkTags(raw: string): { content: string; reasoning: string } {
   const thinkChunks: string[] = [];
-  const cleaned = raw.replace(/<think>([\s\S]*?)<\/think>/gi, (_full, inner: string) => {
+  let cleaned = raw.replace(
+    /<(think|thought|reasoning)>([\s\S]*?)<\/\1>/gi,
+    (_full, _tag: string, inner: string) => {
+      if (inner.trim()) {
+        thinkChunks.push(inner.trim());
+      }
+      return '';
+    },
+  );
+  // Handle unclosed trailing thinking tag when truncated by max_tokens
+  cleaned = cleaned.replace(/<(think|thought|reasoning)>([\s\S]*)$/i, (_full, _tag: string, inner: string) => {
     if (inner.trim()) {
       thinkChunks.push(inner.trim());
     }
@@ -32,7 +44,7 @@ export function splitThinkTags(raw: string): { content: string; reasoning: strin
 }
 
 class ThinkTagStreamSplitter {
-  private inThink = false;
+  private activeTag: 'think' | 'thought' | 'reasoning' | null = null;
   private carry = '';
 
   async feed(
@@ -44,17 +56,31 @@ class ThinkTagStreamSplitter {
     this.carry = '';
 
     while (text.length > 0) {
-      if (!this.inThink) {
-        const openIdx = text.indexOf('<think>');
-        if (openIdx !== -1) {
-          const before = text.slice(0, openIdx);
+      const lower = text.toLowerCase();
+      if (!this.activeTag) {
+        let earliestIdx = -1;
+        let matchedTag: 'think' | 'thought' | 'reasoning' | null = null;
+        let matchedOpenLen = 0;
+
+        for (const openTag of THINK_OPEN_TAGS) {
+          const idx = lower.indexOf(openTag);
+          if (idx !== -1 && (earliestIdx === -1 || idx < earliestIdx)) {
+            earliestIdx = idx;
+            matchedTag = openTag.slice(1, -1) as 'think' | 'thought' | 'reasoning';
+            matchedOpenLen = openTag.length;
+          }
+        }
+
+        if (earliestIdx !== -1 && matchedTag) {
+          const before = text.slice(0, earliestIdx);
           if (before) await emitContent(before);
-          this.inThink = true;
-          text = text.slice(openIdx + '<think>'.length);
+          this.activeTag = matchedTag;
+          text = text.slice(earliestIdx + matchedOpenLen);
           continue;
         }
-        // Hold trailing partial `<think` prefix across chunk boundaries
-        const partialIdx = findPartialTagPrefix(text, '<think>');
+
+        // Hold trailing partial `<think` / `<thought` / `<reasoning` prefix across chunk boundaries
+        const partialIdx = findEarliestPartialPrefix(lower, THINK_OPEN_TAGS);
         if (partialIdx !== -1) {
           const safe = text.slice(0, partialIdx);
           if (safe) await emitContent(safe);
@@ -65,15 +91,16 @@ class ThinkTagStreamSplitter {
         return;
       }
 
-      const closeIdx = text.indexOf('</think>');
+      const closeTag = `</${this.activeTag}>`;
+      const closeIdx = lower.indexOf(closeTag);
       if (closeIdx !== -1) {
         const thought = text.slice(0, closeIdx);
         if (thought) await emitReasoning(thought);
-        this.inThink = false;
-        text = text.slice(closeIdx + '</think>'.length);
+        this.activeTag = null;
+        text = text.slice(closeIdx + closeTag.length);
         continue;
       }
-      const partialIdx = findPartialTagPrefix(text, '</think>');
+      const partialIdx = findPartialTagPrefix(lower, closeTag);
       if (partialIdx !== -1) {
         const safe = text.slice(0, partialIdx);
         if (safe) await emitReasoning(safe);
@@ -92,12 +119,23 @@ class ThinkTagStreamSplitter {
     if (!this.carry) return;
     const leftover = this.carry;
     this.carry = '';
-    if (this.inThink) {
+    if (this.activeTag) {
       await emitReasoning(leftover);
     } else {
       await emitContent(leftover);
     }
   }
+}
+
+function findEarliestPartialPrefix(lowerText: string, tags: readonly string[]): number {
+  let earliest = -1;
+  for (const tag of tags) {
+    const idx = findPartialTagPrefix(lowerText, tag);
+    if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+      earliest = idx;
+    }
+  }
+  return earliest;
 }
 
 function findPartialTagPrefix(text: string, tag: string): number {
@@ -110,10 +148,24 @@ function findPartialTagPrefix(text: string, tag: string): number {
   return -1;
 }
 
+export interface OpenAiLlmPortTimeouts {
+  idleTimeoutMs?: number;
+  totalTimeoutMs?: number;
+}
+
 export function createOpenAiCompatibleLlmPort(
   fetchImpl: HttpFetchPort = fetch,
-  timeoutMs = 90_000,
+  timeoutConfig: number | OpenAiLlmPortTimeouts = 300_000,
 ): LlmCompletionPort {
+  const idleTimeoutMs =
+    typeof timeoutConfig === 'number'
+      ? Math.max(1_000, timeoutConfig)
+      : Math.max(1_000, timeoutConfig.idleTimeoutMs ?? 300_000);
+  const totalTimeoutMs =
+    typeof timeoutConfig === 'number'
+      ? Math.max(idleTimeoutMs * 4, 1_800_000)
+      : Math.max(idleTimeoutMs, timeoutConfig.totalTimeoutMs ?? Math.max(idleTimeoutMs * 4, 1_800_000));
+
   return async (request: LlmCompletionRequest): Promise<LlmCompletionResponse> => {
     const baseUrl = resolveProviderBaseUrl(request.provider, request.baseUrl);
     if (!baseUrl) {
@@ -137,6 +189,9 @@ export function createOpenAiCompatibleLlmPort(
     if (request.maxTokens !== undefined) {
       body.max_tokens = request.maxTokens;
     }
+    if (request.reasoningEffort) {
+      body.reasoning_effort = request.reasoningEffort;
+    }
     if (request.jsonMode) {
       body.response_format = { type: 'json_object' };
     }
@@ -156,7 +211,24 @@ export function createOpenAiCompatibleLlmPort(
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let abortReason: 'idle' | 'total' | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const resetIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        abortReason = 'idle';
+        controller.abort();
+      }, idleTimeoutMs);
+    };
+
+    resetIdleTimer();
+    const totalTimer = setTimeout(() => {
+      abortReason = 'total';
+      controller.abort();
+    }, totalTimeoutMs);
 
     try {
       const response = await fetchImpl(endpoint, {
@@ -172,11 +244,18 @@ export function createOpenAiCompatibleLlmPort(
         const jsonRejected =
           response.status === 400 &&
           (lower.includes('response_format') || lower.includes('json_object'));
+        const maxTokensRejected =
+          response.status === 400 &&
+          (lower.includes('max_tokens') || lower.includes('max_completion_tokens'));
+        const reasoningEffortRejected =
+          response.status === 400 && lower.includes('reasoning_effort');
         return {
           content: '',
           status: response.status,
           rawError: rawText.slice(0, 500),
           supportsJsonObjectRejected: jsonRejected,
+          maxTokensRejected,
+          reasoningEffortRejected,
         };
       }
 
@@ -188,6 +267,7 @@ export function createOpenAiCompatibleLlmPort(
         let buffer = '';
         let contentOut = '';
         let reasoningOut = '';
+        let finishReason: string | undefined;
 
         const emitReasoning = async (delta: string) => {
           reasoningOut += delta;
@@ -210,6 +290,7 @@ export function createOpenAiCompatibleLlmPort(
           try {
             const chunk = JSON.parse(dataStr) as {
               choices?: Array<{
+                finish_reason?: string | null;
                 delta?: {
                   content?: string | null;
                   reasoning_content?: string | null;
@@ -217,7 +298,12 @@ export function createOpenAiCompatibleLlmPort(
                 };
               }>;
             };
-            const delta = chunk.choices?.[0]?.delta;
+            const firstChoice = chunk.choices?.[0];
+            if (!firstChoice) return;
+            if (typeof firstChoice.finish_reason === 'string' && firstChoice.finish_reason) {
+              finishReason = firstChoice.finish_reason;
+            }
+            const delta = firstChoice.delta;
             if (!delta) return;
             const rDelta = delta.reasoning_content ?? delta.reasoning;
             if (typeof rDelta === 'string' && rDelta.length > 0) {
@@ -234,6 +320,7 @@ export function createOpenAiCompatibleLlmPort(
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          resetIdleTimer();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() ?? '';
@@ -250,6 +337,7 @@ export function createOpenAiCompatibleLlmPort(
         return {
           content: contentOut,
           reasoning: reasoningOut || undefined,
+          finishReason,
           status: response.status,
         };
       }
@@ -257,6 +345,7 @@ export function createOpenAiCompatibleLlmPort(
       const rawText = await response.text();
       const parsed = JSON.parse(rawText) as {
         choices?: Array<{
+          finish_reason?: string | null;
           message?: {
             content?: string;
             reasoning_content?: string;
@@ -264,7 +353,8 @@ export function createOpenAiCompatibleLlmPort(
           };
         }>;
       };
-      const message = parsed.choices?.[0]?.message;
+      const firstChoice = parsed.choices?.[0];
+      const message = firstChoice?.message;
       const rawContent = message?.content ?? '';
       const rawReasoning = message?.reasoning_content ?? message?.reasoning ?? '';
       const split = splitThinkTags(rawContent);
@@ -280,13 +370,19 @@ export function createOpenAiCompatibleLlmPort(
       return {
         content: split.content,
         reasoning: combinedReasoning || undefined,
+        finishReason:
+          typeof firstChoice?.finish_reason === 'string' && firstChoice.finish_reason
+            ? firstChoice.finish_reason
+            : undefined,
         status: response.status,
       };
     } catch (error) {
       const message =
         error instanceof Error
           ? error.name === 'AbortError'
-            ? `请求超时 (${timeoutMs}ms)`
+            ? abortReason === 'total'
+              ? `请求总耗时超出上限 (${Math.round(totalTimeoutMs / 1000)}s)`
+              : `请求流式空闲超时 (${Math.round(idleTimeoutMs / 1000)}s 内未收到模型任何新输出)`
             : error.message
           : '网络请求异常';
       return {
@@ -295,7 +391,8 @@ export function createOpenAiCompatibleLlmPort(
         rawError: message,
       };
     } finally {
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (totalTimer) clearTimeout(totalTimer);
     }
   };
 }

@@ -21,6 +21,8 @@ import {
 } from '@rolecard/core';
 import {
   ALL_PROXY_SCOPES,
+  DEFAULT_LLM_MAX_TOKENS,
+  DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
   LlmSlotInputSchema,
   LlmTestRequestSchema,
   ProxyTestRequestSchema,
@@ -60,6 +62,7 @@ export interface DecryptedRuntimeConfig {
     baseUrl: string;
     model: string;
     jsonModeStrategy: LlmSlotInput['jsonModeStrategy'];
+    maxTokens: number;
   };
   chatLlm?: {
     provider: LlmSlotInput['provider'];
@@ -86,6 +89,8 @@ export interface DecryptedRuntimeConfig {
   searchApiKey: string;
   enableLayer1Wiki: boolean;
   dailyAutoRefreshLimit: number;
+  llmRequestTimeoutSeconds: number;
+  llmMaxTokens: number;
   customSystemPrompt: string;
   proxyConfig: RuntimeProxyConfig;
 }
@@ -259,6 +264,15 @@ export async function loadRuntimeServiceConfig(
   const visionSlot = parseEncryptedSlot(row.visionConfigEncrypted, ctx.masterKey);
   const imageSlot = parseEncryptedSlot(row.imageConfigEncrypted, ctx.masterKey);
 
+  const llmRequestTimeoutSeconds =
+    typeof row.llmRequestTimeoutSeconds === 'number' && row.llmRequestTimeoutSeconds >= 30
+      ? row.llmRequestTimeoutSeconds
+      : DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS;
+  const llmMaxTokens =
+    typeof row.llmMaxTokens === 'number' && row.llmMaxTokens >= 1024
+      ? row.llmMaxTokens
+      : DEFAULT_LLM_MAX_TOKENS;
+
   return {
     primaryLlm: {
       provider: primaryProvider,
@@ -266,6 +280,7 @@ export async function loadRuntimeServiceConfig(
       baseUrl: resolveProviderBaseUrl(primaryProvider, row.llmBaseUrl),
       model: row.llmModel,
       jsonModeStrategy: row.jsonModeStrategy,
+      maxTokens: llmMaxTokens,
     },
     ...(chatSlot ? { chatLlm: chatSlot } : {}),
     ...(visionSlot ? { visionLlm: visionSlot } : {}),
@@ -276,6 +291,8 @@ export async function loadRuntimeServiceConfig(
       : '',
     enableLayer1Wiki: row.enableLayer1Wiki,
     dailyAutoRefreshLimit: row.dailyAutoRefreshLimit,
+    llmRequestTimeoutSeconds,
+    llmMaxTokens,
     customSystemPrompt: row.customSystemPrompt,
     proxyConfig: parseEncryptedProxyConfig(row.proxyConfigEncrypted, ctx.masterKey),
   };
@@ -302,7 +319,7 @@ function parseEncryptedSlot(
 }
 
 function toMaskedSlot(
-  slot: DecryptedRuntimeConfig['primaryLlm'] | undefined,
+  slot: DecryptedRuntimeConfig['chatLlm'] | DecryptedRuntimeConfig['primaryLlm'] | undefined,
 ): MaskedLlmSlot | null {
   if (!slot) return null;
   return {
@@ -332,6 +349,8 @@ function buildMaskedResponse(
       hasSearchApiKey: false,
       enableLayer1Wiki: true,
       dailyAutoRefreshLimit: 20,
+      llmRequestTimeoutSeconds: DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
+      llmMaxTokens: DEFAULT_LLM_MAX_TOKENS,
       customSystemPrompt: '',
       proxyConfig: maskProxyConfig(null, env),
       updatedAt: null,
@@ -349,6 +368,8 @@ function buildMaskedResponse(
     hasSearchApiKey: runtime.searchApiKey.trim().length > 0,
     enableLayer1Wiki: runtime.enableLayer1Wiki,
     dailyAutoRefreshLimit: runtime.dailyAutoRefreshLimit,
+    llmRequestTimeoutSeconds: runtime.llmRequestTimeoutSeconds,
+    llmMaxTokens: runtime.llmMaxTokens,
     customSystemPrompt: runtime.customSystemPrompt,
     proxyConfig: maskProxyConfig(runtime.proxyConfig, env),
     updatedAt: rowUpdatedAt,
@@ -478,6 +499,8 @@ configRoutes.post('/config', zValidator('json', ServiceConfigInputSchema), async
     searchApiKeyEncrypted: searchEncrypted,
     enableLayer1Wiki: input.enableLayer1Wiki,
     dailyAutoRefreshLimit: input.dailyAutoRefreshLimit,
+    llmRequestTimeoutSeconds: input.llmRequestTimeoutSeconds,
+    llmMaxTokens: input.llmMaxTokens,
     customSystemPrompt: input.customSystemPrompt,
     proxyConfigEncrypted,
     updatedAt: nowIso,

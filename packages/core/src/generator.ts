@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   estimateCardTokens,
+  estimateTokens,
   RoleCardContentSchema,
   type CardType,
   type GenerateCardRequest,
@@ -333,21 +334,54 @@ function buildGenerationMessages(
     systemLines.push(`附加系统要求：${customSystemPrompt.trim()}`);
   }
 
+  const MAX_TOTAL_MATERIAL_TOKENS = 7500;
+  const MAX_USER_MATERIAL_TOKENS = 4800;
+  let remainingTotalTokens = MAX_TOTAL_MATERIAL_TOKENS;
+
+  const packSources = (
+    sources: SourceEntry[],
+    budgetLimit: number,
+    formatEntry: (s: SourceEntry, idx: number, snippet: string) => string,
+  ): string[] => {
+    const lines: string[] = [];
+    let groupRemaining = Math.min(budgetLimit, remainingTotalTokens);
+    for (let idx = 0; idx < sources.length; idx++) {
+      if (groupRemaining < 120) {
+        lines.push(`...（其余 ${sources.length - idx} 条次要参考来源因上下文预算限制已折叠）`);
+        break;
+      }
+      const s = sources[idx]!;
+      const clipped = clipToTokenBudget(s.snippet, Math.max(120, groupRemaining - 40));
+      const formatted = formatEntry(s, idx, clipped);
+      const cost = estimateTokens(formatted);
+      lines.push(formatted);
+      groupRemaining = Math.max(0, groupRemaining - cost);
+      remainingTotalTokens = Math.max(0, remainingTotalTokens - cost);
+    }
+    return lines;
+  };
+
   const materialBlocks: string[] = [];
   if (userSources.length > 0) {
-    materialBlocks.push(
-      '=== [用户提供] 第一优先级参考材料 ===',
-      ...userSources.map((s, idx) => `[用户提供 #${idx + 1}] ${s.title}\n${s.snippet}`),
+    const userLines = packSources(
+      userSources,
+      MAX_USER_MATERIAL_TOKENS,
+      (s, idx, snippet) => `[用户提供 #${idx + 1}] ${s.title}\n${snippet}`,
     );
+    if (userLines.length > 0) {
+      materialBlocks.push('=== [用户提供] 第一优先级参考材料 ===', ...userLines);
+    }
   }
   if (retrievalSources.length > 0) {
-    materialBlocks.push(
-      '=== [检索补充] 百科与网页考据资料 ===',
-      ...retrievalSources.map(
-        (s, idx) =>
-          `[检索补充 #${idx + 1}] ${s.title}${s.url ? ` (${s.url})` : ''}\n${s.snippet}`,
-      ),
+    const retrievalLines = packSources(
+      retrievalSources,
+      remainingTotalTokens,
+      (s, idx, snippet) =>
+        `[检索补充 #${idx + 1}] ${s.title}${s.url ? ` (${s.url})` : ''}\n${snippet}`,
     );
+    if (retrievalLines.length > 0) {
+      materialBlocks.push('=== [检索补充] 百科与网页考据资料 ===', ...retrievalLines);
+    }
   }
 
   const userPrompt = [

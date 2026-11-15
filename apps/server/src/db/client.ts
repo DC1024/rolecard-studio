@@ -128,6 +128,8 @@ function initializeTables(sqlite: DatabaseSync): void {
       search_api_key_encrypted TEXT,
       enable_layer1_wiki INTEGER NOT NULL DEFAULT 1,
       daily_auto_refresh_limit INTEGER NOT NULL DEFAULT 20,
+      llm_request_timeout_seconds INTEGER NOT NULL DEFAULT 300,
+      llm_max_tokens INTEGER NOT NULL DEFAULT 16384,
       custom_system_prompt TEXT NOT NULL DEFAULT '',
       proxy_config_encrypted TEXT,
       updated_at TEXT NOT NULL
@@ -318,6 +320,18 @@ function initializeTables(sqlite: DatabaseSync): void {
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');
   ensureColumnExists(sqlite, 'user_service_configs', 'proxy_config_encrypted', 'TEXT');
+  ensureColumnExists(
+    sqlite,
+    'user_service_configs',
+    'llm_request_timeout_seconds',
+    'INTEGER NOT NULL DEFAULT 300',
+  );
+  ensureColumnExists(
+    sqlite,
+    'user_service_configs',
+    'llm_max_tokens',
+    'INTEGER NOT NULL DEFAULT 16384',
+  );
   ensureColumnExists(sqlite, 'role_cards', 'token_image_url', 'TEXT');
   ensureColumnExists(sqlite, 'role_cards', 'token_crop_json', 'TEXT');
 }
