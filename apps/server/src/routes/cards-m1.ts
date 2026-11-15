@@ -16,6 +16,7 @@ import {
   exportCardToTrpgSheetMarkdown,
   generateCardField,
   generateTrpgAttributesForCard,
+  isFakeIpAllowedByFetch,
   isSafeImageUrl,
   isUrlProxiedByFetch,
   mergeLorebooksToCharacterBook,
@@ -799,6 +800,7 @@ cardM1Routes.get('/cards/:id/portrait-source', async (c) => {
   const mediaFetch = await loadScopedFetch(ctx, 'media');
   const ssrf = await validatePublicUrl(row.imageUrl, ctx.dnsLookup, {
     viaProxy: isUrlProxiedByFetch(mediaFetch, row.imageUrl),
+    allowFakeIp: isFakeIpAllowedByFetch(mediaFetch),
   });
   if (!ssrf.ok) {
     return sendCoreError(c, ssrf.error);
@@ -908,6 +910,7 @@ cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema),
       const mediaFetch = await loadScopedFetch(ctx, 'media');
       const ssrf = await validatePublicUrl(input.imageUrl, ctx.dnsLookup, {
         viaProxy: isUrlProxiedByFetch(mediaFetch, input.imageUrl),
+        allowFakeIp: isFakeIpAllowedByFetch(mediaFetch),
       });
       if (!ssrf.ok) {
         return sendCoreError(c, ssrf.error);

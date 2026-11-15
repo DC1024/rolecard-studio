@@ -1351,4 +1351,180 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports TUN Fake-IP toggle and env proxy fallback in config and image search routes', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const fakeIpDns: DnsLookupPort = async () => [{ address: '198.18.3.185', family: 4 }];
+    const fetchImpl: HttpFetchPort = async (url) => {
+      if (url.includes('cp.cloudflare.com/generate_204')) {
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes('commons.wikimedia.org/w/api.php')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: {
+                '42': {
+                  pageid: 42,
+                  title: 'File:Kaltsit_portrait.png',
+                  imageinfo: [
+                    {
+                      url: 'https://upload.wikimedia.org/wikipedia/commons/4/42/Kaltsit.png',
+                      thumburl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/42/Kaltsit.png',
+                      descriptionurl: 'https://commons.wikimedia.org/wiki/File:Kaltsit_portrait.png',
+                      mime: 'image/png',
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: fakeIpDns,
+      fetchImpl,
+      env: {
+        HTTPS_PROXY: 'http://envuser:envpass@127.0.0.1:7897',
+      },
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = (loginRes.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+
+    // 1. Save proxyConfig with useEnvProxy=false and allowFakeIp=false -> Fake-IP search is blocked with guidance
+    const saveBlockedRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: false,
+          globalUrl: '',
+          bypassLocal: true,
+          allowFakeIp: false,
+          useEnvProxy: false,
+          overrides: {},
+        },
+      }),
+    });
+    expect(saveBlockedRes.status).toBe(200);
+    const saveBlockedJson = (await saveBlockedRes.json()) as {
+      proxyConfig: { allowFakeIp: boolean; useEnvProxy: boolean; envProxyDetected: string | null };
+    };
+    expect(saveBlockedJson.proxyConfig.allowFakeIp).toBe(false);
+    expect(saveBlockedJson.proxyConfig.useEnvProxy).toBe(false);
+    expect(saveBlockedJson.proxyConfig.envProxyDetected).toBe('http://envuser:****@127.0.0.1:7897');
+
+    const searchBlockedRes = await app.request('/api/v1/images/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ query: 'Kaltsit', limit: 4 }),
+    });
+    expect(searchBlockedRes.status).toBe(400);
+    const searchBlockedJson = (await searchBlockedRes.json()) as { error?: { code?: string; message?: string } };
+    expect(searchBlockedJson.error?.code).toBe('SSRF_IP_BLOCKED');
+    expect(searchBlockedJson.error?.message).toContain('198.18.3.185');
+    expect(searchBlockedJson.error?.message).toContain('TUN/Fake-IP');
+
+    // 2. Enable allowFakeIp=true (still without proxy) -> Fake-IP image search succeeds
+    const saveFakeIpRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: false,
+          globalUrl: '',
+          bypassLocal: true,
+          allowFakeIp: true,
+          useEnvProxy: false,
+          overrides: {},
+        },
+      }),
+    });
+    expect(saveFakeIpRes.status).toBe(200);
+
+    const searchFakeIpRes = await app.request('/api/v1/images/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ query: 'Kaltsit', limit: 4 }),
+    });
+    expect(searchFakeIpRes.status).toBe(200);
+    const searchFakeIpJson = (await searchFakeIpRes.json()) as { items: Array<{ title: string }> };
+    expect(searchFakeIpJson.items).toHaveLength(1);
+    expect(searchFakeIpJson.items[0]?.title).toContain('Kaltsit_portrait');
+
+    // 3. Disable allowFakeIp but enable useEnvProxy=true -> falls back to HTTPS_PROXY from env
+    const saveEnvProxyRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        proxyConfig: {
+          globalEnabled: false,
+          globalUrl: '',
+          bypassLocal: true,
+          allowFakeIp: false,
+          useEnvProxy: true,
+          overrides: {},
+        },
+      }),
+    });
+    expect(saveEnvProxyRes.status).toBe(200);
+
+    const searchEnvProxyRes = await app.request('/api/v1/images/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ query: 'Kaltsit', limit: 4 }),
+    });
+    expect(searchEnvProxyRes.status).toBe(200);
+
+    const testEnvScopeRes = await app.request('/api/v1/config/proxy/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ useSavedScope: 'media' }),
+    });
+    expect(testEnvScopeRes.status).toBe(200);
+    const testEnvScopeJson = (await testEnvScopeRes.json()) as { ok: boolean; status?: number };
+    expect(testEnvScopeJson.ok).toBe(true);
+    expect(testEnvScopeJson.status).toBe(204);
+
+    dbHandle.close();
+  });
 });

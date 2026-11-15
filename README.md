@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.0）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.1）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
@@ -47,7 +47,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - 支持 **9 大等权并行通知渠道**：SMTP 邮件、飞书、企业微信、钉钉、Telegram、Discord、Bark、Server酱、自定义 Webhook。
 - **四路模型槽位、两级网络代理与 RBAC 安全体系**
   - 支持 `primary`（主生成）/ `chat`（试聊）/ `vision`（识图反推）/ `image`（文生图）4 路独立模型槽位，兼容 OpenAI、DeepSeek、硅基流动、Kimi、通义千问、Anthropic 兼容网关、Azure OpenAI、本地 Ollama 与自定义 OpenAI 兼容接口。
-  - 支持 **全局代理 + 7 个作用域独立代理覆写**（`inherit` / `direct` / `custom`）及一键连通性测试。
+  - 支持 **全局代理 + 7 个作用域独立代理覆写**（`inherit` / `direct` / `custom`）、**系统环境变量代理自动回退**（`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`）、**TUN Fake-IP（`198.18.0.0/15`）透明代理兼容**及一键连通性测试。
   - 所有凭据均采用 **AES-256-GCM**（基于本地 `.master.key`）加密落盘；内置管理员/普通用户 RBAC、站点/API 独立访客策略与 External API Key 作用域控制。
 - **开放生态与实时同步**
   - 提供官方 **MCP Server（`@rolecard/mcp`）**、**SillyTavern 实时同步扩展**（SSE 推流 + 轮询降级）、**Obsidian 人物笔记插件 & Webhook 验签桥接**，以及零代码 JSON **声明式插件**。

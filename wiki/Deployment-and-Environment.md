@@ -1,6 +1,6 @@
 # 环境要求与部署指南
 
-本文档详细介绍 **RoleCard Studio (`v1.4.0`)** 的软硬件依赖、四种主流部署方式、环境变量配置、反向代理接入以及数据持久化与迁移方案。
+本文档详细介绍 **RoleCard Studio (`v1.4.1`)** 的软硬件依赖、四种主流部署方式、环境变量配置、反向代理接入以及数据持久化与迁移方案。
 
 ---
 
@@ -39,7 +39,7 @@
 #### Linux（x64）
 1. **Debian / Ubuntu `.deb` 包**
    ```bash
-   sudo dpkg -i rolecard-studio_1.4.0_amd64.deb
+   sudo dpkg -i rolecard-studio_1.4.1_amd64.deb
    # 方式 A：命令行直接启动
    rolecard-studio
 
@@ -49,7 +49,7 @@
    ```
 2. **通用 `.tar.gz` 便携包**
    ```bash
-   tar -xzf rolecard-studio-1.4.0-linux-x64.tar.gz
+   tar -xzf rolecard-studio-1.4.1-linux-x64.tar.gz
    cd bundle
    # 前台运行
    ./start-rolecard.sh
@@ -85,7 +85,7 @@ docker run -d \
 ```yaml
 services:
   rolecard-studio:
-    image: ghcr.io/dc1024/rolecard-studio:1.4.0
+    image: ghcr.io/dc1024/rolecard-studio:1.4.1
     container_name: rolecard-studio
     restart: unless-stopped
     ports:
@@ -157,6 +157,8 @@ pnpm --filter @rolecard/web dev
 | `ROLECARD_ADMIN_PASSWORD` | 自动生成随机密码 | **仅在首次初始化空数据库时生效**：初始管理员密码；若未设置，首次启动会在日志打印随机密码 |
 | `ROLECARD_DEPLOYMENT_MODE` | `local` | 可选 `local` / `cloud`，透传至 `/api/v1/health` 便于部署识别 |
 | `ROLECARD_ENABLE_SCHEDULER` | `true`（非 `'false'` 即启用） | 是否启用每小时检查一次的定时演化调度器；设为 `false` 可彻底关闭调度循环 |
+| `ROLECARD_ALLOW_FAKE_IP` | `false` | 设为 `true` / `1` 时放行系统 TUN 透明代理产生的 `198.18.0.0/15` Fake-IP DNS 结果（也可直接在网页端「设置 → 网络代理」勾选） |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` | 无 | 当应用内全局代理未启用且开启「自动回退读取系统环境变量代理」时，作用域为 `inherit` 的出站请求会自动按目标协议回退使用系统环境代理并尊重 `NO_PROXY` |
 
 ---
 

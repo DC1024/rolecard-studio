@@ -19,6 +19,7 @@ import {
 import {
   defaultDnsLookup,
   defaultHttpFetch,
+  isFakeIpAllowedByFetch,
   isUrlProxiedByFetch,
   validatePublicUrl,
 } from './ssrf.js';
@@ -76,6 +77,7 @@ export async function analyzePortraitWithVision(
   } else if (input.imageUrl) {
     const ssrf = await validatePublicUrl(input.imageUrl, dnsLookup, {
       viaProxy: isUrlProxiedByFetch(fetchImpl, input.imageUrl),
+      allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
     });
     if (!ssrf.ok) {
       return ssrf;
@@ -200,6 +202,7 @@ export async function searchWikimediaCommonsImages(
 
   const urlCheck = await validatePublicUrl(targetUrl.toString(), dnsLookup, {
     viaProxy: isUrlProxiedByFetch(fetchImpl, targetUrl.toString()),
+    allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
   });
   if (!urlCheck.ok) {
     return urlCheck;

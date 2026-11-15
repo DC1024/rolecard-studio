@@ -7,6 +7,7 @@ import {
   deliverWebhookWithRetry,
   encryptSecret,
   generateRandomToken,
+  isFakeIpAllowedByFetch,
   isUrlProxiedByFetch,
   maskSecret,
   validateNotificationChannelSettings,
@@ -451,6 +452,7 @@ syncRoutes.post(
     const webhookFetch = await loadScopedFetch(ctx, 'webhook');
     const urlCheck = await validatePublicUrl(input.webhookUrl, ctx.dnsLookup, {
       viaProxy: isUrlProxiedByFetch(webhookFetch, input.webhookUrl),
+      allowFakeIp: isFakeIpAllowedByFetch(webhookFetch),
     });
     if (!urlCheck.ok) {
       return sendCoreError(c, urlCheck.error);

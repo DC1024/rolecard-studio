@@ -19,15 +19,20 @@ import {
 } from './trpg-export.js';
 import type { DnsLookupPort, HttpFetchPort, LlmCompletionPort } from './types.js';
 import {
+  createScopedProxyFetch,
+  detectEnvProxySummary,
+  isEffectiveAllowFakeIp,
+  isNoProxyMatch,
   maskProxyConfig,
   maskProxyUrl,
   resolveEffectiveProxyUrl,
+  resolveEnvProxyUrl,
   testProxyConnectivity,
   validateProxyUrl,
   type RuntimeProxyConfig,
 } from './proxy.js';
 import { validatePublicUrl } from './ssrf.js';
-import { generateOrOptimizePortraitPrompt } from './vision.js';
+import { generateOrOptimizePortraitPrompt, searchWikimediaCommonsImages } from './vision.js';
 
 const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
 
@@ -510,27 +515,29 @@ describe('Two-tier network proxy & SSRF viaProxy handling', () => {
       },
     };
 
+    const emptyEnv: Record<string, string | undefined> = {};
+
     // Inherit uses global proxy for external URLs, but bypasses local/private targets
-    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'https://api.openai.com/v1/chat/completions')).toBe(
-      'http://127.0.0.1:7897',
-    );
-    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://localhost:11434/v1')).toBeNull();
-    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://192.168.1.50:8000/v1')).toBeNull();
+    expect(
+      resolveEffectiveProxyUrl(cfg, 'llm_primary', 'https://api.openai.com/v1/chat/completions', emptyEnv),
+    ).toBe('http://127.0.0.1:7897');
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://localhost:11434/v1', emptyEnv)).toBeNull();
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_primary', 'http://192.168.1.50:8000/v1', emptyEnv)).toBeNull();
 
     // Direct override forces no proxy even for public targets
-    expect(resolveEffectiveProxyUrl(cfg, 'llm_chat', 'https://api.openai.com/v1')).toBeNull();
+    expect(resolveEffectiveProxyUrl(cfg, 'llm_chat', 'https://api.openai.com/v1', emptyEnv)).toBeNull();
 
     // Custom override uses scope-specific proxy even if global is disabled
     const globalOffCfg: RuntimeProxyConfig = { ...cfg, globalEnabled: false, bypassLocal: false };
-    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_primary', 'https://api.openai.com/v1')).toBeNull();
-    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'https://api.openai.com/v1')).toBe(
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_primary', 'https://api.openai.com/v1', emptyEnv)).toBeNull();
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'https://api.openai.com/v1', emptyEnv)).toBe(
       'socks5://bob:pw@10.1.2.3:1080',
     );
-    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'http://127.0.0.1:8188')).toBe(
+    expect(resolveEffectiveProxyUrl(globalOffCfg, 'llm_image', 'http://127.0.0.1:8188', emptyEnv)).toBe(
       'socks5://bob:pw@10.1.2.3:1080',
     );
 
-    const masked = maskProxyConfig(cfg);
+    const masked = maskProxyConfig(cfg, emptyEnv);
     expect(masked.globalEnabled).toBe(true);
     expect(masked.hasGlobalUrl).toBe(true);
     expect(masked.overrides.llm_image?.urlMasked).toBe('socks5://bob:****@10.1.2.3:1080');
@@ -557,6 +564,135 @@ describe('Two-tier network proxy & SSRF viaProxy handling', () => {
     expect(
       (await validatePublicUrl('http://127.0.0.1:8080/secret', publicDns, { viaProxy: true })).ok,
     ).toBe(false);
+
+    // allowFakeIp permits 198.18.0.0/15 DNS results without viaProxy, while blocking real private IPs
+    const fakeIpBlocked = await validatePublicUrl('https://commons.wikimedia.org/w/api.php', fakeIpDns);
+    expect(fakeIpBlocked.ok).toBe(false);
+    if (!fakeIpBlocked.ok) {
+      expect(fakeIpBlocked.error.code).toBe('SSRF_IP_BLOCKED');
+      expect(fakeIpBlocked.error.message).toContain('透明代理 Fake-IP');
+    }
+
+    const fakeIp19819Dns: DnsLookupPort = async () => [{ address: '198.19.12.34', family: 4 }];
+    expect(
+      (await validatePublicUrl('https://commons.wikimedia.org/w/api.php', fakeIp19819Dns, { allowFakeIp: true })).ok,
+    ).toBe(true);
+
+    const mixedPrivateDns: DnsLookupPort = async () => [
+      { address: '198.18.3.185', family: 4 },
+      { address: '192.168.1.10', family: 4 },
+    ];
+    expect(
+      (await validatePublicUrl('https://commons.wikimedia.org/w/api.php', mixedPrivateDns, { allowFakeIp: true })).ok,
+    ).toBe(false);
+    expect(
+      (await validatePublicUrl('http://198.18.3.185/admin', publicDns, { allowFakeIp: true })).ok,
+    ).toBe(false);
+  });
+
+  it('supports env proxy fallback, NO_PROXY filtering, and ROLECARD_ALLOW_FAKE_IP for image search', async () => {
+    const env = {
+      HTTPS_PROXY: 'http://alice:secret123@127.0.0.1:7897',
+      HTTP_PROXY: 'http://127.0.0.1:7890',
+      NO_PROXY: 'localhost,.internal.corp,mirror.local:8080',
+      ROLECARD_ALLOW_FAKE_IP: 'true',
+    };
+
+    expect(detectEnvProxySummary(env)).toBe('http://alice:****@127.0.0.1:7897');
+    expect(resolveEnvProxyUrl('https://commons.wikimedia.org/w/api.php', env)).toBe(
+      'http://alice:secret123@127.0.0.1:7897',
+    );
+    expect(resolveEnvProxyUrl('http://example.com/file', env)).toBe('http://127.0.0.1:7890');
+    expect(isNoProxyMatch('https://api.internal.corp/v1', env)).toBe(true);
+    expect(isNoProxyMatch('http://mirror.local:8080/api', env)).toBe(true);
+    expect(resolveEnvProxyUrl('https://api.internal.corp/v1', env)).toBeNull();
+
+    const baseCfg: RuntimeProxyConfig = {
+      globalEnabled: false,
+      globalUrl: '',
+      bypassLocal: true,
+      allowFakeIp: false,
+      useEnvProxy: true,
+      overrides: {
+        llm_chat: { mode: 'direct', url: '' },
+      },
+    };
+
+    expect(
+      resolveEffectiveProxyUrl(baseCfg, 'media', 'https://commons.wikimedia.org/w/api.php', env),
+    ).toBe('http://alice:secret123@127.0.0.1:7897');
+    expect(
+      resolveEffectiveProxyUrl(baseCfg, 'llm_chat', 'https://api.openai.com/v1', env),
+    ).toBeNull();
+    expect(
+      resolveEffectiveProxyUrl(
+        { ...baseCfg, useEnvProxy: false },
+        'media',
+        'https://commons.wikimedia.org/w/api.php',
+        env,
+      ),
+    ).toBeNull();
+
+    expect(isEffectiveAllowFakeIp(baseCfg, {})).toBe(false);
+    expect(isEffectiveAllowFakeIp(baseCfg, env)).toBe(true);
+    expect(maskProxyConfig(baseCfg, env).envProxyDetected).toBe('http://alice:****@127.0.0.1:7897');
+
+    // End-to-end searchWikimediaCommonsImages under Fake-IP 198.18.3.185
+    const fakeIpDns: DnsLookupPort = async () => [{ address: '198.18.3.185', family: 4 }];
+    const mockWikiFetch: HttpFetchPort = async () =>
+      new Response(
+        JSON.stringify({
+          query: {
+            pages: {
+              '1': {
+                pageid: 1,
+                title: 'File:Amiya_sample.png',
+                imageinfo: [
+                  {
+                    url: 'https://upload.wikimedia.org/wikipedia/commons/a/a1/Amiya.png',
+                    thumburl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Amiya.png',
+                    descriptionurl: 'https://commons.wikimedia.org/wiki/File:Amiya_sample.png',
+                    mime: 'image/png',
+                  },
+                ],
+              },
+            },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+
+    const blockedFetch = createScopedProxyFetch(
+      { ...baseCfg, allowFakeIp: false, useEnvProxy: false },
+      'media',
+      mockWikiFetch,
+      {},
+    );
+    const blockedSearch = await searchWikimediaCommonsImages('Amiya', 4, {
+      fetchImpl: blockedFetch,
+      dnsLookup: fakeIpDns,
+    });
+    expect(blockedSearch.ok).toBe(false);
+    if (!blockedSearch.ok) {
+      expect(blockedSearch.error.code).toBe('SSRF_IP_BLOCKED');
+      expect(blockedSearch.error.message).toContain('198.18.3.185');
+    }
+
+    const allowedFetch = createScopedProxyFetch(
+      { ...baseCfg, allowFakeIp: true, useEnvProxy: false },
+      'media',
+      mockWikiFetch,
+      {},
+    );
+    const allowedSearch = await searchWikimediaCommonsImages('Amiya', 4, {
+      fetchImpl: allowedFetch,
+      dnsLookup: fakeIpDns,
+    });
+    expect(allowedSearch.ok).toBe(true);
+    if (allowedSearch.ok) {
+      expect(allowedSearch.value).toHaveLength(1);
+      expect(allowedSearch.value[0]?.title).toContain('Amiya_sample.png');
+    }
   });
 
   it('reports proxy connectivity success and 407 auth failures cleanly', async () => {

@@ -8,7 +8,11 @@ import {
 } from '@rolecard/shared';
 import { socksDispatcher } from 'fetch-socks';
 import { type Dispatcher, ProxyAgent, fetch as undiciFetch } from 'undici';
-import { defaultHttpFetch, registerProxiedFetchChecker } from './ssrf.js';
+import {
+  defaultHttpFetch,
+  registerFakeIpAllowedChecker,
+  registerProxiedFetchChecker,
+} from './ssrf.js';
 import type { HttpFetchPort } from './types.js';
 
 export interface RuntimeProxyOverride {
@@ -20,6 +24,8 @@ export interface RuntimeProxyConfig {
   globalEnabled: boolean;
   globalUrl: string;
   bypassLocal: boolean;
+  allowFakeIp?: boolean;
+  useEnvProxy?: boolean;
   overrides: Partial<Record<ProxyScope, RuntimeProxyOverride>>;
 }
 
@@ -27,6 +33,8 @@ export const DEFAULT_RUNTIME_PROXY_CONFIG: RuntimeProxyConfig = {
   globalEnabled: false,
   globalUrl: '',
   bypassLocal: true,
+  allowFakeIp: false,
+  useEnvProxy: true,
   overrides: {},
 };
 
@@ -95,7 +103,131 @@ export function maskProxyUrl(rawUrl: string | null | undefined): string | null {
   }
 }
 
-export function maskProxyConfig(config?: RuntimeProxyConfig | null): MaskedProxyConfig {
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+export function isEnvFakeIpAllowed(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.ROLECARD_ALLOW_FAKE_IP?.trim().toLowerCase() ?? '';
+  return TRUTHY_ENV_VALUES.has(raw);
+}
+
+export function isEffectiveAllowFakeIp(
+  config: RuntimeProxyConfig | undefined | null,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return Boolean(config?.allowFakeIp) || isEnvFakeIpAllowed(env);
+}
+
+export function isNoProxyMatch(
+  targetUrl: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const rawNoProxy = env.NO_PROXY ?? env.no_proxy ?? '';
+  const trimmed = rawNoProxy.trim();
+  if (!trimmed) return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return false;
+  }
+
+  const targetHost = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const targetPort =
+    parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+
+  for (const rawEntry of trimmed.split(',')) {
+    const entry = rawEntry.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === '*') return true;
+
+    let patternHost = entry;
+    let patternPort = '';
+    const lastColon = entry.lastIndexOf(':');
+    if (lastColon > 0 && !entry.includes(']')) {
+      const portPart = entry.slice(lastColon + 1);
+      if (/^\d+$/.test(portPart)) {
+        patternHost = entry.slice(0, lastColon);
+        patternPort = portPart;
+      }
+    }
+    patternHost = patternHost.replace(/^\[|\]$/g, '');
+    if (patternPort && patternPort !== targetPort) {
+      continue;
+    }
+
+    const normalizedDomain = patternHost.startsWith('.') ? patternHost.slice(1) : patternHost;
+    if (!normalizedDomain) continue;
+    if (targetHost === normalizedDomain || targetHost.endsWith(`.${normalizedDomain}`)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function resolveEnvProxyUrl(
+  targetUrl: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  if (isNoProxyMatch(targetUrl, env)) {
+    return null;
+  }
+
+  let protocol = '';
+  try {
+    protocol = new URL(targetUrl).protocol.toLowerCase();
+  } catch {
+    protocol = '';
+  }
+
+  const candidates =
+    protocol === 'https:'
+      ? [env.HTTPS_PROXY, env.https_proxy, env.ALL_PROXY, env.all_proxy]
+      : protocol === 'http:'
+        ? [env.HTTP_PROXY, env.http_proxy, env.ALL_PROXY, env.all_proxy]
+        : [env.ALL_PROXY, env.all_proxy, env.HTTPS_PROXY, env.https_proxy, env.HTTP_PROXY, env.http_proxy];
+
+  for (const raw of candidates) {
+    const val = raw?.trim();
+    if (!val) continue;
+    const checked = validateProxyUrl(val);
+    if (checked.ok) {
+      return checked.normalized;
+    }
+  }
+
+  return null;
+}
+
+export function detectEnvProxySummary(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const candidates = [
+    env.HTTPS_PROXY,
+    env.https_proxy,
+    env.HTTP_PROXY,
+    env.http_proxy,
+    env.ALL_PROXY,
+    env.all_proxy,
+  ];
+  for (const raw of candidates) {
+    const val = raw?.trim();
+    if (!val) continue;
+    const checked = validateProxyUrl(val);
+    if (checked.ok) {
+      return maskProxyUrl(checked.normalized);
+    }
+  }
+  return null;
+}
+
+export function maskProxyConfig(
+  config?: RuntimeProxyConfig | null,
+  env: Record<string, string | undefined> = process.env,
+): MaskedProxyConfig {
   const safe = config ?? DEFAULT_RUNTIME_PROXY_CONFIG;
   const overrides: Partial<Record<ProxyScope, MaskedProxyScopeOverride>> = {};
   for (const scope of ALL_PROXY_SCOPES) {
@@ -116,6 +248,9 @@ export function maskProxyConfig(config?: RuntimeProxyConfig | null): MaskedProxy
     globalUrlMasked: maskProxyUrl(safe.globalUrl),
     hasGlobalUrl: Boolean(safe.globalUrl.trim()),
     bypassLocal: safe.bypassLocal !== false,
+    allowFakeIp: Boolean(safe.allowFakeIp),
+    useEnvProxy: safe.useEnvProxy !== false,
+    envProxyDetected: detectEnvProxySummary(env),
     overrides,
   };
 }
@@ -156,6 +291,7 @@ export function resolveEffectiveProxyUrl(
   config: RuntimeProxyConfig | undefined | null,
   scope: ProxyScope,
   targetUrl: string,
+  env: Record<string, string | undefined> = process.env,
 ): string | null {
   if (!config) return null;
 
@@ -177,11 +313,10 @@ export function resolveEffectiveProxyUrl(
   let candidateUrl = '';
   if (mode === 'custom') {
     candidateUrl = override?.url?.trim() ?? '';
-  } else {
-    if (!config.globalEnabled) {
-      return null;
-    }
+  } else if (config.globalEnabled) {
     candidateUrl = config.globalUrl?.trim() ?? '';
+  } else if (config.useEnvProxy !== false) {
+    candidateUrl = resolveEnvProxyUrl(targetUrl, env) ?? '';
   }
 
   if (!candidateUrl) {
@@ -251,12 +386,13 @@ export function createScopedProxyFetch(
   config: RuntimeProxyConfig | undefined | null,
   scope: ProxyScope,
   fallbackFetch: HttpFetchPort = defaultHttpFetch,
+  env: Record<string, string | undefined> = process.env,
 ): HttpFetchPort {
   if (!config) {
     return fallbackFetch;
   }
   const fn: HttpFetchPort = async (url, init) => {
-    const proxyUrl = resolveEffectiveProxyUrl(config, scope, url);
+    const proxyUrl = resolveEffectiveProxyUrl(config, scope, url, env);
     if (!proxyUrl || fallbackFetch !== defaultHttpFetch) {
       return fallbackFetch(url, init);
     }
@@ -267,8 +403,9 @@ export function createScopedProxyFetch(
     });
     return response as unknown as Response;
   };
+  registerFakeIpAllowedChecker(fn, () => isEffectiveAllowFakeIp(config, env));
   return registerProxiedFetchChecker(fn, (targetUrl) =>
-    Boolean(resolveEffectiveProxyUrl(config, scope, targetUrl)),
+    Boolean(resolveEffectiveProxyUrl(config, scope, targetUrl, env)),
   );
 }
 

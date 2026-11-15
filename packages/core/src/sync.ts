@@ -3,6 +3,7 @@ import type { SyncEventDto } from '@rolecard/shared';
 import {
   defaultDnsLookup,
   defaultHttpFetch,
+  isFakeIpAllowedByFetch,
   isUrlProxiedByFetch,
   validatePublicUrl,
 } from './ssrf.js';
@@ -86,6 +87,7 @@ export async function deliverWebhookWithRetry(
 
   const urlCheck = await validatePublicUrl(webhookUrl, dnsLookup, {
     viaProxy: isUrlProxiedByFetch(fetchImpl, webhookUrl),
+    allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
   });
   if (!urlCheck.ok) {
     return urlCheck;

@@ -17,6 +17,7 @@ export const defaultDnsLookup: DnsLookupPort = async (hostname: string) => {
 export const defaultHttpFetch: HttpFetchPort = (url, init) => fetch(url, init);
 
 const proxiedFetchUrlCheckers = new WeakMap<HttpFetchPort, (targetUrl: string) => boolean>();
+const fakeIpAllowedCheckers = new WeakMap<HttpFetchPort, () => boolean>();
 
 export function registerProxiedFetchChecker(
   fetchImpl: HttpFetchPort,
@@ -33,6 +34,20 @@ export function isUrlProxiedByFetch(
   if (!fetchImpl) return false;
   const checker = proxiedFetchUrlCheckers.get(fetchImpl);
   return checker ? checker(targetUrl) : false;
+}
+
+export function registerFakeIpAllowedChecker(
+  fetchImpl: HttpFetchPort,
+  checker: () => boolean,
+): HttpFetchPort {
+  fakeIpAllowedCheckers.set(fetchImpl, checker);
+  return fetchImpl;
+}
+
+export function isFakeIpAllowedByFetch(fetchImpl: HttpFetchPort | undefined): boolean {
+  if (!fetchImpl) return false;
+  const checker = fakeIpAllowedCheckers.get(fetchImpl);
+  return checker ? checker() : false;
 }
 
 function isFakeIpRange(ip: string): boolean {
@@ -120,7 +135,7 @@ function isDisallowedIpv4(ip: string): boolean {
 export async function validatePublicUrl(
   rawUrl: string,
   dnsLookup: DnsLookupPort = defaultDnsLookup,
-  options: { viaProxy?: boolean } = {},
+  options: { viaProxy?: boolean; allowFakeIp?: boolean } = {},
 ): Promise<Result<URL, CoreError>> {
   let parsed: URL;
   try {
@@ -187,10 +202,17 @@ export async function validatePublicUrl(
   }
 
   for (const record of addresses) {
-    if (options.viaProxy && isFakeIpRange(record.address)) {
+    if ((options.viaProxy || options.allowFakeIp) && isFakeIpRange(record.address)) {
       continue;
     }
     if (isDisallowedIp(record.address)) {
+      if (isFakeIpRange(record.address)) {
+        return err({
+          code: 'SSRF_IP_BLOCKED',
+          message: `域名 ${hostname} 解析到了透明代理 Fake-IP (${record.address})。若使用系统 TUN/Fake-IP 代理且未在应用内配置代理，请在「设置 → 网络代理」开启全局代理或勾选「允许系统透明代理 / TUN Fake-IP」`,
+          status: 400,
+        });
+      }
       return err({
         code: 'SSRF_IP_BLOCKED',
         message: `域名 ${hostname} 解析到了禁止访问的 IP (${record.address})`,
@@ -205,6 +227,7 @@ export async function validatePublicUrl(
 export interface SafeFetchOptions {
   dnsLookup?: DnsLookupPort;
   fetchImpl?: HttpFetchPort;
+  allowFakeIp?: boolean;
   maxRedirects?: number;
   maxBytes?: number;
   timeoutMs?: number;
@@ -234,6 +257,7 @@ export async function safeFetchText(
   for (let hop = 0; hop <= maxRedirects; hop++) {
     const validated = await validatePublicUrl(currentUrl, dnsLookup, {
       viaProxy: isUrlProxiedByFetch(fetchImpl, currentUrl),
+      allowFakeIp: options.allowFakeIp ?? isFakeIpAllowedByFetch(fetchImpl),
     });
     if (!validated.ok) {
       return validated;

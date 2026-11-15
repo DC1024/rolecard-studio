@@ -68,6 +68,8 @@ export const ProxyConfigInputSchema = z.object({
   globalUrl: z.string().max(512).optional().default(''),
   preserveStoredGlobalUrl: z.boolean().optional(),
   bypassLocal: z.boolean().default(true),
+  allowFakeIp: z.boolean().default(false),
+  useEnvProxy: z.boolean().default(true),
   overrides: z
     .object({
       llm_primary: ProxyScopeOverrideInputSchema.optional(),
@@ -93,6 +95,9 @@ export interface MaskedProxyConfig {
   globalUrlMasked: string | null;
   hasGlobalUrl: boolean;
   bypassLocal: boolean;
+  allowFakeIp: boolean;
+  useEnvProxy: boolean;
+  envProxyDetected: string | null;
   overrides: Partial<Record<ProxyScope, MaskedProxyScopeOverride>>;
 }
 

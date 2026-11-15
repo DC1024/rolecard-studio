@@ -19,6 +19,7 @@ export interface ServerContext {
   searchProviderPort?: SearchProviderPort;
   smtpTransport?: SmtpTransportPort;
   clock?: ClockPort;
+  env?: Record<string, string | undefined>;
   webDistDir?: string;
   pluginsDir?: string;
   memoryUploads?: Map<string, { data: Buffer; contentType: string }>;

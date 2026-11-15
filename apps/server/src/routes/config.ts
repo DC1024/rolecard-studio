@@ -8,6 +8,7 @@ import {
   encryptSecret,
   maskProxyConfig,
   maskSecret,
+  resolveEffectiveProxyUrl,
   resolveProviderBaseUrl,
   testLlmConnectivity,
   testProxyConnectivity,
@@ -113,6 +114,8 @@ function parseEncryptedProxyConfig(
       globalEnabled: Boolean(parsed.globalEnabled),
       globalUrl: typeof parsed.globalUrl === 'string' ? parsed.globalUrl : '',
       bypassLocal: parsed.bypassLocal !== false,
+      allowFakeIp: Boolean(parsed.allowFakeIp),
+      useEnvProxy: parsed.useEnvProxy !== false,
       overrides,
     };
   } catch {
@@ -135,16 +138,18 @@ export function resolveScopedFetch(
   scope: ProxyScope,
 ): HttpFetchPort {
   const baseFetch = ctx.fetchImpl ?? defaultHttpFetch;
-  return createScopedProxyFetch(proxyConfig, scope, baseFetch);
+  return createScopedProxyFetch(
+    proxyConfig ?? DEFAULT_RUNTIME_PROXY_CONFIG,
+    scope,
+    baseFetch,
+    ctx.env ?? process.env,
+  );
 }
 
 export async function loadScopedFetch(
   ctx: ServerContext,
   scope: ProxyScope,
 ): Promise<HttpFetchPort> {
-  if (ctx.fetchImpl) {
-    return ctx.fetchImpl;
-  }
   const proxyConfig = await loadRuntimeProxyConfig(ctx);
   return resolveScopedFetch(ctx, proxyConfig, scope);
 }
@@ -224,6 +229,8 @@ function mergeProxyConfigInput(
       globalEnabled: input.globalEnabled,
       globalUrl,
       bypassLocal: input.bypassLocal,
+      allowFakeIp: input.allowFakeIp,
+      useEnvProxy: input.useEnvProxy,
       overrides,
     },
   };
@@ -311,6 +318,7 @@ function toMaskedSlot(
 function buildMaskedResponse(
   rowUpdatedAt: string | null,
   runtime: DecryptedRuntimeConfig | null,
+  env: Record<string, string | undefined> = process.env,
 ): MaskedServiceConfig {
   if (!runtime) {
     return {
@@ -325,7 +333,7 @@ function buildMaskedResponse(
       enableLayer1Wiki: true,
       dailyAutoRefreshLimit: 20,
       customSystemPrompt: '',
-      proxyConfig: maskProxyConfig(null),
+      proxyConfig: maskProxyConfig(null, env),
       updatedAt: null,
     };
   }
@@ -342,7 +350,7 @@ function buildMaskedResponse(
     enableLayer1Wiki: runtime.enableLayer1Wiki,
     dailyAutoRefreshLimit: runtime.dailyAutoRefreshLimit,
     customSystemPrompt: runtime.customSystemPrompt,
-    proxyConfig: maskProxyConfig(runtime.proxyConfig),
+    proxyConfig: maskProxyConfig(runtime.proxyConfig, env),
     updatedAt: rowUpdatedAt,
   };
 }
@@ -367,7 +375,7 @@ configRoutes.get('/config', async (c) => {
     .limit(1);
 
   const runtime = await loadRuntimeServiceConfig(ctx);
-  return c.json(buildMaskedResponse(rows[0]?.updatedAt ?? null, runtime));
+  return c.json(buildMaskedResponse(rows[0]?.updatedAt ?? null, runtime, ctx.env));
 });
 
 configRoutes.post('/config', zValidator('json', ServiceConfigInputSchema), async (c) => {
@@ -489,19 +497,17 @@ configRoutes.post('/config', zValidator('json', ServiceConfigInputSchema), async
   }
 
   const updated = await loadRuntimeServiceConfig(ctx);
-  return c.json(buildMaskedResponse(nowIso, updated));
+  return c.json(buildMaskedResponse(nowIso, updated, ctx.env));
 });
 
 configRoutes.delete('/config', async (c) => {
   const denied = guardAdmin(c);
   if (denied) return denied;
 
-  await c
-    .get('ctx')
-    .db.delete(userServiceConfigs)
-    .where(eq(userServiceConfigs.userId, GLOBAL_CONFIG_USER_ID));
+  const ctx = c.get('ctx');
+  await ctx.db.delete(userServiceConfigs).where(eq(userServiceConfigs.userId, GLOBAL_CONFIG_USER_ID));
 
-  return c.json(buildMaskedResponse(null, null));
+  return c.json(buildMaskedResponse(null, null, ctx.env));
 });
 
 configRoutes.post('/config/proxy/test', zValidator('json', ProxyTestRequestSchema), async (c) => {
@@ -510,12 +516,22 @@ configRoutes.post('/config/proxy/test', zValidator('json', ProxyTestRequestSchem
 
   const input = c.req.valid('json');
   const ctx = c.get('ctx');
+  const runtimeEnv = ctx.env ?? process.env;
   let proxyUrl = input.proxyUrl?.trim() ?? '';
 
   if (!proxyUrl && input.useSavedScope) {
     const savedProxy = await loadRuntimeProxyConfig(ctx);
+    const probeUrl = input.targetUrl?.trim() || 'https://cp.cloudflare.com/generate_204';
     if (input.useSavedScope === 'global') {
-      proxyUrl = savedProxy.globalUrl;
+      proxyUrl =
+        savedProxy.globalUrl ||
+        resolveEffectiveProxyUrl(
+          { ...savedProxy, globalEnabled: false, overrides: {} },
+          'llm_primary',
+          probeUrl,
+          runtimeEnv,
+        ) ||
+        '';
     } else {
       const ov = savedProxy.overrides?.[input.useSavedScope];
       if (ov?.mode === 'direct') {
@@ -531,7 +547,8 @@ configRoutes.post('/config/proxy/test', zValidator('json', ProxyTestRequestSchem
       if (ov?.mode === 'custom') {
         proxyUrl = ov.url;
       } else {
-        proxyUrl = savedProxy.globalEnabled ? savedProxy.globalUrl : '';
+        proxyUrl =
+          resolveEffectiveProxyUrl(savedProxy, input.useSavedScope, probeUrl, runtimeEnv) ?? '';
       }
     }
   }

@@ -67,6 +67,9 @@ interface ProxyFormState {
   hasGlobalStored: boolean;
   clearGlobalStored: boolean;
   bypassLocal: boolean;
+  allowFakeIp: boolean;
+  useEnvProxy: boolean;
+  envProxyDetected: string | null;
   overrides: Record<ProxyScope, ProxyOverrideFormState>;
 }
 
@@ -95,6 +98,9 @@ function makeProxyForm(masked?: MaskedProxyConfig | null): ProxyFormState {
     hasGlobalStored: Boolean(masked?.hasGlobalUrl),
     clearGlobalStored: false,
     bypassLocal: masked ? masked.bypassLocal : true,
+    allowFakeIp: Boolean(masked?.allowFakeIp),
+    useEnvProxy: masked ? masked.useEnvProxy : true,
+    envProxyDetected: masked?.envProxyDetected ?? null,
     overrides,
   };
 }
@@ -289,6 +295,8 @@ export function SettingsModal({
       globalUrl: typedGlobal,
       preserveStoredGlobalUrl: !typedGlobal && !proxyForm.clearGlobalStored && proxyForm.hasGlobalStored,
       bypassLocal: proxyForm.bypassLocal,
+      allowFakeIp: proxyForm.allowFakeIp,
+      useEnvProxy: proxyForm.useEnvProxy,
       overrides,
     };
   };
@@ -1196,6 +1204,44 @@ export function SettingsModal({
                     )}
                     测试全局代理连通性
                   </button>
+                </div>
+
+                <div className="space-y-1.5 rounded-sm border border-line-subtle bg-surface/60 p-2.5">
+                  <label className="flex cursor-pointer items-start gap-2 text-xs text-content-secondary">
+                    <input
+                      type="checkbox"
+                      checked={proxyForm.allowFakeIp}
+                      onChange={(e) =>
+                        setProxyForm((prev) => ({ ...prev, allowFakeIp: e.target.checked }))
+                      }
+                      className="mt-0.5 accent-accent"
+                    />
+                    <span>
+                      允许系统透明代理 / TUN Fake-IP（<code className="font-mono text-[11px]">198.18.0.0/15</code>）
+                      <span className="block text-[11px] text-content-muted">
+                        适用于宿主机或路由器开启 Clash / Mihomo TUN Fake-IP 且未启用应用内代理的场景；仍严格拦截真实内网段与直接 IP 访问（也可通过环境变量 <code className="font-mono">ROLECARD_ALLOW_FAKE_IP=true</code> 启用）
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex cursor-pointer items-start gap-2 text-xs text-content-secondary">
+                    <input
+                      type="checkbox"
+                      checked={proxyForm.useEnvProxy}
+                      onChange={(e) =>
+                        setProxyForm((prev) => ({ ...prev, useEnvProxy: e.target.checked }))
+                      }
+                      className="mt-0.5 accent-accent"
+                    />
+                    <span>
+                      全局代理未启用时自动回退使用系统环境变量代理（<code className="font-mono text-[11px]">HTTPS_PROXY / HTTP_PROXY / ALL_PROXY</code>）
+                      <span className="block text-[11px] text-content-muted">
+                        {proxyForm.envProxyDetected
+                          ? `当前服务端检测到环境变量代理：${proxyForm.envProxyDetected}（遵循 NO_PROXY 与作用域「强制直连」覆盖）`
+                          : '当前服务端未检测到有效的环境变量代理'}
+                      </span>
+                    </span>
+                  </label>
                 </div>
 
                 {proxyTestStatus.global?.message && (

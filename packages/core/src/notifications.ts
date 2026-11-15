@@ -9,6 +9,7 @@ import type {
 import {
   defaultDnsLookup,
   defaultHttpFetch,
+  isFakeIpAllowedByFetch,
   isUrlProxiedByFetch,
   validatePublicUrl,
 } from './ssrf.js';
@@ -319,6 +320,7 @@ export async function validateNotificationChannelSettings(
       const hostCheck = await validatePublicUrl(
         `https://${settings.smtpHost.trim()}`,
         dnsLookup,
+        { allowFakeIp: isFakeIpAllowedByFetch(fetchImpl) },
       );
       if (!hostCheck.ok) {
         return hostCheck;
@@ -350,6 +352,7 @@ export async function validateNotificationChannelSettings(
       const targetUrl = settings.webhookUrl.trim();
       const urlCheck = await validatePublicUrl(targetUrl, dnsLookup, {
         viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, targetUrl) : false,
+        allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
       });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
@@ -365,6 +368,7 @@ export async function validateNotificationChannelSettings(
       const base = settings.telegramApiBaseUrl?.trim() || 'https://api.telegram.org';
       const urlCheck = await validatePublicUrl(base, dnsLookup, {
         viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, base) : false,
+        allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
       });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
@@ -380,6 +384,7 @@ export async function validateNotificationChannelSettings(
       const base = settings.barkServerUrl?.trim() || 'https://api.day.app';
       const urlCheck = await validatePublicUrl(base, dnsLookup, {
         viaProxy: fetchImpl ? isUrlProxiedByFetch(fetchImpl, base) : false,
+        allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
       });
       if (!urlCheck.ok) return urlCheck;
       return ok(true);
@@ -407,6 +412,7 @@ async function postJsonChecked(
   const dnsLookup = deps.dnsLookup ?? defaultDnsLookup;
   const check = await validatePublicUrl(url, dnsLookup, {
     viaProxy: isUrlProxiedByFetch(fetchImpl, url),
+    allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
   });
   if (!check.ok) return check;
 
@@ -448,6 +454,7 @@ export async function deliverNotificationToChannel(
         const hostCheck = await validatePublicUrl(
           `https://${settings.smtpHost.trim()}`,
           dnsLookup,
+          { allowFakeIp: isFakeIpAllowedByFetch(deps.fetchImpl) },
         );
         if (!hostCheck.ok) return hostCheck;
 
