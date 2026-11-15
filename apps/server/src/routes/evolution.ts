@@ -398,8 +398,8 @@ evolutionRoutes.put(
       return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
     }
 
-    // Hard compliance barrier: real_person cards can only use canon scope
-    const safeScope = card.entityType === 'real_person' ? 'canon' : input.syncScope;
+    // Respect user-selected syncScope (defaults to 'canon' unless user explicitly enables meta)
+    const safeScope = input.syncScope;
     const now = getNow(ctx);
     const nowIso = now.toISOString();
     const nextRunAt = input.enabled
@@ -476,22 +476,23 @@ evolutionRoutes.patch(
       return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
     }
 
-    if (card.entityType === 'real_person' && input.enableMetaInChat) {
-      return c.json(
-        {
-          error: {
-            code: 'REAL_PERSON_META_FORBIDDEN',
-            message: '真人/历史人物角色卡禁用风评与 Meta 层注入，仅保留正典设定。',
-          },
-        },
-        400,
-      );
+    const nowIso = getNow(ctx).toISOString();
+    const updatePatch: Partial<typeof roleCards.$inferInsert> = {
+      updatedAt: nowIso,
+    };
+    if (input.enableMetaInChat !== undefined) {
+      updatePatch.enableMetaInChat = input.enableMetaInChat;
+    }
+    if (input.metaSummary !== undefined) {
+      const trimmedMeta = input.metaSummary?.trim() ?? '';
+      updatePatch.metaReputationJson = trimmedMeta
+        ? JSON.stringify({ summary: trimmedMeta, updatedAt: nowIso })
+        : null;
     }
 
-    const nowIso = getNow(ctx).toISOString();
     await ctx.db
       .update(roleCards)
-      .set({ enableMetaInChat: input.enableMetaInChat, updatedAt: nowIso })
+      .set(updatePatch)
       .where(eq(roleCards.id, cardId));
 
     const updated = await ctx.db
@@ -675,7 +676,7 @@ evolutionRoutes.post(
         characterName: mergedContent.name,
         contentJson: JSON.stringify(mergedContent),
         metaReputationJson:
-          card.entityType !== 'real_person' && imp.metaSummary
+          imp.metaSummary
             ? JSON.stringify({ summary: imp.metaSummary, updatedAt: nowIso })
             : card.metaReputationJson,
         diffSummary,

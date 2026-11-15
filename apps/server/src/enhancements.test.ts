@@ -939,4 +939,416 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports search connectivity probe endpoint and single-field AI generation with lock enforcement', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.includes('meta=siteinfo')) {
+        return new Response(JSON.stringify({ query: { general: { sitename: 'PRTS' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('api.bochaai.com')) {
+        const auth = new Headers(init?.headers).get('authorization') ?? '';
+        if (!auth.includes('saved-bocha-key')) {
+          return new Response('Unauthorized', { status: 401 });
+        }
+        return new Response(
+          JSON.stringify({
+            data: {
+              webPages: {
+                value: [
+                  { name: 'Alan Turing Bio', url: 'https://example.com/turing', snippet: 'Mathematician' },
+                ],
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/chat/completions')) {
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    value: 'AI 重新生成的角色背景故事：历经漫长岁月与巴别塔变迁的医药学者。',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: publicDns,
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // 1. Save config with Bocha search key and primary LLM
+    const saveCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        searchProvider: 'bocha',
+        searchApiKey: 'saved-bocha-key',
+        enableLayer1Wiki: true,
+        dailyAutoRefreshLimit: 20,
+      }),
+    });
+    expect(saveCfgRes.status).toBe(200);
+
+    // 2. Test search connectivity using saved key + Layer 1 wiki probe
+    const searchOkRes = await app.request('/api/v1/config/search/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        provider: 'bocha',
+        useSavedKey: true,
+        testLayer1Wiki: true,
+      }),
+    });
+    expect(searchOkRes.status).toBe(200);
+    const searchOkJson = (await searchOkRes.json()) as {
+      ok: boolean;
+      hitCount: number;
+      sampleTitles: string[];
+      layer1Reachable?: boolean;
+    };
+    expect(searchOkJson.ok).toBe(true);
+    expect(searchOkJson.hitCount).toBe(1);
+    expect(searchOkJson.sampleTitles).toContain('Alan Turing Bio');
+    expect(searchOkJson.layer1Reachable).toBe(true);
+
+    const searchBadRes = await app.request('/api/v1/config/search/test', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        provider: 'bocha',
+        apiKey: 'wrong-key',
+      }),
+    });
+    expect(searchBadRes.status).toBe(502);
+    const searchBadJson = (await searchBadRes.json()) as { ok: boolean; error?: string };
+    expect(searchBadJson.ok).toBe(false);
+    expect(searchBadJson.error).toContain('401');
+
+    // 3. Import a card, lock personality, and test single-field AI generation
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const imported = (await importRes.json()) as {
+      card: { id: string; version: number; content: RoleCardContent };
+    };
+
+    const lockRes = await app.request(`/api/v1/cards/${imported.card.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        content: imported.card.content,
+        lockedFields: ['personality'],
+      }),
+    });
+    expect(lockRes.status).toBe(200);
+
+    const lockedGenRes = await app.request(`/api/v1/cards/${imported.card.id}/generate-field`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ field: 'personality' }),
+    });
+    expect(lockedGenRes.status).toBe(400);
+    const lockedGenJson = (await lockedGenRes.json()) as { error?: { code?: string } };
+    expect(lockedGenJson.error?.code).toBe('FIELD_LOCKED');
+
+    const bgGenRes = await app.request(`/api/v1/cards/${imported.card.id}/generate-field`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ field: 'background' }),
+    });
+    expect(bgGenRes.status).toBe(200);
+    const bgGenJson = (await bgGenRes.json()) as {
+      field: string;
+      card: { version: number; content: RoleCardContent };
+    };
+    expect(bgGenJson.field).toBe('background');
+    expect(bgGenJson.card.content.background).toContain('AI 重新生成的角色背景故事');
+    expect(bgGenJson.card.version).toBeGreaterThan(imported.card.version);
+
+    dbHandle.close();
+  });
+
+  it('supports portrait style preset CRUD, per-user custom isolation, shared built-ins, reset, and prompt override', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const capturedSystemMessages: string[] = [];
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        const sys = body.messages?.find((m) => m.role === 'system')?.content ?? '';
+        capturedSystemMessages.push(sys);
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    prompt: '1girl, Kaltsit, photorealistic portrait',
+                    negativePrompt: 'anime, cartoon',
+                    notes: '按选定画风预设提炼英文提示词。',
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+    });
+
+    const loginAdminRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginAdminRes.status).toBe(200);
+    const adminCookie = loginAdminRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // Configure primary LLM & create a second user to verify per-user custom preset isolation
+    const saveCfgRes = await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        searchProvider: 'none',
+        enableLayer1Wiki: true,
+        dailyAutoRefreshLimit: 20,
+      }),
+    });
+    expect(saveCfgRes.status).toBe(200);
+
+    const createUserBRes = await app.request('/api/v1/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        username: 'artist_b',
+        password: 'AdminTestPassword!99',
+        role: 'user',
+        permissions: ['card:read', 'card:update'],
+      }),
+    });
+    expect(createUserBRes.status).toBe(201);
+
+    const loginUserBRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'artist_b', password: 'AdminTestPassword!99' }),
+    });
+    expect(loginUserBRes.status).toBe(200);
+    const userBCookie = loginUserBRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // 1. Built-in presets include blank + realistic + original 6
+    const listAdmin1 = await app.request('/api/v1/images/styles', {
+      headers: { cookie: adminCookie },
+    });
+    expect(listAdmin1.status).toBe(200);
+    const listAdmin1Json = (await listAdmin1.json()) as {
+      styles: Array<{ id: string; name: string; stylePrompt: string; isBuiltin: boolean; isCustomized: boolean }>;
+    };
+    expect(listAdmin1Json.styles.some((s) => s.id === 'blank' && s.stylePrompt === '')).toBe(true);
+    expect(listAdmin1Json.styles.some((s) => s.id === 'realistic' && s.isBuiltin)).toBe(true);
+    expect(listAdmin1Json.styles).toHaveLength(8);
+
+    // 2. Admin creates a custom style preset (isolated to admin)
+    const createCustomRes = await app.request('/api/v1/images/styles', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        name: '管理员赛博水墨',
+        stylePrompt: 'cyberpunk Chinese ink wash painting, neon rain',
+        negativePromptHint: '3d render',
+        instructionHint: '仰视构图',
+      }),
+    });
+    expect(createCustomRes.status).toBe(201);
+    const createdCustom = (await createCustomRes.json()) as {
+      style: { id: string; name: string; isBuiltin: boolean };
+    };
+    expect(createdCustom.style.isBuiltin).toBe(false);
+
+    // User B cannot see, modify, or delete admin's custom style, but shares built-in presets
+    const listUserBRes = await app.request('/api/v1/images/styles', {
+      headers: { cookie: userBCookie },
+    });
+    expect(listUserBRes.status).toBe(200);
+    const listUserBJson = (await listUserBRes.json()) as {
+      styles: Array<{ id: string }>;
+    };
+    expect(listUserBJson.styles.some((s) => s.id === createdCustom.style.id)).toBe(false);
+    expect(listUserBJson.styles.some((s) => s.id === 'realistic')).toBe(true);
+
+    const forbiddenPutRes = await app.request(`/api/v1/images/styles/${createdCustom.style.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: userBCookie },
+      body: JSON.stringify({ name: '窃取名称' }),
+    });
+    expect(forbiddenPutRes.status).toBe(403);
+
+    const forbiddenDelRes = await app.request(`/api/v1/images/styles/${createdCustom.style.id}`, {
+      method: 'DELETE',
+      headers: { cookie: userBCookie },
+    });
+    expect(forbiddenDelRes.status).toBe(403);
+
+    // 3. Admin renames custom style and uses it for prompt generation
+    const renameRes = await app.request(`/api/v1/images/styles/${createdCustom.style.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ name: '管理员新水墨风' }),
+    });
+    expect(renameRes.status).toBe(200);
+    const renameJson = (await renameRes.json()) as { style: { name: string } };
+    expect(renameJson.style.name).toBe('管理员新水墨风');
+
+    const promptCustomRes = await app.request('/api/v1/images/prompt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'generate',
+        stylePresetId: createdCustom.style.id,
+        characterName: '凯尔希',
+      }),
+    });
+    expect(promptCustomRes.status).toBe(200);
+    expect(capturedSystemMessages[0]).toContain('cyberpunk Chinese ink wash painting');
+
+    // Blank/free override clears stylePrompt constraint
+    const promptBlankRes = await app.request('/api/v1/images/prompt', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        mode: 'generate',
+        stylePresetId: 'realistic',
+        customStylePrompt: '',
+        customNegativeHint: '',
+        characterName: '凯尔希',
+        instruction: '纯手绘儿童绘本风格',
+      }),
+    });
+    expect(promptBlankRes.status).toBe(200);
+    expect(capturedSystemMessages[1]).toContain('自由风格');
+    expect(capturedSystemMessages[1]).not.toContain('photorealistic character portrait');
+
+    // 4. Built-in preset can be edited directly, protected from deletion, and reset to default
+    const editBuiltinRes = await app.request('/api/v1/images/styles/realistic', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        stylePrompt: 'film grain 35mm Leica street portrait, natural daylight',
+      }),
+    });
+    expect(editBuiltinRes.status).toBe(200);
+    const editBuiltinJson = (await editBuiltinRes.json()) as {
+      style: { isCustomized: boolean; stylePrompt: string };
+    };
+    expect(editBuiltinJson.style.isCustomized).toBe(true);
+    expect(editBuiltinJson.style.stylePrompt).toContain('35mm Leica');
+
+    const delBuiltinRes = await app.request('/api/v1/images/styles/realistic', {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(delBuiltinRes.status).toBe(400);
+    const delBuiltinJson = (await delBuiltinRes.json()) as { error?: { code?: string } };
+    expect(delBuiltinJson.error?.code).toBe('BUILTIN_STYLE_PROTECTED');
+
+    const resetBuiltinRes = await app.request('/api/v1/images/styles/realistic/reset', {
+      method: 'POST',
+      headers: { cookie: adminCookie },
+    });
+    expect(resetBuiltinRes.status).toBe(200);
+    const resetBuiltinJson = (await resetBuiltinRes.json()) as {
+      style: { isCustomized: boolean; stylePrompt: string };
+    };
+    expect(resetBuiltinJson.style.isCustomized).toBe(false);
+    expect(resetBuiltinJson.style.stylePrompt).toContain('photorealistic character portrait');
+
+    // 5. Admin deletes their custom style
+    const delCustomRes = await app.request(`/api/v1/images/styles/${createdCustom.style.id}`, {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(delCustomRes.status).toBe(200);
+
+    dbHandle.close();
+  });
 });

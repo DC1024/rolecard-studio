@@ -1,11 +1,12 @@
-import type {
-  ImageGenerateRequest,
-  ImageSearchItem,
-  PortraitPromptMode,
-  PortraitPromptResponse,
-  PortraitPromptStyle,
-  VisionAnalyzeRequest,
-  VisionAnalyzeResponse,
+import {
+  BUILTIN_PORTRAIT_STYLE_PRESETS,
+  type ImageGenerateRequest,
+  type ImageSearchItem,
+  type PortraitPromptMode,
+  type PortraitPromptResponse,
+  type PortraitPromptStyle,
+  type VisionAnalyzeRequest,
+  type VisionAnalyzeResponse,
 } from '@rolecard/shared';
 import { z } from 'zod';
 import { detectImageMagicBytes } from './ccv3.js';
@@ -342,14 +343,13 @@ const PortraitPromptOutputSchema = z.object({
   notes: z.string().max(400).optional().default(''),
 });
 
-const PORTRAIT_STYLE_DESCRIPTORS: Record<PortraitPromptStyle, string> = {
-  anime: 'clean anime character portrait illustration, crisp lineart, cel-shaded with soft ambient lighting',
-  semi_realistic: 'semi-realistic digital character concept art, painterly brushwork, refined facial lighting',
-  oil_painting: 'classical oil painting portrait, rich impasto texture, dramatic studio chiaroscuro lighting',
-  watercolor: 'delicate watercolor character illustration, soft pigment washes, luminous paper texture',
-  pixel_retro: 'retro 90s anime cel illustration, nostalgic film grain, expressive silhouette',
-  dark_gothic: 'dark gothic fantasy character portrait, moody atmospheric shadows, high-contrast rim lighting',
-};
+const PORTRAIT_STYLE_DESCRIPTORS: Record<string, string> = Object.fromEntries(
+  BUILTIN_PORTRAIT_STYLE_PRESETS.map((preset) => [preset.id, preset.stylePrompt]),
+);
+
+const PORTRAIT_STYLE_NEGATIVE_HINTS: Record<string, string> = Object.fromEntries(
+  BUILTIN_PORTRAIT_STYLE_PRESETS.map((preset) => [preset.id, preset.negativePromptHint]),
+);
 
 export interface PortraitPromptCardContext {
   characterName: string;
@@ -370,13 +370,25 @@ export async function generateOrOptimizePortraitPrompt(
   params: {
     card: PortraitPromptCardContext;
     mode: PortraitPromptMode;
-    style: PortraitPromptStyle;
+    style?: PortraitPromptStyle | string;
+    customStylePrompt?: string;
+    customNegativeHint?: string;
     draftPrompt?: string;
     instruction?: string;
   },
   deps: PortraitPromptDeps,
 ): Promise<Result<PortraitPromptResponse, CoreError>> {
-  const styleDesc = PORTRAIT_STYLE_DESCRIPTORS[params.style];
+  const styleKey = params.style ?? 'anime';
+  const styleDesc = (
+    params.customStylePrompt !== undefined
+      ? params.customStylePrompt
+      : (PORTRAIT_STYLE_DESCRIPTORS[styleKey] ?? '')
+  ).trim();
+  const negativeHint = (
+    params.customNegativeHint !== undefined
+      ? params.customNegativeHint
+      : (PORTRAIT_STYLE_NEGATIVE_HINTS[styleKey] ?? '')
+  ).trim();
   const cardLines = [
     `角色名：${params.card.characterName}`,
     params.card.workName ? `所属作品/世界观：${params.card.workName}` : '',
@@ -418,9 +430,16 @@ export async function generateOrOptimizePortraitPrompt(
         content: [
           '你是资深角色视觉美术总监与 AI 生图提示词工程师。',
           '你需要把角色卡设定转化为可直接用于文生图模型（gpt-image-1 / FLUX / Kolors / SDXL）的高质量英文提示词。',
-          `必须严格遵循用户指定的画风基底：${styleDesc}。`,
+          styleDesc
+            ? `必须严格遵循用户指定的画风基底：${styleDesc}。`
+            : '当前未指定固定画风预设（自由风格）：请完全尊重用户草稿提示词或补充画面要求中的画风设定；若用户均未指定画风，请根据角色所属作品与世界观背景自行选择最匹配的视觉风格。',
+          negativeHint
+            ? `建议在 negativePrompt 中融入以下风格避让参考词（可按语境微调）：${negativeHint}。`
+            : '',
           'prompt 字段必须使用清晰具体的英文描述（单人立绘/半身或全身肖像视角，避免多人混入），禁止包含任何中文字符或多余解释；negativePrompt 也用英文；notes 用简体中文（40-120字）概括提取了哪些特征或优化了哪些细节。',
-        ].join('\n'),
+        ]
+          .filter(Boolean)
+          .join('\n'),
       },
       {
         role: 'user',

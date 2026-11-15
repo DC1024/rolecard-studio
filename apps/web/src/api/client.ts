@@ -1,11 +1,14 @@
 import type {
   AccessPolicy,
   AuthContextResponse,
+  CardGeneratableField,
   CardImageUploadRequest,
   CardType,
+  CreatePortraitStylePresetInput,
   CreateUserRequest,
   DeclarativePluginManifest,
   ExportFormat,
+  GenerateCardFieldRequest,
   GenerateCardRequest,
   GenerationMode,
   ImageGenerateRequest,
@@ -23,11 +26,14 @@ import type {
   PlaytestResponse,
   PortraitPromptRequest,
   PortraitPromptResponse,
+  PortraitStylePresetDto,
   ProxyTestRequest,
   PublishStatus,
   ResolveProposalRequest,
   RippleProposalDto,
   RoleCardContent,
+  SearchTestRequest,
+  SearchTestResult,
   ServiceConfigInput,
   SourceEntry,
   SyncEventDto,
@@ -40,6 +46,7 @@ import type {
   CreateLorebookRequest,
   UpdateMetaSettingsRequest,
   UpdateMyAccountRequest,
+  UpdatePortraitStylePresetInput,
   UpdateScheduleRequest,
   UpdateUserPermissionsRequest,
   UpsertNotificationChannelRequest,
@@ -71,6 +78,8 @@ export interface RoleCardDto {
   lockedFields: string[];
   diffSummary: string | null;
   enableMetaInChat: boolean;
+  metaSummary: string | null;
+  metaUpdatedAt: string | null;
   scheduleEnabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -340,6 +349,36 @@ export const api = {
     };
   },
 
+  async testSearchConfig(input: SearchTestRequest): Promise<SearchTestResult> {
+    const res = await fetch('/api/v1/config/search/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(input),
+    });
+    const payload = (await res.json().catch(() => ({}))) as Omit<
+      Partial<SearchTestResult>,
+      'error'
+    > & {
+      error?: string | { message?: string };
+    };
+    const errorMsg =
+      typeof payload.error === 'string'
+        ? payload.error
+        : payload.error?.message;
+    return {
+      ok: Boolean(payload.ok),
+      provider: payload.provider ?? input.provider,
+      latencyMs: typeof payload.latencyMs === 'number' ? payload.latencyMs : 0,
+      hitCount: typeof payload.hitCount === 'number' ? payload.hitCount : 0,
+      sampleTitles: Array.isArray(payload.sampleTitles) ? payload.sampleTitles : [],
+      layer1Reachable: payload.layer1Reachable,
+      layer1Summary: payload.layer1Summary,
+      message: payload.message ?? errorMsg ?? `搜索连通性测试返回 HTTP ${res.status}`,
+      error: errorMsg,
+    };
+  },
+
   getAccessPolicy(): Promise<AccessPolicy> {
     return requestJson<AccessPolicy>('/admin/access-policy');
   },
@@ -604,6 +643,24 @@ export const api = {
     });
   },
 
+  generateCardField(
+    id: string,
+    input: Omit<GenerateCardFieldRequest, 'instruction'> & { instruction?: string },
+  ): Promise<{
+    card: RoleCardDto;
+    field: CardGeneratableField;
+    fieldLabel: string;
+    diffSummary: string;
+  }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/generate-field`, {
+      method: 'POST',
+      body: JSON.stringify({
+        field: input.field,
+        instruction: input.instruction ?? '',
+      }),
+    });
+  },
+
   importCard(input: ImportCardRequest): Promise<{
     card: RoleCardDto;
     upgradedFrom: string;
@@ -812,6 +869,41 @@ export const api = {
     return requestJson('/images/search', {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  },
+
+  listPortraitStyles(): Promise<{ styles: PortraitStylePresetDto[] }> {
+    return requestJson('/images/styles');
+  },
+
+  createPortraitStyle(
+    input: CreatePortraitStylePresetInput,
+  ): Promise<{ style: PortraitStylePresetDto }> {
+    return requestJson('/images/styles', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  updatePortraitStyle(
+    id: string,
+    input: UpdatePortraitStylePresetInput,
+  ): Promise<{ style: PortraitStylePresetDto }> {
+    return requestJson(`/images/styles/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  resetPortraitStyle(id: string): Promise<{ style: PortraitStylePresetDto }> {
+    return requestJson(`/images/styles/${encodeURIComponent(id)}/reset`, {
+      method: 'POST',
+    });
+  },
+
+  deletePortraitStyle(id: string): Promise<{ ok: boolean; id: string }> {
+    return requestJson(`/images/styles/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     });
   },
 

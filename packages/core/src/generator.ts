@@ -211,7 +211,10 @@ export async function generateRoleCard(
         enableLayer1Wiki: deps.enableLayer1Wiki,
         searchProvider: deps.searchProvider,
         searchApiKey: deps.searchApiKey,
-        deepSearch: input.mode === 'B' || input.mode === 'C',
+        deepSearch:
+          input.mode === 'B' ||
+          input.mode === 'C' ||
+          (input.mode === 'A' && input.enableSupplementSearch),
         onSiteChecked: async (site, hit) => {
           await deps.onProgress?.({
             step: 'retrieving',

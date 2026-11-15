@@ -165,6 +165,13 @@ export function SettingsModal({
   const [customSystemPrompt, setCustomSystemPrompt] = useState('');
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(() => makeProxyForm(null));
   const [proxyTestStatus, setProxyTestStatus] = useState<Record<string, ProxyTestDisplayState>>({});
+  const [searchTestStatus, setSearchTestStatus] = useState<{
+    running: boolean;
+    ok?: boolean;
+    message?: string;
+    sampleTitles?: string[];
+    layer1Summary?: string;
+  } | null>(null);
 
   // Account self-service state
   const [accountUsername, setAccountUsername] = useState('');
@@ -205,6 +212,7 @@ export function SettingsModal({
     setError(null);
     setSlotTestStatus({});
     setProxyTestStatus({});
+    setSearchTestStatus(null);
     setCreatedPlainKey(null);
     setAccountUsername(auth?.user?.username ?? '');
     setCurrentPassword('');
@@ -481,6 +489,43 @@ export function SettingsModal({
       notifyError(msg);
     } finally {
       setTestingSlot(null);
+    }
+  };
+
+  const handleTestSearch = async () => {
+    setSearchTestStatus({
+      running: true,
+      message: '正在测试检索服务连通性...',
+    });
+    try {
+      const res = await api.testSearchConfig({
+        provider: searchProvider,
+        apiKey: searchApiKey.trim() || undefined,
+        useSavedKey: !searchApiKey.trim() && Boolean(config?.hasSearchApiKey || searchMasked),
+        testLayer1Wiki: enableLayer1Wiki,
+        query: 'Alan Turing',
+        proxyConfig: buildProxyConfigPayload(),
+      });
+      setSearchTestStatus({
+        running: false,
+        ok: res.ok,
+        message: res.message,
+        sampleTitles: res.sampleTitles,
+        layer1Summary: res.layer1Summary,
+      });
+      if (res.ok) {
+        notifySuccess(res.message);
+      } else {
+        notifyError(res.message);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '搜索连通性测试失败';
+      setSearchTestStatus({
+        running: false,
+        ok: false,
+        message: msg,
+      });
+      notifyError(msg);
     }
   };
 
@@ -969,6 +1014,49 @@ export function SettingsModal({
                     className="h-9 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary"
                   />
                 </div>
+              </div>
+
+              <div className="rounded-md border border-line bg-canvas p-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={busy || Boolean(searchTestStatus?.running)}
+                    onClick={() => void handleTestSearch()}
+                    className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border border-line bg-surface px-2.5 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                  >
+                    {searchTestStatus?.running && <Loader2 className="h-3 w-3 animate-spin" />}
+                    测试搜索连通性
+                  </button>
+                  {searchTestStatus?.message && (
+                    <span
+                      className={`text-[11px] ${
+                        searchTestStatus.running
+                          ? 'text-status-info'
+                          : searchTestStatus.ok
+                            ? 'text-status-success'
+                            : 'text-status-danger'
+                      }`}
+                    >
+                      {searchTestStatus.message}
+                    </span>
+                  )}
+                </div>
+
+                {(searchTestStatus?.layer1Summary ||
+                  (searchTestStatus?.sampleTitles && searchTestStatus.sampleTitles.length > 0)) && (
+                  <div className="space-y-1 rounded-sm border border-line-subtle bg-surface px-2.5 py-2 text-[11px] text-content-secondary">
+                    {searchTestStatus.layer1Summary && <div>{searchTestStatus.layer1Summary}</div>}
+                    {searchTestStatus.sampleTitles && searchTestStatus.sampleTitles.length > 0 && (
+                      <div className="text-content-muted">
+                        命中示例：{searchTestStatus.sampleTitles.join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <p className="text-[11px] leading-relaxed text-content-muted">
+                  双层检索协作：开启 Layer 1 百科并配置 Layer 2 商业搜索后，补充检索/快速生成/深度调研与定时演化将并发查询双层信源，并为 Layer 2 预留保底 Token 预算以兼顾权威条目与实时动态。
+                </p>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-canvas p-3">
@@ -1586,19 +1674,19 @@ export function SettingsModal({
               </div>
 
               {createdPlainKey && (
-                <div className="flex items-center justify-between gap-2 rounded-md border border-status-warning/50 bg-status-warning/10 p-3 text-xs">
-                  <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-status-warning/50 bg-status-warning/10 p-3 text-xs">
+                  <div className="min-w-0 flex-1">
                     <div className="font-semibold text-status-warning">
                       请立即复制保存（明文仅展示这一次）：
                     </div>
-                    <code className="mt-1 block font-mono text-content-primary">
+                    <code className="mt-1 block break-all font-mono text-content-primary">
                       {createdPlainKey}
                     </code>
                   </div>
                   <button
                     type="button"
                     onClick={() => void copyWithToast(createdPlainKey, 'API Key')}
-                    className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px]"
+                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2 py-1 text-[11px] hover:border-accent hover:text-accent"
                   >
                     <Copy className="h-3 w-3" />
                     复制

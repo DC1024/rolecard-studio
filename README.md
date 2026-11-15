@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.3.0）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.0）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
@@ -43,7 +43,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - 支持 8 种官方导出格式：`tavern_png`、`tavern_v3_json`、`json`、`markdown`、`foundry_dnd5e_json`、`vtt_token_png`、`trpg_sheet_html`、`trpg_sheet_md`。
 - **定时人设演化、单跳涟漪与多渠道通知**
   - 定时演化默认关闭，可按角色独立配置同步周期与自动应用阈值；仅允许对共同关联世界书的邻居角色生成 **1-Hop 单跳关系涟漪提案**，严格人工审核。
-  - 针对真人实体（`real_person`）实施 **元舆论（Meta Reputation）硬隔离**，防止舆论信息污染试聊。
+  - 支持按角色卡独立控制 **元舆论（Meta Reputation）风评层**（默认关闭，用户可自主在详情页编辑风评摘要或开启试聊/演化注入）。
   - 支持 **9 大等权并行通知渠道**：SMTP 邮件、飞书、企业微信、钉钉、Telegram、Discord、Bark、Server酱、自定义 Webhook。
 - **四路模型槽位、两级网络代理与 RBAC 安全体系**
   - 支持 `primary`（主生成）/ `chat`（试聊）/ `vision`（识图反推）/ `image`（文生图）4 路独立模型槽位，兼容 OpenAI、DeepSeek、硅基流动、Kimi、通义千问、Anthropic 兼容网关、Azure OpenAI、本地 Ollama 与自定义 OpenAI 兼容接口。
@@ -205,4 +205,4 @@ pnpm bundle      # 打包独立运行产物至 release/bundle/
 
 - **加密主密钥保护**：服务首次启动时会在 `ROLECARD_DATA_DIR/.master.key` 自动生成主密钥，用于 AES-256-GCM 加密所有模型 API Key、代理地址、通知密钥与 Webhook Secret。**迁移或备份数据时请务必连同 `rolecard.db`、`uploads/` 与 `.master.key` 一起保存。**
 - **SSRF 防护**：所有参考 URL、远程立绘与 Webhook 均内置私网/回环地址拦截（当对应作用域配置走用户显式代理时，按代理链路规则执行）。
-- **真人实体硬隔离**：当角色卡实体类型标记为 `real_person` 时，系统在试聊与后台演化链路中强制屏蔽元舆论注入。
+- **风评层默认隔离与自主可控**：包括 `real_person` 在内的所有角色卡默认关闭试聊风评层注入与 `meta_reputation` 同步，用户可在「定时演化与 Meta 配置」中按需显式开启与编辑。

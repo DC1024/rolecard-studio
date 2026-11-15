@@ -1115,30 +1115,30 @@ export function ReviewSyncPanel({
           )}
 
           {createdSecret && (
-            <div className="flex items-center justify-between gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
-              <div className="flex items-center gap-2">
-                <KeyRound className="h-4 w-4 text-status-warning" />
-                <span>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-status-warning/40 bg-status-warning/10 p-3 text-xs">
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
+                <span className="min-w-0">
                   签名密钥（仅显示一次，用于校验{' '}
                   <code className="font-mono">X-RoleCard-Signature</code>）：
-                  <code className="ml-1 rounded bg-surface px-1.5 py-0.5 font-mono font-semibold text-content-primary">
+                  <code className="ml-1 inline-block break-all rounded bg-surface px-1.5 py-0.5 font-mono font-semibold text-content-primary">
                     {createdSecret}
                   </code>
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex shrink-0 items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => void copyWithToast(createdSecret, 'Webhook 签名密钥')}
-                  className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] text-content-primary hover:border-accent"
+                  className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2.5 py-1 text-[11px] text-content-primary hover:border-accent"
                 >
-                  <Copy className="h-3 w-3" />
+                  <Copy className="h-3 w-3 shrink-0" />
                   复制密钥
                 </button>
                 <button
                   type="button"
                   onClick={() => setCreatedSecret(null)}
-                  className="text-content-muted hover:text-content-primary"
+                  className="shrink-0 text-content-muted hover:text-content-primary"
                 >
                   <X className="h-4 w-4" />
                 </button>

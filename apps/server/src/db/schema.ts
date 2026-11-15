@@ -243,3 +243,17 @@ export const notificationChannels = sqliteTable('notification_channels', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const portraitStylePresets = sqliteTable('portrait_style_presets', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull().default('global'),
+  name: text('name').notNull(),
+  stylePrompt: text('style_prompt').notNull().default(''),
+  negativePromptHint: text('negative_prompt_hint').notNull().default(''),
+  instructionHint: text('instruction_hint').notNull().default(''),
+  isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
+  isCustomized: integer('is_customized', { mode: 'boolean' }).notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(100),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});

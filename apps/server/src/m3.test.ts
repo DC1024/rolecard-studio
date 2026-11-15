@@ -230,15 +230,51 @@ describe('M3 Server Integration: Evolution, 1-Hop Ripple, Meta Isolation, Sync &
       }),
     });
     expect(createRealRes.status).toBe(201);
-    const cardReal = ((await createRealRes.json()) as { card: { id: string } }).card;
+    const cardReal = ((await createRealRes.json()) as {
+      card: { id: string; enableMetaInChat: boolean; metaSummary: string | null };
+    }).card;
+    expect(cardReal.enableMetaInChat).toBe(false);
 
-    // real_person meta-settings must forbid enableMetaInChat=true
+    // real_person defaults to disabled, but user can explicitly opt in and manage metaSummary
     const realMetaRes = await app.request(`/api/v1/cards/${cardReal.id}/meta-settings`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ enableMetaInChat: true }),
+      body: JSON.stringify({
+        enableMetaInChat: true,
+        metaSummary: '公众常赞誉其人工智能先驱地位',
+      }),
     });
-    expect(realMetaRes.status).toBe(400);
+    expect(realMetaRes.status).toBe(200);
+    const realMetaJson = (await realMetaRes.json()) as {
+      card: { enableMetaInChat: boolean; metaSummary: string | null };
+    };
+    expect(realMetaJson.card.enableMetaInChat).toBe(true);
+    expect(realMetaJson.card.metaSummary).toBe('公众常赞誉其人工智能先驱地位');
+
+    const realPlaytestOnRes = await app.request(`/api/v1/cards/${cardReal.id}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ message: '你好，图灵先生。' }),
+    });
+    expect(realPlaytestOnRes.status).toBe(200);
+    const realPlaytestOnJson = (await realPlaytestOnRes.json()) as { metaInjected: boolean };
+    expect(realPlaytestOnJson.metaInjected).toBe(true);
+
+    const disableRealMetaRes = await app.request(`/api/v1/cards/${cardReal.id}/meta-settings`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ enableMetaInChat: false }),
+    });
+    expect(disableRealMetaRes.status).toBe(200);
+
+    const realPlaytestOffRes = await app.request(`/api/v1/cards/${cardReal.id}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ message: '再测试一次。' }),
+    });
+    expect(realPlaytestOffRes.status).toBe(200);
+    const realPlaytestOffJson = (await realPlaytestOffRes.json()) as { metaInjected: boolean };
+    expect(realPlaytestOffJson.metaInjected).toBe(false);
 
     // 4. Link Card A & Card B to shared Lorebook
     const lbRes = await app.request('/api/v1/lorebooks', {

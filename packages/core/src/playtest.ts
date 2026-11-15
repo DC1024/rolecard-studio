@@ -1,11 +1,18 @@
+import { z } from 'zod';
 import {
   estimateCardTokens,
+  RelationshipEntrySchema,
   RoleCardContentSchema,
+  SpeechStyleSchema,
+  type CardGeneratableField,
+  type CardType,
+  type EntityType,
   type HitLorebookDebugItem,
   type LorebookEntry,
   type PlaytestRequest,
   type PlaytestResponse,
   type RoleCardContent,
+  type SourceEntry,
 } from '@rolecard/shared';
 import { completeStructuredJson } from './llm/json-repair.js';
 import {
@@ -371,5 +378,167 @@ export async function compressRoleCard(
     beforeTokens,
     afterTokens,
     diffSummary: `无损精简 (${beforeTokens} -> ${afterTokens} Tokens)`,
+  });
+}
+
+const CARD_FIELD_META: Record<
+  CardGeneratableField,
+  { label: string; guidance: string; schemaHint: string }
+> = {
+  summary: {
+    label: '角色简介',
+    guidance: '提炼 1~2 句话的高概念定位，概括角色核心身份、时代/世界观定位与戏剧魅力。',
+    schemaHint: '{ "value": "一句话高概念角色简介" }',
+  },
+  personality: {
+    label: '性格特征',
+    guidance: '详细刻画角色的性格特质、行为准则、价值观、内在矛盾与对外界刺激的典型反应。',
+    schemaHint: '{ "value": "性格特征与行为准则正文" }',
+  },
+  appearance: {
+    label: '外貌立绘',
+    guidance: '生动细致地描写角色的体型身高、五官神态、发色瞳色、标志性服饰、配饰与整体氛围感（便于人类阅读与 AI 立绘参考）。',
+    schemaHint: '{ "value": "外貌、服饰与视觉特征描写" }',
+  },
+  background: {
+    label: '背景故事',
+    guidance: '结合既有设定梳理角色的出身来历、关键转折事件、过往羁绊与当前处境，脉络清晰且不与已有设定冲突。',
+    schemaHint: '{ "value": "背景故事与经历正文" }',
+  },
+  scenario: {
+    label: '场景设定',
+    guidance: '构建适合展开互动的当前时间线、地点环境、氛围与双方所处的剧情切入背景。',
+    schemaHint: '{ "value": "当前场景设定正文" }',
+  },
+  speech_style: {
+    label: '语言风格与口癖',
+    guidance: '提炼角色的典型说话语调（tone）、标志性口癖列表（catchphrases）与表达习惯（habits）。',
+    schemaHint: '{ "value": { "tone": "语调特征", "catchphrases": ["口癖1", "口癖2"], "habits": ["语言习惯1"] } }',
+  },
+  relationships: {
+    label: '人际关系',
+    guidance: '梳理 2~5 组关键人物关系，每条包含 target（对方名称）、relation（关系定位）与 attitude（具体态度与互动张力）。',
+    schemaHint: '{ "value": [{ "target": "关联角色", "relation": "关系", "attitude": "态度" }] }',
+  },
+  first_mes: {
+    label: '默认开场白',
+    guidance: '编写富有代入感与画面感的默认开场白，结合动作神态、环境描写与自然对话钩子（可使用 {{char}} 和 {{user}} 占位符）。',
+    schemaHint: '{ "value": "沉浸式默认开场白正文" }',
+  },
+  alternate_greetings: {
+    label: '备选开场白',
+    guidance: '编写 2~3 条风格或切入情境各异的备选开场白，返回字符串数组。',
+    schemaHint: '{ "value": ["备选开场白1", "备选开场白2"] }',
+  },
+  mes_example: {
+    label: '对话示例',
+    guidance: '严格按照 SillyTavern 标准格式编写 2~3 组对话示例，每组以 <START> 开头，交替使用 {{user}}: 与 {{char}}: 展示典型口癖、心理活动与动作神态。',
+    schemaHint: '{ "value": "<START>\\n{{user}}: ...\\n{{char}}: ..." }',
+  },
+  system_prompt: {
+    label: '系统提示词',
+    guidance: '编写清晰的角色扮演系统提示词，明确视角、文风、语言习惯、核心禁忌与防 OOC（不跳戏）约束。',
+    schemaHint: '{ "value": "角色扮演系统提示词" }',
+  },
+  creator_notes: {
+    label: '作者备注',
+    guidance: '总结使用建议、推荐交互方式、核心设定要点或考据说明，返回简洁清晰的备注文本。',
+    schemaHint: '{ "value": "创作与使用备注" }',
+  },
+};
+
+export interface GenerateCardFieldDeps {
+  llmPort: LlmCompletionPort;
+  llmSlot: LlmSlotRuntimeConfig;
+  workName?: string;
+  cardType?: CardType;
+  entityType?: EntityType;
+  sources?: readonly SourceEntry[];
+  instruction?: string;
+  customSystemPrompt?: string;
+  onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
+}
+
+export async function generateCardField(
+  current: RoleCardContent,
+  field: CardGeneratableField,
+  deps: GenerateCardFieldDeps,
+): Promise<
+  Result<
+    {
+      content: RoleCardContent;
+      field: CardGeneratableField;
+      fieldLabel: string;
+      diffSummary: string;
+      tokenCount: number;
+    },
+    CoreError
+  >
+> {
+  const meta = CARD_FIELD_META[field];
+
+  const fieldValueSchema: z.ZodType<{ value: unknown }> =
+    field === 'speech_style'
+      ? z.object({ value: SpeechStyleSchema })
+      : field === 'relationships'
+        ? z.object({ value: z.array(RelationshipEntrySchema) })
+        : field === 'alternate_greetings'
+          ? z.object({ value: z.array(z.string().trim().min(1)) })
+          : field === 'summary' || field === 'personality'
+            ? z.object({ value: z.string().trim().min(1) })
+            : z.object({ value: z.string() });
+
+  const systemLines = [
+    '你是 RoleCard Studio 角色卡精细化创作助手。请在不破坏角色整体人设一致性的前提下，专门为目标区块生成高质量内容。',
+    `目标区块：${meta.label} (${field})`,
+    `生成要求：${meta.guidance}`,
+    '你必须只返回 JSON 对象：{ "value": ... }，不要包含其他字段或额外解释。',
+  ];
+  if (deps.customSystemPrompt?.trim()) {
+    systemLines.push(`全局附加风格要求：${deps.customSystemPrompt.trim()}`);
+  }
+
+  const sourceSnippets = (deps.sources ?? [])
+    .slice(0, 4)
+    .map((s, idx) => `[参考资料 #${idx + 1}] ${s.title}: ${s.snippet.slice(0, 600)}`)
+    .join('\n');
+
+  const userParts = [
+    `角色名称：${current.name}`,
+    deps.workName ? `所属作品/世界观：${deps.workName}` : '',
+    deps.cardType ? `卡片规格：${deps.cardType}` : '',
+    deps.entityType ? `实体类型：${deps.entityType === 'real_person' ? '现实人物' : '虚构角色'}` : '',
+    `现有完整角色卡设定（请保持世界观、性格与语气与之一致）：\n${JSON.stringify(current, null, 2)}`,
+    sourceSnippets ? `考据与参考资料摘录：\n${sourceSnippets}` : '',
+    deps.instruction?.trim() ? `用户附加要求：${deps.instruction.trim()}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const result = await completeStructuredJson(deps.llmPort, {
+    slot: deps.llmSlot,
+    schema: fieldValueSchema,
+    schemaHint: meta.schemaHint,
+    temperature: 0.5,
+    onStrategyDowngraded: deps.onStrategyDowngraded,
+    messages: [
+      { role: 'system', content: systemLines.join('\n') },
+      { role: 'user', content: userParts },
+    ],
+  });
+
+  if (!result.ok) {
+    return result;
+  }
+
+  const nextContent = structuredClone(current);
+  (nextContent as Record<string, unknown>)[field] = result.value.data.value;
+
+  return ok({
+    content: nextContent,
+    field,
+    fieldLabel: meta.label,
+    diffSummary: `AI 单区块生成: ${meta.label}`,
+    tokenCount: estimateCardTokens(nextContent),
   });
 }

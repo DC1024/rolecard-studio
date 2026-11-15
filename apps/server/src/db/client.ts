@@ -3,7 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { generateRandomToken, hashPassword } from '@rolecard/core';
-import { ALL_PERMISSIONS } from '@rolecard/shared';
+import { ALL_PERMISSIONS, BUILTIN_PORTRAIT_STYLE_PRESETS } from '@rolecard/shared';
+import { eq } from 'drizzle-orm';
 import { drizzle, type SqliteRemoteDatabase } from 'drizzle-orm/sqlite-proxy';
 import * as schema from './schema.js';
 
@@ -297,6 +298,22 @@ function initializeTables(sqlite: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS portrait_style_presets (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL DEFAULT 'global',
+      name TEXT NOT NULL,
+      style_prompt TEXT NOT NULL DEFAULT '',
+      negative_prompt_hint TEXT NOT NULL DEFAULT '',
+      instruction_hint TEXT NOT NULL DEFAULT '',
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      is_customized INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 100,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_portrait_style_presets_owner ON portrait_style_presets(owner_id, sort_order);
   `);
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');
@@ -347,6 +364,32 @@ export async function seedInitialState(
       guestPermissionsJson: JSON.stringify(['card:read']),
       updatedAt: nowIso,
     });
+  }
+
+  const existingStyles = await db
+    .select({ id: schema.portraitStylePresets.id })
+    .from(schema.portraitStylePresets)
+    .where(eq(schema.portraitStylePresets.ownerId, 'global'));
+  const existingStyleIds = new Set(existingStyles.map((item) => item.id));
+  for (const def of BUILTIN_PORTRAIT_STYLE_PRESETS) {
+    if (!existingStyleIds.has(def.id)) {
+      await db
+        .insert(schema.portraitStylePresets)
+        .values({
+          id: def.id,
+          ownerId: 'global',
+          name: def.name,
+          stylePrompt: def.stylePrompt,
+          negativePromptHint: def.negativePromptHint,
+          instructionHint: def.instructionHint,
+          isBuiltin: true,
+          isCustomized: false,
+          sortOrder: def.sortOrder,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        })
+        .onConflictDoNothing();
+    }
   }
 
   const existingUsers = await db.select().from(schema.users).limit(1);

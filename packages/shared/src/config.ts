@@ -137,6 +137,28 @@ export const LlmTestRequestSchema = z.object({
 });
 export type LlmTestRequest = z.infer<typeof LlmTestRequestSchema>;
 
+export const SearchTestRequestSchema = z.object({
+  provider: SearchProviderSchema,
+  apiKey: z.string().max(512).optional(),
+  useSavedKey: z.boolean().optional(),
+  testLayer1Wiki: z.boolean().optional().default(false),
+  query: z.string().trim().min(1).max(120).optional().default('Alan Turing'),
+  proxyConfig: ProxyConfigInputSchema.optional(),
+});
+export type SearchTestRequest = z.infer<typeof SearchTestRequestSchema>;
+
+export interface SearchTestResult {
+  ok: boolean;
+  provider: SearchProvider;
+  latencyMs: number;
+  hitCount: number;
+  sampleTitles: string[];
+  layer1Reachable?: boolean;
+  layer1Summary?: string;
+  message: string;
+  error?: string;
+}
+
 export interface MaskedLlmSlot {
   provider: LlmProvider;
   apiKeyMasked: string | null;

@@ -380,7 +380,7 @@ export function GenerateForm({
             {(
               [
                 { id: 'fictional', label: '虚构角色' },
-                { id: 'real_person', label: '现实人物（禁用主观风评）' },
+                { id: 'real_person', label: '现实人物（默认不注入风评）' },
               ] as const
             ).map((item) => (
               <button

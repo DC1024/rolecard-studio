@@ -75,11 +75,11 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
 
         <div className="grid gap-3 md:grid-cols-3">
           {plugins.map((plugin) => (
-            <div key={plugin.id} className="flex flex-col justify-between rounded-md border border-line bg-canvas p-3.5">
+            <div key={plugin.id} className="flex min-w-0 flex-col justify-between rounded-md border border-line bg-canvas p-3.5">
               <div>
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-content-primary">{plugin.name}</span>
-                  <span className="rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-accent">
+                  <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-accent">
                     {plugin.type}
                   </span>
                 </div>
@@ -98,9 +98,9 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
                     );
                     notifySuccess(`已触发「${plugin.name}」导出 (.${plugin.exportSpec?.fileExtension})`);
                   }}
-                  className="mt-3 inline-flex h-7 items-center justify-center gap-1 rounded-sm border border-line bg-surface text-xs font-medium text-accent hover:bg-accent/10"
+                  className="mt-3 inline-flex h-7 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-accent hover:bg-accent/10"
                 >
-                  <Download className="h-3 w-3" />
+                  <Download className="h-3 w-3 shrink-0" />
                   导出 .{plugin.exportSpec?.fileExtension}
                 </button>
               )}
@@ -110,7 +110,7 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
       </section>
 
       <section className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-lg border border-line bg-surface p-4 shadow-sm">
+        <div className="min-w-0 rounded-lg border border-line bg-surface p-4 shadow-sm">
           <h4 className="mb-2 text-xs font-semibold text-content-primary">
             声明式插件清单 (JSON Schema) 在线校验
           </h4>
@@ -120,32 +120,32 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
             onChange={(e) => setManifestDraft(e.target.value)}
             className="w-full rounded-sm border border-line bg-canvas p-2.5 font-mono text-[11px] text-content-primary"
           />
-          <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
               onClick={handleValidate}
-              className="h-8 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse"
+              className="h-8 shrink-0 whitespace-nowrap rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse"
             >
               校验 Manifest
             </button>
             {validationMsg && (
               <span
-                className={`inline-flex items-center gap-1 text-xs ${
+                className={`inline-flex min-w-0 items-center gap-1 text-xs ${
                   validationMsg.ok ? 'text-status-success' : 'text-status-danger'
                 }`}
               >
-                {validationMsg.ok && <CheckCircle2 className="h-3.5 w-3.5" />}
-                {validationMsg.text}
+                {validationMsg.ok && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
+                <span className="break-words">{validationMsg.text}</span>
               </span>
             )}
           </div>
         </div>
 
-        <div className="rounded-lg border border-line bg-surface p-4 shadow-sm">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h4 className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
-              <Terminal className="h-3.5 w-3.5 text-accent" />
-              方向 B · 官方 MCP Server (@rolecard/mcp) 接入配置
+        <div className="min-w-0 rounded-lg border border-line bg-surface p-4 shadow-sm">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h4 className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-content-primary">
+              <Terminal className="h-3.5 w-3.5 shrink-0 text-accent" />
+              <span>方向 B · 官方 MCP Server (@rolecard/mcp) 接入配置</span>
             </h4>
             <button
               type="button"
@@ -170,9 +170,9 @@ export function PluginPanel({ selectedCard, canExport }: PluginPanelProps) {
                   'MCP 配置',
                 )
               }
-              className="inline-flex h-7 items-center gap-1 rounded-sm border border-line bg-canvas px-2 text-[11px] font-medium text-content-secondary hover:border-accent hover:text-accent"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-canvas px-2.5 text-[11px] font-medium text-content-secondary hover:border-accent hover:text-accent"
             >
-              <Copy className="h-3 w-3" />
+              <Copy className="h-3 w-3 shrink-0" />
               复制配置
             </button>
           </div>

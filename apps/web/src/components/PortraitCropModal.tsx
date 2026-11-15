@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import {
-  PORTRAIT_STYLE_LABELS,
+  BUILTIN_PORTRAIT_STYLE_PRESETS,
   type ImageSearchItem,
-  type PortraitPromptStyle,
+  type PortraitStylePresetDto,
   type TokenCrop,
 } from '@rolecard/shared';
 import {
+  Check,
+  ChevronDown,
+  ChevronUp,
   CircleDot,
   Copy,
   Crop,
   Link as LinkIcon,
   Loader2,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Save,
   Search,
   Sparkles,
+  Trash2,
   Upload,
   Wand2,
   X,
@@ -125,7 +133,40 @@ function buildInitialPrompt(card: RoleCardDto): string {
     return card.imagePrompt.trim();
   }
   const workHint = card.workName ? ` from ${card.workName}` : '';
-  return `anime character portrait of ${card.characterName}${workHint}, vertical 2:3 composition, detailed lighting, clean background`;
+  return `character portrait of ${card.characterName}${workHint}, vertical 2:3 composition, detailed lighting, clean background`;
+}
+
+const LAST_STYLE_STORAGE_KEY = 'rc_last_portrait_style_id';
+
+const FALLBACK_STYLE_PRESETS: PortraitStylePresetDto[] = BUILTIN_PORTRAIT_STYLE_PRESETS.map(
+  (def) => ({
+    id: def.id,
+    name: def.name,
+    stylePrompt: def.stylePrompt,
+    negativePromptHint: def.negativePromptHint,
+    instructionHint: def.instructionHint,
+    isBuiltin: true,
+    isCustomized: false,
+    sortOrder: def.sortOrder,
+    createdAt: '',
+    updatedAt: '',
+  }),
+);
+
+function readSavedStyleId(): string {
+  try {
+    return window.localStorage.getItem(LAST_STYLE_STORAGE_KEY) || 'anime';
+  } catch {
+    return 'anime';
+  }
+}
+
+function writeSavedStyleId(id: string): void {
+  try {
+    window.localStorage.setItem(LAST_STYLE_STORAGE_KEY, id);
+  } catch {
+    // ignore storage errors
+  }
 }
 
 export function PortraitCropModal({
@@ -156,7 +197,17 @@ export function PortraitCropModal({
   const [searchResults, setSearchResults] = useState<ImageSearchItem[]>([]);
   const [searching, setSearching] = useState(false);
   const [aiPrompt, setAiPrompt] = useState(() => buildInitialPrompt(card));
-  const [aiStyle, setAiStyle] = useState<PortraitPromptStyle>('anime');
+  const [stylePresets, setStylePresets] = useState<PortraitStylePresetDto[]>(FALLBACK_STYLE_PRESETS);
+  const [selectedStyleId, setSelectedStyleId] = useState<string>(() => readSavedStyleId());
+  const [draftStylePrompt, setDraftStylePrompt] = useState<string>('');
+  const [draftNegativeHint, setDraftNegativeHint] = useState<string>('');
+  const [draftInstructionHint, setDraftInstructionHint] = useState<string>('');
+  const [styleEditorOpen, setStyleEditorOpen] = useState<boolean>(false);
+  const [styleActionMode, setStyleActionMode] = useState<
+    'none' | 'create' | 'save_as' | 'rename' | 'delete_confirm'
+  >('none');
+  const [styleNameInput, setStyleNameInput] = useState<string>('');
+  const [styleBusy, setStyleBusy] = useState<boolean>(false);
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiNegativePrompt, setAiNegativePrompt] = useState('');
   const [aiPromptNotes, setAiPromptNotes] = useState('');
@@ -164,6 +215,27 @@ export function PortraitCropModal({
   const [aiGenerating, setAiGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedStyle =
+    stylePresets.find((item) => item.id === selectedStyleId) ?? stylePresets[0] ?? null;
+
+  const isStyleDirty =
+    selectedStyle !== null &&
+    (draftStylePrompt.trim() !== selectedStyle.stylePrompt.trim() ||
+      draftNegativeHint.trim() !== selectedStyle.negativePromptHint.trim() ||
+      draftInstructionHint.trim() !== selectedStyle.instructionHint.trim());
+
+  const applySelectedPreset = (preset: PortraitStylePresetDto, openIfBlank = false) => {
+    setSelectedStyleId(preset.id);
+    writeSavedStyleId(preset.id);
+    setDraftStylePrompt(preset.stylePrompt);
+    setDraftNegativeHint(preset.negativePromptHint);
+    setDraftInstructionHint(preset.instructionHint);
+    setStyleActionMode('none');
+    if (openIfBlank && preset.id === 'blank') {
+      setStyleEditorOpen(true);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -173,8 +245,46 @@ export function PortraitCropModal({
     setAiNegativePrompt('');
     setAiPromptNotes('');
     setAiInstruction('');
+    setStyleActionMode('none');
     setTokenCrop(card.tokenCrop ?? DEFAULT_TOKEN_CROP);
     setError(null);
+
+    let cancelled = false;
+    api
+      .listPortraitStyles()
+      .then((res) => {
+        if (cancelled || !Array.isArray(res.styles) || res.styles.length === 0) return;
+        setStylePresets(res.styles);
+        const preferredId = readSavedStyleId();
+        const found =
+          res.styles.find((item) => item.id === preferredId) ??
+          res.styles.find((item) => item.id === 'anime') ??
+          res.styles[0];
+        if (found) {
+          setSelectedStyleId(found.id);
+          setDraftStylePrompt(found.stylePrompt);
+          setDraftNegativeHint(found.negativePromptHint);
+          setDraftInstructionHint(found.instructionHint);
+        }
+      })
+      .catch(() => {
+        // Keep fallback built-in presets if style list fails to load
+        const preferredId = readSavedStyleId();
+        const found =
+          FALLBACK_STYLE_PRESETS.find((item) => item.id === preferredId) ??
+          FALLBACK_STYLE_PRESETS.find((item) => item.id === 'anime') ??
+          FALLBACK_STYLE_PRESETS[0];
+        if (found) {
+          setSelectedStyleId(found.id);
+          setDraftStylePrompt(found.stylePrompt);
+          setDraftNegativeHint(found.negativePromptHint);
+          setDraftInstructionHint(found.instructionHint);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, initialTab, card.id, card.characterName, card.imagePrompt, card.workName, card.tokenCrop]);
 
   // Load existing 2:3 portrait via same-origin proxy for CORS-free 1:1 Token cropping
@@ -936,32 +1046,371 @@ export function PortraitCropModal({
               </p>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-content-secondary">
-                  目标画风预设
-                </label>
-                <select
-                  value={aiStyle}
-                  onChange={(e) => setAiStyle(e.target.value as PortraitPromptStyle)}
-                  className="h-8 w-full rounded-sm border border-line bg-surface px-2 text-xs text-content-primary"
-                >
-                  {(Object.keys(PORTRAIT_STYLE_LABELS) as PortraitPromptStyle[]).map((key) => (
-                    <option key={key} value={key}>
-                      {PORTRAIT_STYLE_LABELS[key]}
-                    </option>
-                  ))}
-                </select>
+            <div className="space-y-2 rounded-sm border border-line bg-subtle/40 p-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <label className="shrink-0 text-[11px] font-medium text-content-secondary">
+                    画风预设
+                  </label>
+                  <select
+                    value={selectedStyleId}
+                    onChange={(e) => {
+                      const next = stylePresets.find((item) => item.id === e.target.value);
+                      if (next) applySelectedPreset(next, true);
+                    }}
+                    className="h-8 min-w-0 flex-1 rounded-sm border border-line bg-surface px-2 text-xs text-content-primary"
+                  >
+                    <optgroup label="系统预设">
+                      {stylePresets
+                        .filter((item) => item.isBuiltin)
+                        .map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                            {item.isCustomized ? '（已修改）' : ''}
+                          </option>
+                        ))}
+                    </optgroup>
+                    {stylePresets.some((item) => !item.isBuiltin) && (
+                      <optgroup label="我的自定义风格">
+                        {stylePresets
+                          .filter((item) => !item.isBuiltin)
+                          .map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                  </select>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={styleBusy}
+                    onClick={() => {
+                      setStyleActionMode((prev) => (prev === 'create' ? 'none' : 'create'));
+                      setStyleNameInput('');
+                      setError(null);
+                    }}
+                    title="新建一条完全空白的自定义风格预设"
+                    className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                  >
+                    <Plus className="h-3 w-3" />
+                    新建空白
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={styleBusy || !selectedStyle || !isStyleDirty}
+                    onClick={async () => {
+                      if (!selectedStyle) return;
+                      setStyleBusy(true);
+                      setError(null);
+                      try {
+                        const res = await api.updatePortraitStyle(selectedStyle.id, {
+                          stylePrompt: draftStylePrompt,
+                          negativePromptHint: draftNegativeHint,
+                          instructionHint: draftInstructionHint,
+                        });
+                        setStylePresets((prev) =>
+                          prev.map((item) => (item.id === res.style.id ? res.style : item)),
+                        );
+                        applySelectedPreset(res.style);
+                        notifySuccess(`已保存风格「${res.style.name}」`);
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : '保存风格预设失败');
+                      } finally {
+                        setStyleBusy(false);
+                      }
+                    }}
+                    className={`inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border px-2 text-[11px] font-medium disabled:opacity-45 ${
+                      isStyleDirty
+                        ? 'border-accent bg-accent text-content-inverse hover:bg-accent-hover'
+                        : 'border-line bg-surface text-content-secondary'
+                    }`}
+                  >
+                    <Save className="h-3 w-3" />
+                    保存
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={styleBusy}
+                    onClick={() => {
+                      setStyleActionMode((prev) => (prev === 'save_as' ? 'none' : 'save_as'));
+                      setStyleNameInput(
+                        selectedStyle ? `${selectedStyle.name} 副本` : '我的自定义风格',
+                      );
+                      setError(null);
+                    }}
+                    className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                  >
+                    <Copy className="h-3 w-3" />
+                    另存为
+                  </button>
+
+                  {selectedStyle && (
+                    <button
+                      type="button"
+                      disabled={styleBusy}
+                      onClick={() => {
+                        setStyleActionMode((prev) => (prev === 'rename' ? 'none' : 'rename'));
+                        setStyleNameInput(selectedStyle.name);
+                        setError(null);
+                      }}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] font-medium text-content-primary hover:bg-subtle disabled:opacity-50"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      重命名
+                    </button>
+                  )}
+
+                  {selectedStyle?.isBuiltin && selectedStyle.isCustomized && (
+                    <button
+                      type="button"
+                      disabled={styleBusy}
+                      onClick={async () => {
+                        setStyleBusy(true);
+                        setError(null);
+                        try {
+                          const res = await api.resetPortraitStyle(selectedStyle.id);
+                          setStylePresets((prev) =>
+                            prev.map((item) => (item.id === res.style.id ? res.style : item)),
+                          );
+                          applySelectedPreset(res.style);
+                          notifySuccess(`已将「${res.style.name}」恢复为系统默认设定`);
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : '恢复默认设定失败');
+                        } finally {
+                          setStyleBusy(false);
+                        }
+                      }}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-status-warning/50 bg-status-warning/10 px-2 text-[11px] font-medium text-status-warning hover:bg-status-warning/15 disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      恢复默认
+                    </button>
+                  )}
+
+                  {selectedStyle && !selectedStyle.isBuiltin && (
+                    <button
+                      type="button"
+                      disabled={styleBusy}
+                      onClick={() => {
+                        setStyleActionMode((prev) =>
+                          prev === 'delete_confirm' ? 'none' : 'delete_confirm',
+                        );
+                        setError(null);
+                      }}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-status-danger/40 bg-status-danger/10 px-2 text-[11px] font-medium text-status-danger hover:bg-status-danger/15 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      删除
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setStyleEditorOpen((prev) => !prev)}
+                    className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] text-content-secondary hover:text-content-primary"
+                  >
+                    {styleEditorOpen ? (
+                      <>
+                        <ChevronUp className="h-3 w-3" />
+                        收起设定
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="h-3 w-3" />
+                        编辑风格{isStyleDirty ? ' *' : ''}
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
+
+              {styleActionMode !== 'none' && (
+                <div className="flex flex-wrap items-center gap-2 rounded-sm border border-line bg-surface p-2">
+                  {styleActionMode === 'delete_confirm' && selectedStyle ? (
+                    <>
+                      <span className="flex-1 text-[11px] text-status-danger">
+                        确认删除自定义风格「{selectedStyle.name}」吗？此操作不可撤销。
+                      </span>
+                      <button
+                        type="button"
+                        disabled={styleBusy}
+                        onClick={async () => {
+                          setStyleBusy(true);
+                          setError(null);
+                          try {
+                            await api.deletePortraitStyle(selectedStyle.id);
+                            const remaining = stylePresets.filter(
+                              (item) => item.id !== selectedStyle.id,
+                            );
+                            setStylePresets(remaining);
+                            const fallback =
+                              remaining.find((item) => item.id === 'anime') ?? remaining[0];
+                            if (fallback) applySelectedPreset(fallback);
+                            setStyleActionMode('none');
+                            notifySuccess(`已删除风格「${selectedStyle.name}」`);
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : '删除风格失败');
+                          } finally {
+                            setStyleBusy(false);
+                          }
+                        }}
+                        className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-status-danger px-2.5 text-[11px] font-medium text-content-inverse disabled:opacity-50"
+                      >
+                        确认删除
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStyleActionMode('none')}
+                        className="inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] text-content-secondary hover:bg-subtle"
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="shrink-0 text-[11px] font-medium text-content-secondary">
+                        {styleActionMode === 'create'
+                          ? '新空白风格名称：'
+                          : styleActionMode === 'save_as'
+                            ? '另存为新风格：'
+                            : '重命名风格：'}
+                      </span>
+                      <input
+                        type="text"
+                        value={styleNameInput}
+                        onChange={(e) => setStyleNameInput(e.target.value)}
+                        placeholder="输入风格名称，如：赛博霓虹厚涂..."
+                        className="h-7 min-w-[160px] flex-1 rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary outline-none focus:border-accent"
+                      />
+                      <button
+                        type="button"
+                        disabled={styleBusy || !styleNameInput.trim()}
+                        onClick={async () => {
+                          const name = styleNameInput.trim();
+                          if (!name) return;
+                          setStyleBusy(true);
+                          setError(null);
+                          try {
+                            if (styleActionMode === 'create') {
+                              const res = await api.createPortraitStyle({
+                                name,
+                                stylePrompt: '',
+                                negativePromptHint: '',
+                                instructionHint: '',
+                              });
+                              setStylePresets((prev) => [...prev, res.style]);
+                              applySelectedPreset(res.style);
+                              setStyleEditorOpen(true);
+                              notifySuccess(`已新建空白风格「${res.style.name}」`);
+                            } else if (styleActionMode === 'save_as') {
+                              const res = await api.createPortraitStyle({
+                                name,
+                                stylePrompt: draftStylePrompt,
+                                negativePromptHint: draftNegativeHint,
+                                instructionHint: draftInstructionHint,
+                              });
+                              setStylePresets((prev) => [...prev, res.style]);
+                              applySelectedPreset(res.style);
+                              notifySuccess(`已另存为风格「${res.style.name}」`);
+                            } else if (styleActionMode === 'rename' && selectedStyle) {
+                              const res = await api.updatePortraitStyle(selectedStyle.id, { name });
+                              setStylePresets((prev) =>
+                                prev.map((item) => (item.id === res.style.id ? res.style : item)),
+                              );
+                              applySelectedPreset(res.style);
+                              notifySuccess(`已重命名为「${res.style.name}」`);
+                            }
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : '操作风格预设失败');
+                          } finally {
+                            setStyleBusy(false);
+                          }
+                        }}
+                        className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-accent px-2.5 text-[11px] font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
+                      >
+                        <Check className="h-3 w-3" />
+                        确认
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStyleActionMode('none')}
+                        className="inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-sm border border-line bg-surface px-2 text-[11px] text-content-secondary hover:bg-subtle"
+                      >
+                        取消
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {styleEditorOpen && (
+                <div className="space-y-2 rounded-sm border border-line bg-surface p-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <span className="font-medium text-content-primary">
+                      当前画风基底设定{selectedStyle ? ` · ${selectedStyle.name}` : ''}
+                    </span>
+                    {isStyleDirty && (
+                      <span className="rounded bg-status-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-status-warning">
+                        有未保存修改（本次生成将直接使用当前编辑内容）
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-content-secondary">
+                      画风描述词（中英文均可；留空代表完全自由风格，不强制限定画风）
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={draftStylePrompt}
+                      onChange={(e) => setDraftStylePrompt(e.target.value)}
+                      placeholder="例如：cinematic cyberpunk concept art, neon rain reflections, painterly brushwork（留空则不限制画风）"
+                      className="w-full rounded-sm border border-line bg-canvas p-2 font-mono text-[11px] text-content-primary outline-none focus:border-accent"
+                    />
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-[11px] text-content-secondary">
+                        风格避让反向词参考（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={draftNegativeHint}
+                        onChange={(e) => setDraftNegativeHint(e.target.value)}
+                        placeholder="如：anime, cartoon, 3d render"
+                        className="h-8 w-full rounded-sm border border-line bg-canvas px-2 font-mono text-[11px] text-content-primary outline-none focus:border-accent"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] text-content-secondary">
+                        预设默认画面要求（可选）
+                      </label>
+                      <input
+                        type="text"
+                        value={draftInstructionHint}
+                        onChange={(e) => setDraftInstructionHint(e.target.value)}
+                        placeholder="如：半身特写、戏剧性逆光"
+                        className="h-8 w-full rounded-sm border border-line bg-canvas px-2 text-[11px] text-content-primary outline-none focus:border-accent"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="mb-1 block text-[11px] font-medium text-content-secondary">
-                  补充画面要求（可选）
+                  本次补充画面要求（可选）
                 </label>
                 <input
                   type="text"
                   value={aiInstruction}
                   onChange={(e) => setAiInstruction(e.target.value)}
-                  placeholder="如：夜雨霓虹、仰视构图、战损披风..."
+                  placeholder="如：夜雨霓虹、仰视构图、战损披风（选空白预设时也可在此自由指定画风）..."
                   className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 text-xs text-content-primary outline-none focus:border-accent"
                 />
               </div>
@@ -979,12 +1428,21 @@ export function PortraitCropModal({
                     setPromptLoadingMode('generate');
                     setError(null);
                     try {
+                      const combinedInstruction = [
+                        draftInstructionHint.trim(),
+                        aiInstruction.trim(),
+                      ]
+                        .filter(Boolean)
+                        .join('；');
                       const res = await api.generatePortraitPrompt({
                         cardId: card.id,
                         mode: 'generate',
-                        style: aiStyle,
+                        style: selectedStyleId,
+                        stylePresetId: selectedStyleId,
+                        customStylePrompt: draftStylePrompt,
+                        customNegativeHint: draftNegativeHint,
                         draftPrompt: '',
-                        instruction: aiInstruction.trim(),
+                        instruction: combinedInstruction,
                         characterName: card.characterName,
                         workName: card.workName,
                         appearance: card.content.appearance,
@@ -1003,7 +1461,7 @@ export function PortraitCropModal({
                       setPromptLoadingMode(null);
                     }
                   }}
-                  className="inline-flex h-7 items-center gap-1 rounded-sm border border-accent/40 bg-accent/10 px-2 text-[11px] font-medium text-accent hover:bg-accent/15 disabled:opacity-50"
+                  className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-accent/40 bg-accent/10 px-2 text-[11px] font-medium text-accent hover:bg-accent/15 disabled:opacity-50"
                 >
                   {promptLoadingMode === 'generate' ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -1019,12 +1477,21 @@ export function PortraitCropModal({
                     setPromptLoadingMode('optimize');
                     setError(null);
                     try {
+                      const combinedInstruction = [
+                        draftInstructionHint.trim(),
+                        aiInstruction.trim(),
+                      ]
+                        .filter(Boolean)
+                        .join('；');
                       const res = await api.generatePortraitPrompt({
                         cardId: card.id,
                         mode: 'optimize',
-                        style: aiStyle,
+                        style: selectedStyleId,
+                        stylePresetId: selectedStyleId,
+                        customStylePrompt: draftStylePrompt,
+                        customNegativeHint: draftNegativeHint,
                         draftPrompt: aiPrompt.trim(),
-                        instruction: aiInstruction.trim(),
+                        instruction: combinedInstruction,
                         characterName: card.characterName,
                         workName: card.workName,
                         appearance: card.content.appearance,

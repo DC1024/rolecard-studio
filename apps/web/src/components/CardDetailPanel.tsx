@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type {
   AutoApplyThreshold,
+  CardGeneratableField,
   DeclarativePluginManifest,
   ExportFormat,
   RoleCardContent,
@@ -19,6 +20,7 @@ import {
   Edit3,
   ExternalLink,
   Image as ImageIcon,
+  Loader2,
   Lock,
   MessageSquare,
   Minimize2,
@@ -137,6 +139,7 @@ export function CardDetailPanel({
   const [schedDays, setSchedDays] = useState(7);
   const [schedScope, setSchedScope] = useState<SyncScope>('canon');
   const [schedThreshold, setSchedThreshold] = useState<AutoApplyThreshold>('manual_review');
+  const [metaSummaryDraft, setMetaSummaryDraft] = useState('');
 
   useEffect(() => {
     api
@@ -153,6 +156,7 @@ export function CardDetailPanel({
     if (card) {
       setDraft(structuredClone(card.content));
       setLockedFields([...card.lockedFields]);
+      setMetaSummaryDraft(card.metaSummary ?? '');
       setEditing(false);
       setError(null);
       api
@@ -170,6 +174,7 @@ export function CardDetailPanel({
     } else {
       setDraft(null);
       setLockedFields([]);
+      setMetaSummaryDraft('');
       setSchedule(null);
     }
   }, [card?.id, card?.version, card?.updatedAt]);
@@ -348,6 +353,29 @@ export function CardDetailPanel({
     }
   };
 
+  const handleGenerateField = async (field: CardGeneratableField, label: string) => {
+    if (!canUpdate) return;
+    if (lockedFields.includes(field)) {
+      const msg = `「${label}」已锁定，请先解锁后再使用 AI 生成`;
+      setError(msg);
+      notifyError(msg);
+      return;
+    }
+    setBusyAction(`gen-${field}`);
+    setError(null);
+    try {
+      const res = await api.generateCardField(card.id, { field });
+      onCardUpdated(res.card, res.diffSummary);
+      notifySuccess(`已为「${res.fieldLabel}」生成新内容`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : `AI 生成「${label}」失败`;
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const tokenMeta = getTokenBadgeMeta(card.tokenCount, card.cardType);
 
   const renderLockButton = (fieldKey: string) => {
@@ -358,7 +386,7 @@ export function CardDetailPanel({
         disabled={!canUpdate || busyAction !== null}
         onClick={() => toggleFieldLock(fieldKey)}
         title={locked ? '已锁定（AI 微调与演化将跳过此字段），点击解锁' : '点击锁定此字段'}
-        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition ${
+        className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] transition ${
           locked
             ? 'bg-status-warning/15 text-status-warning'
             : 'text-content-muted hover:bg-subtle hover:text-content-primary'
@@ -367,6 +395,36 @@ export function CardDetailPanel({
         {locked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
         <span>{locked ? '已锁' : '锁定'}</span>
       </button>
+    );
+  };
+
+  const renderFieldActions = (field: CardGeneratableField, label: string) => {
+    const locked = lockedFields.includes(field);
+    const isGenerating = busyAction === `gen-${field}`;
+    return (
+      <div className="flex shrink-0 items-center gap-1.5">
+        {canUpdate && (
+          <button
+            type="button"
+            disabled={busyAction !== null || locked}
+            onClick={() => void handleGenerateField(field, label)}
+            title={
+              locked
+                ? '该字段已锁定，解锁后可使用 AI 生成'
+                : `结合角色完整设定与参考资料 AI 生成「${label}」`
+            }
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-content-secondary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {isGenerating ? (
+              <Loader2 className="h-3 w-3 animate-spin text-accent" />
+            ) : (
+              <Sparkles className="h-3 w-3 text-accent" />
+            )}
+            <span>{isGenerating ? '生成中...' : 'AI 生成'}</span>
+          </button>
+        )}
+        {renderLockButton(field)}
+      </div>
     );
   };
 
@@ -388,7 +446,7 @@ export function CardDetailPanel({
 
       {/* Header */}
       <div className="flex flex-col gap-4 border-b border-line-subtle pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-4">
+        <div className="flex min-w-0 flex-1 items-start gap-4">
           <div className="relative flex shrink-0 flex-col items-center gap-1.5">
             {card.imageUrl ? (
               <img
@@ -460,7 +518,7 @@ export function CardDetailPanel({
                 type="button"
                 onClick={() => void copyWithToast(JSON.stringify(card.content, null, 2), '角色卡 JSON')}
                 title="复制角色卡 JSON 到剪贴板"
-                className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-content-secondary hover:border-accent hover:text-accent"
+                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-content-secondary hover:border-accent hover:text-accent"
               >
                 <Copy className="h-3 w-3" />
                 复制 JSON
@@ -528,7 +586,7 @@ export function CardDetailPanel({
         </div>
 
         {/* Actions */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           {canPlaytest && (
             <button
               type="button"
@@ -837,9 +895,9 @@ export function CardDetailPanel({
               const meta = LOCKABLE_FIELDS.find((f) => f.key === key)!;
               return (
                 <div key={key} className="rounded-md border border-line-subtle bg-canvas p-3">
-                  <div className="mb-1.5 flex items-center justify-between">
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-content-primary">{meta.label}</span>
-                    {renderLockButton(key)}
+                    {renderFieldActions(key, meta.label)}
                   </div>
                   {editing ? (
                     <textarea
@@ -859,9 +917,9 @@ export function CardDetailPanel({
           )}
 
           <div className="rounded-md border border-line-subtle bg-canvas p-3">
-            <div className="mb-1.5 flex items-center justify-between">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-content-primary">语言风格与口癖</span>
-              {renderLockButton('speech_style')}
+              {renderFieldActions('speech_style', '语言风格与口癖')}
             </div>
             {editing ? (
               <div className="space-y-2">
@@ -910,9 +968,9 @@ export function CardDetailPanel({
           </div>
 
           <div className="rounded-md border border-line-subtle bg-canvas p-3">
-            <div className="mb-1.5 flex items-center justify-between">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-content-primary">人际关系</span>
-              {renderLockButton('relationships')}
+              {renderFieldActions('relationships', '人际关系')}
             </div>
             {card.content.relationships.length === 0 ? (
               <p className="text-xs text-content-muted">暂未记录关键人际关系</p>
@@ -981,9 +1039,9 @@ export function CardDetailPanel({
             const meta = LOCKABLE_FIELDS.find((f) => f.key === key)!;
             return (
               <div key={key} className="rounded-md border border-line-subtle bg-canvas p-3">
-                <div className="mb-1.5 flex items-center justify-between">
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-content-primary">{meta.label}</span>
-                  {renderLockButton(key)}
+                  {renderFieldActions(key, meta.label)}
                 </div>
                 {editing ? (
                   <textarea
@@ -1002,11 +1060,11 @@ export function CardDetailPanel({
           })}
 
           <div className="rounded-md border border-line-subtle bg-canvas p-3">
-            <div className="mb-1.5 flex items-center justify-between">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-semibold text-content-primary">
                 备选开场白 ({card.content.alternate_greetings.length})
               </span>
-              {renderLockButton('alternate_greetings')}
+              {renderFieldActions('alternate_greetings', '备选开场白')}
             </div>
             {editing ? (
               <textarea
@@ -1103,7 +1161,7 @@ export function CardDetailPanel({
                 定时人设演化与 Meta 隔离配置
               </h3>
               <p className="mt-0.5 text-[11.5px] text-content-muted">
-                默认关闭（不消耗后台 Token）。开启后按设定周期错峰检索更新并生成审核提案；「真实/历史人物」强制仅用正典且禁用风评。
+                默认关闭（不消耗后台 Token）。开启后按设定周期错峰检索更新并生成审核提案；所有角色卡均默认关闭风评注入，并可按需自主开启与编辑风评层。
               </p>
             </div>
             {canUpdate && (
@@ -1172,8 +1230,8 @@ export function CardDetailPanel({
             <div className="flex items-center justify-between rounded-sm border border-line bg-surface px-3 py-2">
               <span className="font-medium text-content-primary">同步范围</span>
               <select
-                disabled={!canUpdate || card.entityType === 'real_person'}
-                value={card.entityType === 'real_person' ? 'canon' : schedScope}
+                disabled={!canUpdate}
+                value={schedScope}
                 onChange={(e) => setSchedScope(e.target.value as SyncScope)}
                 className="h-7 rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary"
               >
@@ -1192,40 +1250,90 @@ export function CardDetailPanel({
                 className="h-7 rounded-sm border border-line bg-canvas px-2 text-xs text-content-primary"
               >
                 <option value="manual_review">人工审核后合并</option>
-                <option value="auto_minor">自动应用微调（虚构角色）</option>
+                <option value="auto_minor">自动应用微调</option>
               </select>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-line bg-surface px-3 py-2">
-            <div>
-              <span className="font-medium text-content-primary">试聊时允许注入 Meta 风评层</span>
-              {card.entityType === 'real_person' && (
-                <span className="ml-2 text-[11px] text-status-warning">
-                  （现实/历史人物卡合规锁死：禁止收集与注入主观风评）
+          <div className="space-y-2.5 rounded-sm border border-line bg-surface p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-medium text-content-primary">试聊时允许注入 Meta 风评层</span>
+                <span className="ml-2 text-[11px] text-content-muted">
+                  （默认关闭；开启后试聊时将附带下方风评层参考）
                 </span>
-              )}
+              </div>
+              <input
+                type="checkbox"
+                disabled={!canUpdate || busyAction !== null}
+                checked={card.enableMetaInChat}
+                onChange={async (e) => {
+                  setBusyAction('meta');
+                  setError(null);
+                  try {
+                    const res = await api.updateMetaSettings(card.id, {
+                      enableMetaInChat: e.target.checked,
+                    });
+                    onCardUpdated(res.card, e.target.checked ? '已开启试聊 Meta 层注入' : '已关闭试聊 Meta 层注入');
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : '更新 Meta 设置失败');
+                  } finally {
+                    setBusyAction(null);
+                  }
+                }}
+                className="h-4 w-4 accent-accent"
+              />
             </div>
-            <input
-              type="checkbox"
-              disabled={!canUpdate || card.entityType === 'real_person'}
-              checked={card.entityType === 'real_person' ? false : card.enableMetaInChat}
-              onChange={async (e) => {
-                setBusyAction('meta');
-                setError(null);
-                try {
-                  const res = await api.updateMetaSettings(card.id, {
-                    enableMetaInChat: e.target.checked,
-                  });
-                  onCardUpdated(res.card, e.target.checked ? '已开启试聊 Meta 层注入' : '已关闭试聊 Meta 层注入');
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : '更新 Meta 设置失败');
-                } finally {
-                  setBusyAction(null);
-                }
-              }}
-              className="h-4 w-4 accent-accent"
-            />
+
+            <div className="space-y-1.5 border-t border-line-subtle pt-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-content-secondary">
+                  当前 Meta 风评层摘要
+                  {card.metaUpdatedAt
+                    ? ` · 更新于 ${new Date(card.metaUpdatedAt).toLocaleString()}`
+                    : ' · 暂无风评记录'}
+                </span>
+                {canUpdate && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={async () => {
+                      setBusyAction('meta-summary');
+                      setError(null);
+                      try {
+                        const trimmed = metaSummaryDraft.trim();
+                        const res = await api.updateMetaSettings(card.id, {
+                          metaSummary: trimmed || null,
+                        });
+                        onCardUpdated(
+                          res.card,
+                          trimmed ? '已保存 Meta 风评层摘要' : '已清空 Meta 风评层摘要',
+                        );
+                        notifySuccess(trimmed ? '已保存风评摘要' : '已清空风评摘要');
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : '保存 Meta 风评摘要失败';
+                        setError(msg);
+                        notifyError(msg);
+                      } finally {
+                        setBusyAction(null);
+                      }
+                    }}
+                    className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-sm border border-line bg-canvas px-2.5 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
+                  >
+                    <Save className="h-3 w-3" />
+                    {busyAction === 'meta-summary' ? '保存中...' : '保存风评摘要'}
+                  </button>
+                )}
+              </div>
+              <textarea
+                rows={2}
+                disabled={!canUpdate}
+                value={metaSummaryDraft}
+                onChange={(e) => setMetaSummaryDraft(e.target.value)}
+                placeholder="可由演化流程自动归档外部评价与社群风评，也可手动编辑；留空并保存即清空"
+                className="w-full rounded-sm border border-line bg-canvas p-2 text-xs leading-relaxed text-content-primary outline-none focus:border-accent disabled:opacity-60"
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-content-muted">
@@ -1245,7 +1353,7 @@ export function CardDetailPanel({
                     const res = await api.updateCardSchedule(card.id, {
                       enabled: schedEnabled,
                       intervalDays: schedDays,
-                      syncScope: card.entityType === 'real_person' ? 'canon' : schedScope,
+                      syncScope: schedScope,
                       autoApplyThreshold: schedThreshold,
                     });
                     setSchedule(res.schedule);

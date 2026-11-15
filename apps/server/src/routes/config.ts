@@ -11,6 +11,7 @@ import {
   resolveProviderBaseUrl,
   testLlmConnectivity,
   testProxyConnectivity,
+  testSearchConnectivity,
   validateModelSlotCapability,
   validateProxyUrl,
   type HttpFetchPort,
@@ -22,6 +23,7 @@ import {
   LlmSlotInputSchema,
   LlmTestRequestSchema,
   ProxyTestRequestSchema,
+  SearchTestRequestSchema,
   ServiceConfigInputSchema,
   type LlmSlotInput,
   type LlmSlotPurpose,
@@ -661,4 +663,55 @@ configRoutes.post('/config/test', zValidator('json', LlmTestRequestSchema), asyn
     },
     result.ok ? 200 : 502,
   );
+});
+
+configRoutes.post('/config/search/test', zValidator('json', SearchTestRequestSchema), async (c) => {
+  const denied = guardAdmin(c);
+  if (denied) return denied;
+
+  const input = c.req.valid('json');
+  const ctx = c.get('ctx');
+  const saved = await loadRuntimeServiceConfig(ctx);
+
+  let apiKey = input.apiKey?.trim() ?? '';
+  if (!apiKey && input.useSavedKey) {
+    apiKey = saved?.searchApiKey ?? '';
+  }
+
+  let effectiveProxyConfig: RuntimeProxyConfig | undefined = saved?.proxyConfig;
+  if (input.proxyConfig) {
+    const merged = mergeProxyConfigInput(input.proxyConfig, saved?.proxyConfig);
+    if (!merged.ok) {
+      return c.json(
+        {
+          ok: false,
+          provider: input.provider,
+          latencyMs: 0,
+          hitCount: 0,
+          sampleTitles: [],
+          message: merged.message,
+          error: merged.message,
+        },
+        400,
+      );
+    }
+    effectiveProxyConfig = merged.value;
+  }
+
+  const scopedFetch = resolveScopedFetch(ctx, effectiveProxyConfig, 'search');
+
+  const result = await testSearchConnectivity(
+    {
+      provider: input.provider,
+      apiKey,
+      query: input.query,
+      testLayer1Wiki: input.testLayer1Wiki,
+    },
+    {
+      fetchImpl: scopedFetch,
+      dnsLookup: ctx.dnsLookup,
+    },
+  );
+
+  return c.json(result, result.ok ? 200 : 502);
 });

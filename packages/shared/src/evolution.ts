@@ -63,6 +63,7 @@ export const ResolveProposalSchema = z.object({
 export type ResolveProposalRequest = z.infer<typeof ResolveProposalSchema>;
 
 export const UpdateMetaSettingsSchema = z.object({
-  enableMetaInChat: z.boolean(),
+  enableMetaInChat: z.boolean().optional(),
+  metaSummary: z.string().max(1000).nullable().optional(),
 });
 export type UpdateMetaSettingsRequest = z.infer<typeof UpdateMetaSettingsSchema>;

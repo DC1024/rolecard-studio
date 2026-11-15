@@ -95,6 +95,9 @@ export async function evolveRoleCard(
       enableLayer1Wiki: deps.enableLayer1Wiki ?? true,
       searchProvider: deps.searchProvider ?? 'none',
       searchApiKey: deps.searchApiKey,
+      deepSearch: Boolean(
+        deps.searchProvider && deps.searchProvider !== 'none' && deps.searchApiKey?.trim(),
+      ),
     },
     deps,
   );
@@ -116,9 +119,8 @@ export async function evolveRoleCard(
     });
   }
 
-  // Hard compliance barrier: real_person cards never collect or inject meta_reputation
-  const effectiveScope: SyncScope =
-    input.entityType === 'real_person' ? 'canon' : input.syncScope;
+  // Respect user-selected syncScope (defaults to 'canon' for all cards unless explicitly opted in)
+  const effectiveScope: SyncScope = input.syncScope;
 
   const lockNote =
     input.lockedFields.length > 0
@@ -163,7 +165,7 @@ export async function evolveRoleCard(
   const diffSummary = computeCardDiffSummary(input.currentContent, protectedContent);
 
   const safeMetaSummary =
-    input.entityType === 'real_person' || effectiveScope === 'canon'
+    effectiveScope === 'canon'
       ? null
       : (llmRes.value.data.metaSummary ?? null);
 

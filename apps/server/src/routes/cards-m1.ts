@@ -14,6 +14,7 @@ import {
   exportCardToMarkdown,
   exportCardToTrpgSheetHtml,
   exportCardToTrpgSheetMarkdown,
+  generateCardField,
   generateTrpgAttributesForCard,
   isSafeImageUrl,
   isUrlProxiedByFetch,
@@ -30,6 +31,7 @@ import {
   CardImageUploadSchema,
   estimateCardTokens,
   ExportFormatSchema,
+  GenerateCardFieldRequestSchema,
   GenerateTrpgStatsSchema,
   type LorebookEntry,
   PlaytestRequestSchema,
@@ -244,6 +246,133 @@ cardM1Routes.post('/cards/:id/refine', zValidator('json', RefineCardRequestSchem
     diffSummary: result.value.diffSummary,
   });
 });
+
+cardM1Routes.post(
+  '/cards/:id/generate-field',
+  zValidator('json', GenerateCardFieldRequestSchema),
+  async (c) => {
+    const denied = guardPermission(c, 'card:update');
+    if (denied) return denied;
+
+    const id = c.req.param('id');
+    const { field, instruction } = c.req.valid('json');
+    const ctx = c.get('ctx');
+    const actorUserId = c.get('actor')?.userId ?? 'guest';
+
+    const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    const row = rows[0];
+    if (!row) {
+      return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
+    }
+
+    const lockedFields = parseJsonArray<string>(row.lockedFieldsJson);
+    if (lockedFields.includes(field)) {
+      return c.json(
+        {
+          error: {
+            code: 'FIELD_LOCKED',
+            message: '该区块已锁定，请先解锁后再使用 AI 生成',
+          },
+        },
+        400,
+      );
+    }
+
+    const runtime = await loadRuntimeServiceConfig(ctx);
+    if (!runtime) {
+      return c.json(
+        { error: { code: 'LLM_NOT_CONFIGURED', message: '尚未配置主大模型' } },
+        400,
+      );
+    }
+
+    const startedAt = Date.now();
+    const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
+    const sources = parseJsonArray<SourceEntry>(row.sourcesJson);
+    const primaryFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_primary');
+    const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(primaryFetch);
+
+    const result = await generateCardField(currentContent, field, {
+      llmPort,
+      llmSlot: runtime.primaryLlm,
+      workName: row.workName,
+      cardType: row.cardType,
+      entityType: row.entityType,
+      sources,
+      instruction,
+      customSystemPrompt: runtime.customSystemPrompt,
+      onStrategyDowngraded: async () => {
+        await ctx.db
+          .update(userServiceConfigs)
+          .set({ jsonModeStrategy: 'prompt', updatedAt: getNow(ctx).toISOString() })
+          .where(eq(userServiceConfigs.userId, 'global'));
+      },
+    });
+
+    const nowIso = getNow(ctx).toISOString();
+    const latencyMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+      await ctx.db.insert(generationLogs).values({
+        id: randomUUID(),
+        userId: actorUserId,
+        action: 'generate_field',
+        targetId: id,
+        provider: runtime.primaryLlm.provider,
+        status: 'error',
+        latencyMs,
+        errorCode: result.error.code,
+        errorMessage: result.error.message,
+        createdAt: nowIso,
+      });
+      return sendCoreError(c, result.error);
+    }
+
+    const nextVersion = row.version + 1;
+    await ctx.db
+      .update(roleCards)
+      .set({
+        contentJson: JSON.stringify(result.value.content),
+        diffSummary: result.value.diffSummary,
+        tokenCount: result.value.tokenCount,
+        version: nextVersion,
+        updatedAt: nowIso,
+      })
+      .where(eq(roleCards.id, id));
+
+    await ctx.db.insert(generationLogs).values({
+      id: randomUUID(),
+      userId: actorUserId,
+      action: 'generate_field',
+      targetId: id,
+      provider: runtime.primaryLlm.provider,
+      status: 'success',
+      latencyMs,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: nowIso,
+    });
+
+    await publishSyncEvent(ctx, {
+      eventType: 'card.updated',
+      targetType: 'card',
+      targetId: id,
+      version: nextVersion,
+      payload: {
+        characterName: row.characterName,
+        diffSummary: result.value.diffSummary,
+      },
+    });
+
+    const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    return c.json({
+      card: serializeCardRow(updatedRows[0]!),
+      field: result.value.field,
+      fieldLabel: result.value.fieldLabel,
+      diffSummary: result.value.diffSummary,
+    });
+  },
+);
 
 cardM1Routes.post('/cards/:id/compress', zValidator('json', CompressRequestSchema), async (c) => {
   const denied = guardPermission(c, 'card:update');
@@ -514,10 +643,7 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
   const chatFetch = resolveScopedFetch(ctx, runtime.proxyConfig, 'llm_chat');
   const llmPort = ctx.llmPort ?? createOpenAiCompatibleLlmPort(chatFetch);
 
-  const metaSummary =
-    row.entityType === 'real_person'
-      ? null
-      : parseMetaSummary(row.metaReputationJson);
+  const metaSummary = parseMetaSummary(row.metaReputationJson);
 
   const linkedBookRows = await loadLinkedLorebooksForCard(ctx, id);
   const playtestLorebooks = linkedBookRows.map((lb) => ({
@@ -530,7 +656,7 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
     llmPort,
     llmSlot: effectiveSlot,
     lorebooks: playtestLorebooks,
-    enableMetaInChat: row.enableMetaInChat && row.entityType !== 'real_person',
+    enableMetaInChat: row.enableMetaInChat,
     metaReputationSummary: metaSummary,
   });
 

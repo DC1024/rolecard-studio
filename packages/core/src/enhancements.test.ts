@@ -10,7 +10,8 @@ import {
   validateNotificationChannelSettings,
   type SmtpSendInput,
 } from './notifications.js';
-import { queryMediaWikiSite } from './retrieval.js';
+import { generateCardField } from './playtest.js';
+import { layeredRetrieve, queryMediaWikiSite, testSearchConnectivity } from './retrieval.js';
 import {
   exportCardToFoundryDnd5eActor,
   exportCardToTrpgSheetHtml,
@@ -709,6 +710,300 @@ describe('Streaming LLM connectivity probe & portrait prompt generator', () => {
     expect(optResult.ok).toBe(true);
     expect(capturedPrompts[1]).toContain('anime girl with rabbit ears');
     expect(capturedPrompts[1]).toContain('semi-realistic');
+  });
+});
+
+describe('Search connectivity probe, layered retrieval budget & single-field generation', () => {
+  it('tests Bocha/Tavily connectivity and reports structured HTTP errors & Layer 1 wiki probe', async () => {
+    const emptyProvider = await testSearchConnectivity({
+      provider: 'none',
+      testLayer1Wiki: false,
+    });
+    expect(emptyProvider.ok).toBe(false);
+
+    const mockFetch: HttpFetchPort = async (url) => {
+      if (url.includes('meta=siteinfo')) {
+        return new Response(JSON.stringify({ query: { general: { sitename: 'Wiki' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('api.bochaai.com')) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              webPages: {
+                value: [
+                  { name: 'Alan Turing - Wikipedia', url: 'https://en.wikipedia.org/wiki/Alan_Turing', snippet: 'Pioneer of CS' },
+                ],
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.includes('api.tavily.com')) {
+        return new Response('Unauthorized API key', { status: 401 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const bochaOk = await testSearchConnectivity(
+      {
+        provider: 'bocha',
+        apiKey: 'bocha-test-key',
+        testLayer1Wiki: true,
+        query: 'Alan Turing',
+      },
+      {
+        fetchImpl: mockFetch,
+        dnsLookup: publicDns,
+        wikiSites: [
+          {
+            id: 'wikipedia_en',
+            label: 'Wikipedia (EN)',
+            apiEndpoint: 'https://en.wikipedia.org/w/api.php',
+            pageBaseUrl: 'https://en.wikipedia.org/?curid=',
+          },
+        ],
+      },
+    );
+    expect(bochaOk.ok).toBe(true);
+    expect(bochaOk.hitCount).toBe(1);
+    expect(bochaOk.sampleTitles).toContain('Alan Turing - Wikipedia');
+    expect(bochaOk.layer1Reachable).toBe(true);
+    expect(bochaOk.layer1Summary).toContain('Layer 1 百科全部连通');
+
+    const tavilyFail = await testSearchConnectivity(
+      {
+        provider: 'tavily',
+        apiKey: 'bad-key',
+        testLayer1Wiki: false,
+      },
+      { fetchImpl: mockFetch, dnsLookup: publicDns },
+    );
+    expect(tavilyFail.ok).toBe(false);
+    expect(tavilyFail.error).toContain('401');
+  });
+
+  it('runs Layer 1 + Layer 2 concurrently when deepSearch=true and preserves Layer 2 budget share', async () => {
+    const longExtract = '罗德岛阿米娅核心设定资料。'.repeat(280);
+    const wikiFetch: HttpFetchPort = async (url) => {
+      if (url.includes('titles=')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: {
+                '101': {
+                  pageid: 101,
+                  title: '阿米娅',
+                  extract: longExtract,
+                  canonicalurl: 'https://prts.wiki/w/%E9%98%BF%E7%B1%B3%E5%A8%85',
+                },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    let layer2Calls = 0;
+    const concurrentRes = await layeredRetrieve(
+      {
+        characterName: '阿米娅',
+        workName: '明日方舟',
+        enableLayer1Wiki: true,
+        searchProvider: 'bocha',
+        searchApiKey: 'bocha-key',
+        deepSearch: true,
+        maxTotalTokens: 1500,
+      },
+      {
+        fetchImpl: wikiFetch,
+        dnsLookup: publicDns,
+        wikiSites: [
+          {
+            id: 'prts',
+            label: 'PRTS Wiki',
+            apiEndpoint: 'https://prts.wiki/api.php',
+            pageBaseUrl: 'https://prts.wiki/index.php?curid=',
+          },
+        ],
+        searchProviderPort: async () => {
+          layer2Calls += 1;
+          return [
+            {
+              title: '最新主线剧情动态',
+              url: 'https://example.com/news',
+              snippet: '第十五章补充剧情动态摘要。'.repeat(15),
+              origin: 'search_supplement',
+              provider: 'bocha',
+            },
+          ];
+        },
+      },
+    );
+
+    expect(layer2Calls).toBe(1);
+    expect(concurrentRes.layer1Hits).toBe(1);
+    expect(concurrentRes.layer2Hits).toBe(1);
+    expect(concurrentRes.sources.some((s) => s.provider === 'prts')).toBe(true);
+    expect(concurrentRes.sources.some((s) => s.provider === 'bocha')).toBe(true);
+
+    // When deepSearch=false and Layer 1 already hit, Layer 2 is skipped to save quota
+    let skippedCalls = 0;
+    const l1OnlyRes = await layeredRetrieve(
+      {
+        characterName: '阿米娅',
+        workName: '明日方舟',
+        enableLayer1Wiki: true,
+        searchProvider: 'bocha',
+        searchApiKey: 'bocha-key',
+        deepSearch: false,
+      },
+      {
+        fetchImpl: wikiFetch,
+        dnsLookup: publicDns,
+        wikiSites: [
+          {
+            id: 'prts',
+            label: 'PRTS Wiki',
+            apiEndpoint: 'https://prts.wiki/api.php',
+            pageBaseUrl: 'https://prts.wiki/index.php?curid=',
+          },
+        ],
+        searchProviderPort: async () => {
+          skippedCalls += 1;
+          return [];
+        },
+      },
+    );
+    expect(skippedCalls).toBe(0);
+    expect(l1OnlyRes.layer1Hits).toBe(1);
+    expect(l1OnlyRes.layer2Hits).toBe(0);
+  });
+
+  it('generates a single RoleCard field while keeping all other fields untouched', async () => {
+    const prompts: string[] = [];
+    const llmSlot = {
+      provider: 'openai' as const,
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      jsonModeStrategy: 'auto' as const,
+    };
+
+    const stringFieldRes = await generateCardField(sampleContent, 'appearance', {
+      llmSlot,
+      workName: '明日方舟',
+      sources: [
+        {
+          title: 'PRTS 档案',
+          snippet: '常穿深青色制式风衣，指节佩戴多枚黑色抑制戒指。',
+          origin: 'search_supplement',
+          provider: 'prts',
+        },
+      ],
+      llmPort: async (req) => {
+        prompts.push(req.messages.map((m) => m.content).join('\n'));
+        return {
+          status: 200,
+          content: JSON.stringify({
+            value: '身材纤瘦的棕发兔耳少女，深青色制式风衣搭配十指黑色抑制戒指。',
+          }),
+        };
+      },
+    });
+
+    expect(stringFieldRes.ok).toBe(true);
+    if (!stringFieldRes.ok) throw new Error('expected ok');
+    expect(stringFieldRes.value.content.appearance).toContain('深青色制式风衣');
+    expect(stringFieldRes.value.content.background).toBe(sampleContent.background);
+    expect(stringFieldRes.value.content.first_mes).toBe(sampleContent.first_mes);
+    expect(prompts[0]).toContain('PRTS 档案');
+
+    const speechRes = await generateCardField(sampleContent, 'speech_style', {
+      llmSlot,
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          value: {
+            tone: '礼貌坚毅、带有年轻领袖的克制感',
+            catchphrases: ['博士，请放心交给我'],
+            habits: ['作战略停顿后再下结论'],
+          },
+        }),
+      }),
+    });
+    expect(speechRes.ok).toBe(true);
+    if (!speechRes.ok) throw new Error('expected ok');
+    expect(speechRes.value.content.speech_style.catchphrases).toEqual(['博士，请放心交给我']);
+  });
+
+  it('supports realistic preset, blank/free mode without forced style constraint, and customStylePrompt overrides', async () => {
+    const capturedSystems: string[] = [];
+    const mockPort: LlmCompletionPort = async (req) => {
+      capturedSystems.push(req.messages.find((m) => m.role === 'system')?.content ?? '');
+      return {
+        status: 200,
+        content: JSON.stringify({
+          prompt: 'portrait of Amiya, cinematic lighting',
+          negativePrompt: 'blurry',
+          notes: '按指定风格或自由要求提炼生图提示词。',
+        }),
+      };
+    };
+
+    const llmSlot = {
+      provider: 'openai' as const,
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      jsonModeStrategy: 'auto' as const,
+    };
+
+    const realisticRes = await generateOrOptimizePortraitPrompt(
+      {
+        card: { characterName: 'Amiya' },
+        mode: 'generate',
+        style: 'realistic',
+      },
+      { llmPort: mockPort, llmSlot },
+    );
+    expect(realisticRes.ok).toBe(true);
+    expect(capturedSystems[0]).toContain('photorealistic character portrait');
+    expect(capturedSystems[0]).toContain('anime, cartoon, illustration');
+
+    const blankRes = await generateOrOptimizePortraitPrompt(
+      {
+        card: { characterName: 'Amiya' },
+        mode: 'optimize',
+        style: 'blank',
+        draftPrompt: 'cyberpunk ink wash painting, Amiya',
+        instruction: '保持赛博水墨质感',
+      },
+      { llmPort: mockPort, llmSlot },
+    );
+    expect(blankRes.ok).toBe(true);
+    expect(capturedSystems[1]).toContain('当前未指定固定画风预设（自由风格）');
+    expect(capturedSystems[1]).not.toContain('必须严格遵循用户指定的画风基底');
+
+    const customOverrideRes = await generateOrOptimizePortraitPrompt(
+      {
+        card: { characterName: 'Amiya' },
+        mode: 'generate',
+        style: 'anime',
+        customStylePrompt: 'ukiyo-e woodblock print portrait, flat mineral pigments',
+        customNegativeHint: '3d, photorealistic',
+      },
+      { llmPort: mockPort, llmSlot },
+    );
+    expect(customOverrideRes.ok).toBe(true);
+    expect(capturedSystems[2]).toContain('ukiyo-e woodblock print portrait');
+    expect(capturedSystems[2]).not.toContain('cel-shaded');
+    expect(capturedSystems[2]).toContain('3d, photorealistic');
   });
 });
 

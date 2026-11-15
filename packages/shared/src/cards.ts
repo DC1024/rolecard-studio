@@ -100,3 +100,25 @@ export const GenerateTrpgStatsSchema = z.object({
   system: z.enum(['coc7e', 'dnd5e']),
 });
 export type GenerateTrpgStatsRequest = z.infer<typeof GenerateTrpgStatsSchema>;
+
+export const CardGeneratableFieldSchema = z.enum([
+  'summary',
+  'personality',
+  'appearance',
+  'background',
+  'scenario',
+  'speech_style',
+  'relationships',
+  'first_mes',
+  'alternate_greetings',
+  'mes_example',
+  'system_prompt',
+  'creator_notes',
+]);
+export type CardGeneratableField = z.infer<typeof CardGeneratableFieldSchema>;
+
+export const GenerateCardFieldRequestSchema = z.object({
+  field: CardGeneratableFieldSchema,
+  instruction: z.string().trim().max(500).optional().default(''),
+});
+export type GenerateCardFieldRequest = z.infer<typeof GenerateCardFieldRequestSchema>;

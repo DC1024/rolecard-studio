@@ -48,12 +48,31 @@ export interface SerializedRoleCard {
   lockedFields: string[];
   diffSummary: string | null;
   enableMetaInChat: boolean;
+  metaSummary: string | null;
+  metaUpdatedAt: string | null;
   scheduleEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+function parseMetaReputation(raw: string | null | undefined): {
+  summary: string | null;
+  updatedAt: string | null;
+} {
+  if (!raw) return { summary: null, updatedAt: null };
+  try {
+    const parsed = JSON.parse(raw) as { summary?: unknown; updatedAt?: unknown };
+    return {
+      summary: typeof parsed.summary === 'string' && parsed.summary.trim() ? parsed.summary : null,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+    };
+  } catch {
+    return { summary: null, updatedAt: null };
+  }
+}
+
 export function serializeCardRow(row: typeof roleCards.$inferSelect): SerializedRoleCard {
+  const meta = parseMetaReputation(row.metaReputationJson);
   return {
     id: row.id,
     userId: row.userId,
@@ -77,6 +96,8 @@ export function serializeCardRow(row: typeof roleCards.$inferSelect): Serialized
     lockedFields: safeParseJsonArray<string>(row.lockedFieldsJson),
     diffSummary: row.diffSummary,
     enableMetaInChat: row.enableMetaInChat,
+    metaSummary: meta.summary,
+    metaUpdatedAt: meta.updatedAt,
     scheduleEnabled: row.scheduleEnabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

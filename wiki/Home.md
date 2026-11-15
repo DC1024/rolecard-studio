@@ -1,6 +1,6 @@
-# RoleCard Studio Wiki（v1.3.0）
+# RoleCard Studio Wiki（v1.4.0）
 
-欢迎来到 **RoleCard Studio（智能角色卡中枢）** 官方 Wiki。本文档库严格对应当前 **`v1.3.0`** 版本代码实现，覆盖从零部署、新手快速上手、全功能深度解析到外部生态集成的完整知识体系。
+欢迎来到 **RoleCard Studio（智能角色卡中枢）** 官方 Wiki。本文档库严格对应当前 **`v1.4.0`** 版本代码实现，覆盖从零部署、新手快速上手、全功能深度解析到外部生态集成的完整知识体系。
 
 ---
 
@@ -32,7 +32,7 @@
 | **独立世界书（Lorebook）** | 可跨角色复用的背景知识库，支持 **蓝灯（Constant 常驻注入）** 与 **绿灯（Selective 关键词触发）** 词条，并与角色卡多对多关联。 |
 | **快速试聊沙盒（Playtest）** | 内置对话测试环境，用于即时检验角色语气、开场白与世界书蓝/绿灯触发命中情况，并可将满意对话采纳到 `mes_example`。 |
 | **定时演化与单跳涟漪（1-Hop Ripple）** | 默认关闭的定时背景更新机制；仅对共享同一本世界书的直接相邻角色（1-Hop）生成态度变更提案，必须人工审核后生效。 |
-| **元舆论隔离（Meta Isolation）** | 针对 `entityType = 'real_person'` 的真人角色卡，后台与试聊均强制屏蔽 `meta_reputation`（玩家/外部风评）注入。 |
+| **元舆论风评层（Meta Isolation）** | 所有角色卡（含 `entityType = 'real_person'`）默认关闭 `meta_reputation` 注入，用户可在详情页按需自主开启或手动编辑风评摘要。 |
 | **四路模型槽位** | 将 **主生成 (`primary`)**、**试聊 (`chat`)**、**识图 (`vision`)** 与 **文生图 (`image`)** 解耦为 4 个独立配置槽位。 |
 | **两级网络代理** | 支持设置全局默认代理，并针对 `llm_primary`、`llm_chat`、`llm_vision`、`llm_image`、`search`、`media`、`webhook` 七大作用域分别设置继承、强制直连或独立代理。 |
 | **RBAC 与访客策略** | 将 **网页端访客策略（`siteAccessMode`）** 与 **外部 API 策略（`apiAccessMode`）** 分离控制，普通用户按 7 项细粒度权限授权。 |

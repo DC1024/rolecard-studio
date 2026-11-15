@@ -145,8 +145,63 @@ describe('M3 core evolution, sync & vision', () => {
     expect(hashA).toBe(firstRun.value.sourceHash);
   });
 
-  it('hard-blocks meta_reputation for real_person and enforces 1-hop ripple limit', async () => {
-    const res = await evolveRoleCard(
+  it('respects canon scope vs explicit meta_reputation opt-in for real_person and enforces 1-hop ripple limit', async () => {
+    const wikiFetch: HttpFetchPort = async (url) => {
+      if (url.includes('extracts')) {
+        return new Response(
+          JSON.stringify({
+            query: {
+              pages: {
+                '2': { pageid: 2, title: '真实人物', extract: '近期公开发表新论文与历史档案。' },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          query: {
+            search: [{ pageid: 2, title: '真实人物', snippet: '近期公开发表新论文。' }],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const llmPort: LlmCompletionPort = async () => ({
+      status: 200,
+      content: JSON.stringify({
+        content: { ...baseCardContent, name: '图灵', summary: '计算机科学先驱' },
+        metaSummary: '公众常讨论其破译 Enigma 的历史贡献',
+        changeReason: '补充史料',
+      }),
+    });
+    const llmSlot = {
+      provider: 'openai' as const,
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      jsonModeStrategy: 'auto' as const,
+    };
+
+    const canonOnlyRes = await evolveRoleCard(
+      {
+        cardId: 'card-real',
+        characterName: '图灵',
+        workName: '历史人物',
+        entityType: 'real_person',
+        currentContent: { ...baseCardContent, name: '图灵' },
+        lockedFields: [],
+        syncScope: 'canon',
+      },
+      { fetchImpl: wikiFetch, dnsLookup: publicDns, llmPort, llmSlot },
+    );
+
+    expect(canonOnlyRes.ok).toBe(true);
+    if (!canonOnlyRes.ok || canonOnlyRes.value.skipped) throw new Error('expected update');
+    expect(canonOnlyRes.value.metaSummary).toBeNull();
+
+    const optInMetaRes = await evolveRoleCard(
       {
         cardId: 'card-real',
         characterName: '图灵',
@@ -156,51 +211,12 @@ describe('M3 core evolution, sync & vision', () => {
         lockedFields: [],
         syncScope: 'both',
       },
-      {
-        fetchImpl: async (url) => {
-          if (url.includes('extracts')) {
-            return new Response(
-              JSON.stringify({
-                query: {
-                  pages: {
-                    '2': { pageid: 2, title: '真实人物', extract: '近期公开发表新论文与历史档案。' },
-                  },
-                },
-              }),
-              { status: 200, headers: { 'content-type': 'application/json' } },
-            );
-          }
-          return new Response(
-            JSON.stringify({
-              query: {
-                search: [{ pageid: 2, title: '真实人物', snippet: '近期公开发表新论文。' }],
-              },
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          );
-        },
-        dnsLookup: publicDns,
-        llmPort: async () => ({
-          status: 200,
-          content: JSON.stringify({
-            content: { ...baseCardContent, name: '图灵', summary: '计算机科学先驱' },
-            metaSummary: '应当被隔离屏蔽的梗总结',
-            changeReason: '补充史料',
-          }),
-        }),
-        llmSlot: {
-          provider: 'openai',
-          apiKey: 'sk-test',
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-4o-mini',
-          jsonModeStrategy: 'auto',
-        },
-      },
+      { fetchImpl: wikiFetch, dnsLookup: publicDns, llmPort, llmSlot },
     );
 
-    expect(res.ok).toBe(true);
-    if (!res.ok || res.value.skipped) throw new Error('expected update');
-    expect(res.value.metaSummary).toBeNull();
+    expect(optInMetaRes.ok).toBe(true);
+    if (!optInMetaRes.ok || optInMetaRes.value.skipped) throw new Error('expected update');
+    expect(optInMetaRes.value.metaSummary).toContain('Enigma');
 
     const proposals = generateSingleHopRippleProposals('card-a', '角色A', 'description', [
       { targetCardId: 'card-a', targetCharacterName: '角色A', lorebookId: 'lb-1', relationRole: '自己' },
