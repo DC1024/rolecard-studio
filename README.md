@@ -12,8 +12,7 @@ rolecard-studio/
 ├── apps/server        # Hono + Drizzle ORM + SQLite (WAL) 后端服务
 ├── apps/web           # React 18 + Vite + Tailwind 四主题三层工作台
 ├── plugins/           # SillyTavern 实时同步扩展、Obsidian/游戏 Webhook 验签同步器
-├── scripts/           # 方案 A 便携打包与 Windows (Inno Setup) / Linux (.deb/.tar.gz) 安装器脚本
-└── docs/              # 技术方案 (v1.4)、设计规范 (v1.0)、排期计划 (v1.0)
+└── scripts/           # 方案 A 便携打包与 Windows (Inno Setup) / Linux (.deb/.tar.gz) 安装器脚本
 ```
 
 ## 快速开始
@@ -36,9 +35,3 @@ pnpm bundle
 docker pull ghcr.io/dc1024/rolecard-studio:latest
 docker run -d -p 3000:3000 -v rolecard_data:/app/data ghcr.io/dc1024/rolecard-studio:latest
 ```
-
-## 文档索引
-- 技术方案：`角色卡生成网站_技术方案与可行性分析_v1.4.md`
-- 前端规范：`前端设计风格规范_v1.0.md`
-- 排期计划：`角色卡生成网站_排期计划表_v1.0.md`
-- 编码标准：`CODING_STANDARDS.md`

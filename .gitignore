@@ -34,3 +34,16 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+*.tmp
+*.bak
+.eslintcache
+
+# Non-code design drafts, specs, schedules & internal docs
+docs/
+CODING_STANDARDS.md
+前端设计风格规范*.md
+角色卡工作台_*设计稿*.html
+角色卡生成网站_技术方案与可行性分析*.md
+角色卡生成网站_排期计划表*.md
+*设计稿*.html
+
