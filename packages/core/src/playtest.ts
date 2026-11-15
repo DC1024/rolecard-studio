@@ -13,8 +13,10 @@ import {
   type PlaytestResponse,
   type RoleCardContent,
   type SourceEntry,
+  type TrpgSystemKey,
 } from '@rolecard/shared';
 import { completeStructuredJson } from './llm/json-repair.js';
+import { extractTrpgSystems, normalizeTrpgRecordForSystem } from './lorebook.js';
 import {
   type CoreError,
   type LlmCompletionPort,
@@ -37,6 +39,51 @@ export interface PlaytestDeps {
   lorebooks?: PlaytestLorebookInput[];
   enableMetaInChat?: boolean;
   metaReputationSummary?: string | null;
+  fallbackCardType?: CardType;
+}
+
+function asPlaytestRecord(val: unknown): Record<string, unknown> {
+  return typeof val === 'object' && val !== null && !Array.isArray(val)
+    ? (val as Record<string, unknown>)
+    : {};
+}
+
+function asPlaytestStringArray(val: unknown): string[] {
+  return Array.isArray(val) ? val.map((x) => String(x ?? '').trim()).filter(Boolean) : [];
+}
+
+function buildTrpgPlaytestContext(
+  system: TrpgSystemKey,
+  rawTrpg: Record<string, unknown>,
+): string[] {
+  const trpg = normalizeTrpgRecordForSystem(system, rawTrpg);
+  if (system === 'coc7e') {
+    const chars = asPlaytestRecord(trpg.characteristics);
+    const derived = asPlaytestRecord(trpg.derived);
+    const skills = asPlaytestStringArray(trpg.keySkills);
+    return [
+      '=== TRPG 规则注入 · Call of Cthulhu 7e（调查员规则面板） ===',
+      `职业：${String(trpg.occupation ?? '调查员')} | 时代：${String(trpg.era ?? '1920s / 现代架空')}`,
+      `基础属性：STR ${chars.STR ?? 55}, CON ${chars.CON ?? 60}, SIZ ${chars.SIZ ?? 60}, DEX ${chars.DEX ?? 65}, APP ${chars.APP ?? 55}, INT ${chars.INT ?? 75}, POW ${chars.POW ?? 65}, EDU ${chars.EDU ?? 70}`,
+      `衍生状态：HP ${derived.HP ?? 12}, MP ${derived.MP ?? 13}, SAN ${derived.SAN ?? 65}, Luck ${derived.Luck ?? 55}, Move ${derived.Move ?? 8}`,
+      skills.length > 0 ? `核心技能：${skills.join('、')}` : '',
+      '试聊指令：当前处于 CoC 7e 跑团语境，请基于你的调查员属性、理智值与技能水平进行角色扮演、线索推理与行动回应。',
+    ].filter(Boolean);
+  }
+
+  const abilities = asPlaytestRecord(trpg.abilityScores);
+  const combat = asPlaytestRecord(trpg.combat);
+  const profs = asPlaytestStringArray(trpg.proficiencies);
+  const feats = asPlaytestStringArray(trpg.featuresAndTraits);
+  return [
+    '=== TRPG 规则注入 · D&D 5e（冒险者规则面板） ===',
+    `种族：${String(trpg.race ?? '人类')} | 职业：${String(trpg.className ?? '冒险者')} | 等级：Lv.${String(trpg.level ?? 3)} | 阵营：${String(trpg.alignment ?? '中立善良')}`,
+    `六维属性：STR ${abilities.STR ?? 12}, DEX ${abilities.DEX ?? 15}, CON ${abilities.CON ?? 14}, INT ${abilities.INT ?? 13}, WIS ${abilities.WIS ?? 12}, CHA ${abilities.CHA ?? 14}`,
+    `战斗数值：AC ${combat.AC ?? 15}, MaxHP ${combat.MaxHP ?? 24}, HitDice ${String(combat.HitDice ?? '3d8')}, Speed ${String(combat.Speed ?? '30 ft')}`,
+    profs.length > 0 ? `熟练项：${profs.join('、')}` : '',
+    feats.length > 0 ? `职业特性与战技：${feats.join('、')}` : '',
+    '试聊指令：当前处于 D&D 5e 跑团语境，请基于你的种族、职业特性、六维属性与战斗能力进行角色扮演与冒险互动。',
+  ].filter(Boolean);
 }
 
 export function replaceCardPlaceholders(
@@ -164,6 +211,23 @@ export async function runPlaytestTurn(
     );
   }
 
+  let trpgSystemInjected: TrpgSystemKey | null = null;
+  if (request.trpgSystem !== 'none') {
+    const { systems, activeSystem } = extractTrpgSystems(card, deps.fallbackCardType);
+    const chosenSystem: TrpgSystemKey | null =
+      request.trpgSystem === 'coc7e' || request.trpgSystem === 'dnd5e'
+        ? systems[request.trpgSystem]
+          ? request.trpgSystem
+          : null
+        : activeSystem && systems[activeSystem]
+          ? activeSystem
+          : null;
+    if (chosenSystem && systems[chosenSystem]) {
+      trpgSystemInjected = chosenSystem;
+      systemParts.push(...buildTrpgPlaytestContext(chosenSystem, systems[chosenSystem]!));
+    }
+  }
+
   const messages: LlmMessage[] = [
     { role: 'system', content: systemParts.join('\n') },
     { role: 'assistant', content: greetingText },
@@ -203,6 +267,7 @@ export async function runPlaytestTurn(
     greetingText,
     hitLorebooks: hits,
     metaInjected,
+    trpgSystemInjected,
   });
 }
 
@@ -399,7 +464,34 @@ export async function refineRoleCard(
     return result;
   }
 
-  const protectedContent = preserveLockedFields(current, result.value.data, locked);
+  const mergedExtensions: Record<string, unknown> = {
+    ...structuredClone(current.extensions),
+    ...result.value.data.extensions,
+  };
+  if (
+    current.extensions.trpgSystems !== undefined &&
+    result.value.data.extensions.trpgSystems === undefined
+  ) {
+    mergedExtensions.trpgSystems = structuredClone(current.extensions.trpgSystems);
+  }
+  if (
+    current.extensions.activeTrpgSystem !== undefined &&
+    result.value.data.extensions.activeTrpgSystem === undefined
+  ) {
+    mergedExtensions.activeTrpgSystem = current.extensions.activeTrpgSystem;
+  }
+  if (current.extensions.trpg !== undefined && result.value.data.extensions.trpg === undefined) {
+    mergedExtensions.trpg = structuredClone(current.extensions.trpg);
+  }
+
+  const protectedContent = preserveLockedFields(
+    current,
+    {
+      ...result.value.data,
+      extensions: mergedExtensions,
+    },
+    locked,
+  );
   return ok({
     content: protectedContent,
     diffSummary: computeCardDiffSummary(current, protectedContent),

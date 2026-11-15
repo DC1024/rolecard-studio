@@ -2476,6 +2476,243 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports dual CoC 7e + D&D 5e coexistence, active switching, filtering, targeted export, and playtest rule injection', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const cocPayload = {
+      system: 'Call of Cthulhu 7e',
+      occupation: '古文明学者',
+      era: '1920s',
+      characteristics: { STR: 45, CON: 55, SIZ: 55, DEX: 60, APP: 65, INT: 90, POW: 85, EDU: 95 },
+      derived: { HP: 11, MP: 17, SAN: 80, Luck: 50, Move: 8 },
+      keySkills: ['医学 85%', '神秘学 75%'],
+    };
+    const dndPayload = {
+      system: 'D&D 5e',
+      race: '菲林',
+      className: '生命牧师',
+      alignment: '守序中立',
+      level: 10,
+      abilityScores: { STR: 10, DEX: 12, CON: 14, INT: 19, WIS: 18, CHA: 13 },
+      combat: { AC: 17, MaxHP: 78, Speed: '30 ft', ProficiencyBonus: 4 },
+      proficiencies: ['医药', '历史'],
+      featuresAndTraits: ['Mon3tr 护佑', '真实之眼'],
+    };
+
+    const playtestSystemPrompts: string[] = [];
+
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ role: string; content: string }>;
+        };
+        const sys = body.messages?.[0]?.content ?? '';
+        const joined = (body.messages ?? []).map((m) => m.content).join('\n');
+
+        if (sys.includes('TRPG 规则构筑师')) {
+          const isDnd = joined.includes('D&D 5e');
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: { content: JSON.stringify({ trpg: isDnd ? dndPayload : cocPayload }) },
+                  finish_reason: 'stop',
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
+        playtestSystemPrompts.push(sys);
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '我已了解当前规则状态，请继续。' }, finish_reason: 'stop' }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+      }),
+    });
+
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: '凯尔希',
+          description: '罗德岛最高医疗主管',
+          personality: '冷静、理性、言辞犀利',
+          scenario: '罗德岛医疗部',
+          first_mes: '博士，请简述你的来意。',
+          tags: ['罗德岛'],
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const cardId = ((await importRes.json()) as { card: { id: string } }).card.id;
+
+    // 1. Generate CoC 7e (activates coc7e)
+    const cocRes = await app.request(`/api/v1/cards/${cardId}/trpg`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ system: 'coc7e', activate: true }),
+    });
+    expect(cocRes.status).toBe(200);
+    const cocCard = ((await cocRes.json()) as { card: { cardType: string; content: RoleCardContent } }).card;
+    expect(cocCard.cardType).toBe('trpg_coc7');
+
+    // Switching to dnd5e before it exists fails with 400 TRPG_SYSTEM_NOT_FOUND
+    const missingSwitchRes = await app.request(`/api/v1/cards/${cardId}/trpg/active`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ system: 'dnd5e' }),
+    });
+    expect(missingSwitchRes.status).toBe(400);
+
+    // 2. Generate D&D 5e with activate: false -> coexists while coc7e stays active
+    const dndRes = await app.request(`/api/v1/cards/${cardId}/trpg`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ system: 'dnd5e', activate: false }),
+    });
+    expect(dndRes.status).toBe(200);
+    const dualJson = (await dndRes.json()) as {
+      card: { cardType: string; content: RoleCardContent };
+    };
+    expect(dualJson.card.cardType).toBe('trpg_coc7');
+    const trpgSystems = dualJson.card.content.extensions.trpgSystems as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(trpgSystems.coc7e?.occupation).toBe('古文明学者');
+    expect(trpgSystems.dnd5e?.className).toBe('生命牧师');
+    expect(dualJson.card.content.extensions.activeTrpgSystem).toBe('coc7e');
+    expect((dualJson.card.content.extensions.trpg as { occupation?: string }).occupation).toBe('古文明学者');
+
+    // 3. Card gallery filter by trpg_dnd5e still matches dual card!
+    const listDndRes = await app.request('/api/v1/cards?cardType=trpg_dnd5e', {
+      headers: { cookie: adminCookie },
+    });
+    expect(listDndRes.status).toBe(200);
+    const listDndJson = (await listDndRes.json()) as { items: Array<{ id: string }> };
+    expect(listDndJson.items.some((i) => i.id === cardId)).toBe(true);
+
+    // 4. Targeted export while CoC 7e is active: Foundry D&D 5e + trpgSystem=dnd5e + invalid query check
+    const foundryRes = await app.request(
+      `/api/v1/cards/${cardId}/export?format=foundry_dnd5e_json`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(foundryRes.status).toBe(200);
+    const foundryJson = (await foundryRes.json()) as {
+      system: { abilities: { int: { value: number } } };
+      items: Array<{ name: string }>;
+    };
+    expect(foundryJson.system.abilities.int.value).toBe(19);
+    expect(foundryJson.items.map((i) => i.name)).toContain('Mon3tr 护佑');
+
+    const mdDndRes = await app.request(
+      `/api/v1/cards/${cardId}/export?format=trpg_sheet_md&trpgSystem=dnd5e`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(mdDndRes.status).toBe(200);
+    const mdDndText = await mdDndRes.text();
+    expect(mdDndText).toContain('生命牧师');
+    expect(mdDndText).not.toContain('古文明学者');
+
+    const badSysRes = await app.request(
+      `/api/v1/cards/${cardId}/export?format=trpg_sheet_md&trpgSystem=pathfinder`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(badSysRes.status).toBe(400);
+
+    // 5. Playtest injection per requested trpgSystem
+    const ptAuto = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ message: '检定医学知识' }),
+    });
+    expect(ptAuto.status).toBe(200);
+    expect(((await ptAuto.json()) as { trpgSystemInjected?: string | null }).trpgSystemInjected).toBe('coc7e');
+    expect(playtestSystemPrompts[0]).toContain('古文明学者');
+
+    const ptDnd = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ message: '施放治疗术', trpgSystem: 'dnd5e' }),
+    });
+    expect(ptDnd.status).toBe(200);
+    expect(((await ptDnd.json()) as { trpgSystemInjected?: string | null }).trpgSystemInjected).toBe('dnd5e');
+    expect(playtestSystemPrompts[1]).toContain('生命牧师');
+
+    const ptNone = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ message: '纯叙事聊天', trpgSystem: 'none' }),
+    });
+    expect(ptNone.status).toBe(200);
+    expect(((await ptNone.json()) as { trpgSystemInjected?: string | null }).trpgSystemInjected).toBeNull();
+    expect(playtestSystemPrompts[2]).not.toContain('TRPG 规则面板');
+
+    // 6. Switch active rule via PATCH /cards/:id/trpg/active
+    const switchRes = await app.request(`/api/v1/cards/${cardId}/trpg/active`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ system: 'dnd5e' }),
+    });
+    expect(switchRes.status).toBe(200);
+    const switchedCard = ((await switchRes.json()) as {
+      card: { cardType: string; content: RoleCardContent };
+    }).card;
+    expect(switchedCard.cardType).toBe('trpg_dnd5e');
+    expect(switchedCard.content.extensions.activeTrpgSystem).toBe('dnd5e');
+    expect((switchedCard.content.extensions.trpg as { className?: string }).className).toBe('生命牧师');
+    // CoC 7e bucket remains intact!
+    expect(
+      ((switchedCard.content.extensions.trpgSystems as Record<string, Record<string, unknown>>).coc7e)
+        ?.occupation,
+    ).toBe('古文明学者');
+
+    dbHandle.close();
+  });
 });
 
 

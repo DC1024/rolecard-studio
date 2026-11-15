@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { zValidator } from '@hono/zod-validator';
 import {
   createOpenAiCompatibleLlmPort,
+  extractTrpgSystems,
   generateRoleCard,
   type GeneratedCardOutput,
 } from '@rolecard/core';
@@ -392,7 +393,20 @@ cardRoutes.get('/cards', zValidator('query', CardListQuerySchema), async (c) => 
   const keyword = query.q?.toLowerCase();
 
   const filtered = allRows.filter((row) => {
-    if (query.cardType && row.cardType !== query.cardType) return false;
+    if (query.cardType) {
+      if (query.cardType === 'trpg_coc7' || query.cardType === 'trpg_dnd5e') {
+        const targetSys = query.cardType === 'trpg_coc7' ? 'coc7e' : 'dnd5e';
+        const parsedContent = safeParseJsonObject<RoleCardContent>(row.contentJson);
+        const systems = parsedContent
+          ? extractTrpgSystems(parsedContent, row.cardType).systems
+          : undefined;
+        if (row.cardType !== query.cardType && !systems?.[targetSys]) {
+          return false;
+        }
+      } else if (row.cardType !== query.cardType) {
+        return false;
+      }
+    }
     if (query.mode && row.mode !== query.mode) return false;
     if (query.scheduleEnabled !== undefined && row.scheduleEnabled !== query.scheduleEnabled) {
       return false;

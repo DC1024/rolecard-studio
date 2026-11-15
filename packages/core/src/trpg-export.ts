@@ -1,5 +1,5 @@
-import type { CardType, RoleCardContent, SourceEntry } from '@rolecard/shared';
-import { applyTrpgPresetFields } from './lorebook.js';
+import type { CardType, RoleCardContent, SourceEntry, TrpgSystemKey } from '@rolecard/shared';
+import { extractTrpgSystems, normalizeTrpgRecordForSystem } from './lorebook.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -24,20 +24,14 @@ function escapeHtml(text: string): string {
 function resolveTrpgData(
   content: RoleCardContent,
   cardType?: CardType,
-): { systemKind: 'coc7e' | 'dnd5e'; trpg: Record<string, unknown> } {
-  const existing = asRecord(content.extensions.trpg);
-  const sysText = String(existing.system ?? '').toLowerCase();
-  const isCoc =
-    cardType === 'trpg_coc7' ||
-    sysText.includes('cthulhu') ||
-    sysText.includes('coc') ||
-    typeof existing.characteristics === 'object';
-
-  const targetType: CardType = isCoc ? 'trpg_coc7' : 'trpg_dnd5e';
-  const normalized = applyTrpgPresetFields(targetType, content);
+  requestedSystem?: TrpgSystemKey,
+): { systemKind: TrpgSystemKey; trpg: Record<string, unknown> } {
+  const { systems, activeSystem } = extractTrpgSystems(content, cardType);
+  const systemKind: TrpgSystemKey = requestedSystem ?? activeSystem ?? 'dnd5e';
+  const raw = systems[systemKind] ?? {};
   return {
-    systemKind: isCoc ? 'coc7e' : 'dnd5e',
-    trpg: asRecord(normalized.extensions.trpg),
+    systemKind,
+    trpg: normalizeTrpgRecordForSystem(systemKind, raw),
   };
 }
 
@@ -58,8 +52,7 @@ export function exportCardToFoundryDnd5eActor(
     imageUrl?: string | null;
   } = {},
 ): Record<string, unknown> {
-  const dndCard = applyTrpgPresetFields('trpg_dnd5e', content);
-  const trpg = asRecord(dndCard.extensions.trpg);
+  const { trpg } = resolveTrpgData(content, options.cardType, 'dnd5e');
   const rawAbilities = asRecord(trpg.abilityScores);
   const combat = asRecord(trpg.combat);
 
@@ -155,12 +148,13 @@ export function exportCardToTrpgSheetMarkdown(
   content: RoleCardContent,
   options: {
     cardType?: CardType;
+    trpgSystem?: TrpgSystemKey;
     workName?: string;
     version?: number;
     sources?: SourceEntry[];
   } = {},
 ): string {
-  const { systemKind, trpg } = resolveTrpgData(content, options.cardType);
+  const { systemKind, trpg } = resolveTrpgData(content, options.cardType, options.trpgSystem);
   const lines: string[] = [
     `# ${content.name} · ${systemKind === 'coc7e' ? 'CoC 7e 调查员车卡表' : 'D&D 5e 冒险者车卡表'}`,
     '',
@@ -248,12 +242,13 @@ export function exportCardToTrpgSheetHtml(
   content: RoleCardContent,
   options: {
     cardType?: CardType;
+    trpgSystem?: TrpgSystemKey;
     workName?: string;
     version?: number;
     sources?: SourceEntry[];
   } = {},
 ): string {
-  const { systemKind, trpg } = resolveTrpgData(content, options.cardType);
+  const { systemKind, trpg } = resolveTrpgData(content, options.cardType, options.trpgSystem);
   const titleText =
     systemKind === 'coc7e'
       ? `${content.name} - CoC 7e 调查员车卡表`

@@ -9,6 +9,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
+import { extractCardTrpgSystems } from '../utils/trpg';
 
 interface CardGalleryProps {
   cards: RoleCardDto[];
@@ -194,7 +195,16 @@ export function CardGallery({
       {/* 2:3 Portrait Card Grid */}
       {cards.length > 0 && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          {cards.map((card) => (
+          {cards.map((card) => {
+            const trpgInfo = extractCardTrpgSystems(card.content, card.cardType);
+            const trpgBadgeLabel = trpgInfo.hasDual
+              ? 'CoC · D&D'
+              : trpgInfo.coc7e && card.cardType !== 'trpg_coc7'
+                ? `${CARD_TYPE_SHORT[card.cardType] ?? card.cardType} · CoC`
+                : trpgInfo.dnd5e && card.cardType !== 'trpg_dnd5e'
+                  ? `${CARD_TYPE_SHORT[card.cardType] ?? card.cardType} · D&D`
+                  : (CARD_TYPE_SHORT[card.cardType] ?? card.cardType);
+            return (
             <div
               key={card.id}
               role="button"
@@ -231,7 +241,7 @@ export function CardGallery({
                 {/* Top Badges */}
                 <div className="pointer-events-none absolute inset-x-2 top-2 flex items-start justify-between gap-1">
                   <span className="rounded bg-canvas/85 px-1.5 py-0.5 text-[10px] font-semibold text-content-primary shadow-sm backdrop-blur-sm">
-                    {CARD_TYPE_SHORT[card.cardType] ?? card.cardType}
+                    {trpgBadgeLabel}
                   </span>
                   <div className="flex items-center gap-1">
                     {card.tokenImageUrl && (
@@ -264,14 +274,19 @@ export function CardGallery({
               <div className="flex flex-1 flex-col justify-between gap-2 p-2.5">
                 {card.tags.length > 0 ? (
                   <div className="flex flex-wrap gap-1">
-                    {card.tags.slice(0, 3).map((tag) => (
+                    {card.tags.slice(0, 4).map((tag) => (
                       <span
                         key={tag}
-                        className="max-w-[90px] truncate rounded border border-line bg-subtle px-1.5 py-0 text-[10px] leading-4 text-content-secondary"
+                        className="max-w-[100px] truncate rounded border border-line bg-subtle px-1.5 py-0 text-[10px] leading-4 text-content-secondary"
                       >
                         {tag}
                       </span>
                     ))}
+                    {card.tags.length > 4 && (
+                      <span className="rounded border border-line bg-canvas px-1.5 py-0 font-mono text-[10px] leading-4 text-content-muted">
+                        +{card.tags.length - 4}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <p className="line-clamp-1 text-[11px] text-content-muted">
@@ -297,7 +312,8 @@ export function CardGallery({
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>

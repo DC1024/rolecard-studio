@@ -9,6 +9,7 @@ import type {
   SourceEntry,
   SyncScheduleDto,
   SyncScope,
+  TrpgSystemKey,
 } from '@rolecard/shared';
 import {
   AlertTriangle,
@@ -47,6 +48,7 @@ import {
 } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
 import { useToast } from '../hooks/useToast';
+import { extractCardTrpgSystems } from '../utils/trpg';
 
 const CARD_TYPE_LABELS: Record<RoleCardDto['cardType'], string> = {
   'sillytavern_v3': 'AI 角色扮演 (SillyTavern CCV3)',
@@ -191,6 +193,7 @@ export function CardDetailPanel({
   const [trpgThinkingText, setTrpgThinkingText] = useState('');
   const [trpgThinkingExpanded, setTrpgThinkingExpanded] = useState(true);
   const trpgThinkingBoxRef = useRef<HTMLPreElement | null>(null);
+  const [selectedTrpgTab, setSelectedTrpgTab] = useState<TrpgSystemKey>('coc7e');
 
   // Confirm modals, revisions rollback, and source item collapse/expand
   const [regenerateModalOpen, setRegenerateModalOpen] = useState(false);
@@ -257,11 +260,14 @@ export function CardDetailPanel({
       setTextSourceTitle('');
       setTextSourceContent('');
       setUrlSourceInput('');
+      const extracted = extractCardTrpgSystems(card.content, card.cardType);
+      setSelectedTrpgTab(extracted.activeSystem ?? 'coc7e');
     } else {
       setSelectedSourceIndices([]);
       setSearchResults([]);
       setSearchMeta(null);
       setSelectedSearchIndices([]);
+      setSelectedTrpgTab('coc7e');
     }
     setCardStreamMode(null);
     setRefineProgressText('');
@@ -317,6 +323,10 @@ export function CardDetailPanel({
       </section>
     );
   }
+
+  const trpgInfo = extractCardTrpgSystems(card.content, card.cardType);
+  const selectedTrpgData = selectedTrpgTab === 'coc7e' ? trpgInfo.coc7e : trpgInfo.dnd5e;
+  const isSelectedTrpgActive = trpgInfo.activeSystem === selectedTrpgTab;
 
   const toggleFieldLock = async (field: string) => {
     if (!canUpdate) return;
@@ -530,9 +540,9 @@ export function CardDetailPanel({
     }
   };
 
-  const handleExport = (format: ExportFormat, label?: string) => {
+  const handleExport = (format: ExportFormat, label?: string, trpgSystem?: TrpgSystemKey) => {
     if (!canExport) return;
-    window.open(api.getExportUrl(card.id, format), '_blank', 'noopener,noreferrer');
+    window.open(api.getExportUrl(card.id, format, trpgSystem), '_blank', 'noopener,noreferrer');
     setExportMenuOpen(false);
     notifySuccess(`已触发「${label ?? format}」导出`);
   };
@@ -544,9 +554,11 @@ export function CardDetailPanel({
     notifySuccess(`已触发插件「${plugin.name}」导出`);
   };
 
-  const handleGenerateTrpg = async (system: 'coc7e' | 'dnd5e') => {
+  const handleGenerateTrpg = async (system: TrpgSystemKey) => {
     if (!canUpdate) return;
     const systemLabel = system === 'coc7e' ? 'CoC 7e 调查员规则面板' : 'D&D 5e 冒险者规则面板';
+    const shouldActivate = !trpgInfo.activeSystem || trpgInfo.activeSystem === system;
+    setSelectedTrpgTab(system);
     setBusyAction(`trpg-${system}`);
     setError(null);
     setTrpgStreamSystem(system);
@@ -554,16 +566,22 @@ export function CardDetailPanel({
     setTrpgThinkingText('');
     setTrpgThinkingExpanded(true);
     try {
-      const res = await api.generateCardTrpgStatsSse(card.id, system, {
-        onProgress: (message) => {
-          setTrpgProgressText(message);
+      const res = await api.generateCardTrpgStatsSse(
+        card.id,
+        system,
+        {
+          onProgress: (message) => {
+            setTrpgProgressText(message);
+          },
+          onThinking: (delta) => {
+            setTrpgThinkingText((prev) => prev + delta);
+          },
         },
-        onThinking: (delta) => {
-          setTrpgThinkingText((prev) => prev + delta);
-        },
-      });
+        shouldActivate,
+      );
       setTrpgProgressText('');
       setTrpgThinkingExpanded(false);
+      setSelectedTrpgTab(system);
       onCardUpdated(res.card, `已根据角色设定推演 ${systemLabel}`);
       notifySuccess(`已生成 ${systemLabel}`);
     } catch (err) {
@@ -576,16 +594,46 @@ export function CardDetailPanel({
     }
   };
 
-  const handleSaveTrpg = async (nextTrpg: Record<string, unknown>) => {
+  const handleSwitchActiveTrpg = async (system: TrpgSystemKey) => {
+    if (!canUpdate || busyAction !== null) return;
+    const systemLabel = system === 'coc7e' ? 'CoC 7e' : 'D&D 5e';
+    setBusyAction(`switch-trpg-${system}`);
+    setError(null);
+    try {
+      const res = await api.switchActiveTrpgSystem(card.id, system);
+      setSelectedTrpgTab(system);
+      onCardUpdated(res.card, `已将默认 TRPG 规则切换为 ${systemLabel}`);
+      notifySuccess(`已将默认 TRPG 规则切换为 ${systemLabel}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '切换默认 TRPG 规则失败';
+      setError(msg);
+      notifyError(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSaveTrpg = async (system: TrpgSystemKey, nextTrpg: Record<string, unknown>) => {
     if (!canUpdate) return;
     setBusyAction('save-trpg');
     setError(null);
     try {
+      const nextBucket: Record<string, unknown> = {
+        ...(trpgInfo.coc7e ? { coc7e: trpgInfo.coc7e } : {}),
+        ...(trpgInfo.dnd5e ? { dnd5e: trpgInfo.dnd5e } : {}),
+        [system]: nextTrpg,
+      };
+      const nextActive = trpgInfo.activeSystem ?? system;
       const nextContent: RoleCardContent = {
         ...card.content,
         extensions: {
           ...card.content.extensions,
-          trpg: nextTrpg,
+          trpgSystems: nextBucket,
+          activeTrpgSystem: nextActive,
+          trpg:
+            nextActive === system
+              ? nextTrpg
+              : ((nextBucket[nextActive] as Record<string, unknown> | undefined) ?? nextTrpg),
         },
       };
       const res = await api.updateCardContent(card.id, {
@@ -593,7 +641,10 @@ export function CardDetailPanel({
         lockedFields,
         tags: card.tags,
       });
-      onCardUpdated(res.card, '已手动更新 TRPG 规则面板属性');
+      onCardUpdated(
+        res.card,
+        `已手动更新 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} TRPG 规则面板属性`,
+      );
       notifySuccess('已保存 TRPG 规则面板修改');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '保存 TRPG 属性失败';
@@ -964,9 +1015,9 @@ export function CardDetailPanel({
         </span>
       </div>
 
-      {/* Header */}
-      <div className="flex flex-col gap-4 border-b border-line-subtle pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-start gap-4">
+      {/* Header (方案 A：左侧缩略图 + 右侧全宽信息与标签，操作栏独立成行) */}
+      <div className="border-b border-line-subtle pb-4">
+        <div className="flex items-start gap-4">
           <div className="relative flex shrink-0 flex-col items-center gap-1.5">
             {card.imageUrl ? (
               <img
@@ -1014,7 +1065,7 @@ export function CardDetailPanel({
             )}
           </div>
 
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-bold tracking-tight text-content-primary">
                 {card.characterName}
@@ -1045,9 +1096,37 @@ export function CardDetailPanel({
               </button>
             </div>
 
-            <p className="mt-1 text-xs text-content-secondary">
-              出处：{card.workName || '原创设定'} · 规格：{CARD_TYPE_LABELS[card.cardType] ?? card.cardType}
-            </p>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-content-secondary">
+              <span>
+                出处：{card.workName || '原创设定'} · 规格：{CARD_TYPE_LABELS[card.cardType] ?? card.cardType}
+              </span>
+              {(trpgInfo.coc7e || trpgInfo.dnd5e) && (
+                <span className="inline-flex flex-wrap items-center gap-1">
+                  {trpgInfo.coc7e && (
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[10.5px] font-medium ${
+                        trpgInfo.activeSystem === 'coc7e'
+                          ? 'border-accent/40 bg-accent/10 text-accent'
+                          : 'border-line bg-subtle text-content-secondary'
+                      }`}
+                    >
+                      CoC 7e{trpgInfo.activeSystem === 'coc7e' ? ' · 默认' : ''}
+                    </span>
+                  )}
+                  {trpgInfo.dnd5e && (
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[10.5px] font-medium ${
+                        trpgInfo.activeSystem === 'dnd5e'
+                          ? 'border-accent/40 bg-accent/10 text-accent'
+                          : 'border-line bg-subtle text-content-secondary'
+                      }`}
+                    >
+                      D&amp;D 5e{trpgInfo.activeSystem === 'dnd5e' ? ' · 默认' : ''}
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
 
             {card.diffSummary && (
               <p className="mt-1.5 inline-flex items-center gap-1 rounded-sm bg-status-info/10 px-2 py-0.5 text-[11px] text-status-info">
@@ -1129,173 +1208,175 @@ export function CardDetailPanel({
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {canPlaytest && (
-            <button
-              type="button"
-              onClick={() => onOpenPlaytest(card)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              试聊验证
-            </button>
-          )}
+        {/* Dedicated Actions Toolbar */}
+        <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-line-subtle pt-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {canPlaytest && (
+              <button
+                type="button"
+                onClick={() => onOpenPlaytest(card)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                试聊验证
+              </button>
+            )}
 
-          {canUpdate && !editing && (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-primary hover:bg-subtle"
-            >
-              <Edit3 className="h-3.5 w-3.5" />
-              编辑
-            </button>
-          )}
+            {canUpdate && !editing && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-primary hover:bg-subtle"
+              >
+                <Edit3 className="h-3.5 w-3.5" />
+                编辑
+              </button>
+            )}
 
-          {canUpdate && editing && (
-            <>
+            {canUpdate && editing && (
+              <>
+                <button
+                  type="button"
+                  disabled={busyAction !== null}
+                  onClick={handleSaveEdit}
+                  className="inline-flex h-8 items-center gap-1 rounded-sm bg-status-success px-3 text-xs font-medium text-content-inverse hover:opacity-90 disabled:opacity-50"
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  保存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraft(structuredClone(card.content));
+                    setLockedFields([...card.lockedFields]);
+                    setEditing(false);
+                  }}
+                  className="inline-flex h-8 items-center rounded-sm border border-line px-2.5 text-xs text-content-secondary hover:bg-subtle"
+                >
+                  取消
+                </button>
+              </>
+            )}
+
+            {canUpdate && !editing && (
               <button
                 type="button"
                 disabled={busyAction !== null}
-                onClick={handleSaveEdit}
-                className="inline-flex h-8 items-center gap-1 rounded-sm bg-status-success px-3 text-xs font-medium text-content-inverse hover:opacity-90 disabled:opacity-50"
+                onClick={() => setRegenerateModalOpen(true)}
+                title="一键协同重写除已锁定区块外的全部设定"
+                className="inline-flex h-8 items-center gap-1 rounded-sm border border-accent/50 bg-accent/10 px-2.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
               >
-                <Save className="h-3.5 w-3.5" />
-                保存
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft(structuredClone(card.content));
-                  setLockedFields([...card.lockedFields]);
-                  setEditing(false);
-                }}
-                className="inline-flex h-8 items-center rounded-sm border border-line px-2.5 text-xs text-content-secondary hover:bg-subtle"
-              >
-                取消
-              </button>
-            </>
-          )}
-
-          {canUpdate && !editing && (
-            <button
-              type="button"
-              disabled={busyAction !== null}
-              onClick={() => setRegenerateModalOpen(true)}
-              title="一键协同重写除已锁定区块外的全部设定"
-              className="inline-flex h-8 items-center gap-1 rounded-sm border border-accent/50 bg-accent/10 px-2.5 text-xs font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
-            >
-              {busyAction === 'regenerate' ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Wand2 className="h-3.5 w-3.5" />
-              )}
-              一键 AI 生成
-            </button>
-          )}
-
-          {canUpdate && !editing && (
-            <div className="relative flex items-center">
-              <button
-                type="button"
-                disabled={busyAction !== null || revisions.length === 0}
-                onClick={() => void handleRollback(revisions[0]?.id)}
-                title={
-                  revisions[0]
-                    ? `撤回至上一版本：${revisions[0].summary || revisions[0].action}`
-                    : '暂无可撤回的历史版本（执行编辑/AI 生成/精简后将自动留存快照）'
-                }
-                className="inline-flex h-8 items-center gap-1 rounded-l-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {busyAction === 'rollback' ? (
+                {busyAction === 'regenerate' ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Undo2 className="h-3.5 w-3.5" />
+                  <Wand2 className="h-3.5 w-3.5" />
                 )}
-                撤回上一版
+                一键 AI 生成
               </button>
+            )}
+
+            {canUpdate && !editing && (
+              <div className="relative flex items-center">
+                <button
+                  type="button"
+                  disabled={busyAction !== null || revisions.length === 0}
+                  onClick={() => void handleRollback(revisions[0]?.id)}
+                  title={
+                    revisions[0]
+                      ? `撤回至上一版本：${revisions[0].summary || revisions[0].action}`
+                      : '暂无可撤回的历史版本（执行编辑/AI 生成/精简后将自动留存快照）'
+                  }
+                  className="inline-flex h-8 items-center gap-1 rounded-l-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {busyAction === 'rollback' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Undo2 className="h-3.5 w-3.5" />
+                  )}
+                  撤回上一版
+                </button>
+                <button
+                  type="button"
+                  disabled={busyAction !== null || revisions.length === 0}
+                  onClick={() => setRevisionMenuOpen((prev) => !prev)}
+                  title="查看并选择历史版本快照"
+                  className="inline-flex h-8 items-center gap-1 rounded-r-sm border border-l-0 border-line bg-surface px-1.5 text-[11px] text-content-muted hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <History className="h-3.5 w-3.5" />
+                  {revisions.length > 0 && (
+                    <span className="font-mono text-[10px]">{revisions.length}</span>
+                  )}
+                </button>
+
+                {revisionMenuOpen && revisions.length > 0 && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-30"
+                      onClick={() => setRevisionMenuOpen(false)}
+                    />
+                    <div className="absolute left-0 top-9 z-40 w-80 rounded-md border border-line bg-elevated p-2.5 shadow-xl">
+                      <div className="mb-2 flex items-center justify-between border-b border-line-subtle pb-1.5">
+                        <span className="text-xs font-semibold text-content-primary">
+                          历史版本快照（最近 {revisions.length} 条）
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setRevisionMenuOpen(false)}
+                          className="text-content-muted hover:text-content-primary"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="max-h-64 space-y-1.5 overflow-y-auto pr-0.5 text-xs">
+                        {revisions.map((rev, idx) => (
+                          <div
+                            key={rev.id}
+                            className="flex items-start justify-between gap-2 rounded-sm border border-line-subtle bg-surface p-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                {idx === 0 && (
+                                  <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-semibold text-accent">
+                                    上一版
+                                  </span>
+                                )}
+                                <span className="truncate font-medium text-content-primary">
+                                  {rev.summary || rev.action}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 font-mono text-[10px] text-content-muted">
+                                {new Date(rev.createdAt).toLocaleString()} · {rev.tokenCount} tok
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleRollback(rev.id)}
+                              className="shrink-0 rounded-sm border border-line bg-canvas px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent"
+                            >
+                              恢复
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {canUpdate && (
               <button
                 type="button"
-                disabled={busyAction !== null || revisions.length === 0}
-                onClick={() => setRevisionMenuOpen((prev) => !prev)}
-                title="查看并选择历史版本快照"
-                className="inline-flex h-8 items-center gap-1 rounded-r-sm border border-l-0 border-line bg-surface px-1.5 text-[11px] text-content-muted hover:bg-subtle hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={busyAction !== null}
+                onClick={() => setCompressModalOpen(true)}
+                title="有损语义精简至约 1200 tokens（跳过锁定字段与 TRPG 面板，可能影响角色细节精准度）"
+                className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:opacity-50"
               >
-                <History className="h-3.5 w-3.5" />
-                {revisions.length > 0 && (
-                  <span className="font-mono text-[10px]">{revisions.length}</span>
-                )}
+                <Minimize2 className="h-3.5 w-3.5" />
+                {busyAction === 'compress' ? '精简中...' : '精简'}
               </button>
-
-              {revisionMenuOpen && revisions.length > 0 && (
-                <>
-                  <div
-                    className="fixed inset-0 z-30"
-                    onClick={() => setRevisionMenuOpen(false)}
-                  />
-                  <div className="absolute right-0 top-9 z-40 w-80 rounded-md border border-line bg-elevated p-2.5 shadow-xl">
-                    <div className="mb-2 flex items-center justify-between border-b border-line-subtle pb-1.5">
-                      <span className="text-xs font-semibold text-content-primary">
-                        历史版本快照（最近 {revisions.length} 条）
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setRevisionMenuOpen(false)}
-                        className="text-content-muted hover:text-content-primary"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <div className="max-h-64 space-y-1.5 overflow-y-auto pr-0.5 text-xs">
-                      {revisions.map((rev, idx) => (
-                        <div
-                          key={rev.id}
-                          className="flex items-start justify-between gap-2 rounded-sm border border-line-subtle bg-surface p-2"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              {idx === 0 && (
-                                <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-semibold text-accent">
-                                  上一版
-                                </span>
-                              )}
-                              <span className="truncate font-medium text-content-primary">
-                                {rev.summary || rev.action}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 font-mono text-[10px] text-content-muted">
-                              {new Date(rev.createdAt).toLocaleString()} · {rev.tokenCount} tok
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void handleRollback(rev.id)}
-                            className="shrink-0 rounded-sm border border-line bg-canvas px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent"
-                          >
-                            恢复
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {canUpdate && (
-            <button
-              type="button"
-              disabled={busyAction !== null}
-              onClick={() => setCompressModalOpen(true)}
-              title="有损语义精简至约 1200 tokens（跳过锁定字段与 TRPG 面板，可能影响角色细节精准度）"
-              className="inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-content-secondary hover:bg-subtle hover:text-content-primary disabled:opacity-50"
-            >
-              <Minimize2 className="h-3.5 w-3.5" />
-              {busyAction === 'compress' ? '精简中...' : '精简'}
-            </button>
-          )}
+            )}
+          </div>
 
           {canDelete && (
             <button
@@ -1303,7 +1384,7 @@ export function CardDetailPanel({
               disabled={busyAction !== null}
               onClick={handleDelete}
               title="删除角色卡"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-sm border border-line text-content-muted hover:border-status-danger/40 hover:bg-status-danger/10 hover:text-status-danger"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-line text-content-muted hover:border-status-danger/40 hover:bg-status-danger/10 hover:text-status-danger"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -1455,23 +1536,80 @@ export function CardDetailPanel({
                           </div>
                           <Download className="h-3.5 w-3.5 shrink-0" />
                         </button>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleExport('trpg_sheet_html', '可打印跑团车卡表 HTML')}
-                            className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
-                          >
-                            <div className="font-medium">可打印车卡表</div>
-                            <div className="text-[10px] text-content-muted">HTML / 打印 PDF</div>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleExport('trpg_sheet_md', '跑团车卡 Markdown')}
-                            className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
-                          >
-                            <div className="font-medium">车卡笔记 MD</div>
-                            <div className="text-[10px] text-content-muted">CoC / D&amp;D 表格</div>
-                          </button>
+                        <div className="space-y-1.5">
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleExport(
+                                  'trpg_sheet_html',
+                                  `可打印跑团车卡表 (${selectedTrpgTab === 'dnd5e' ? 'D&D 5e' : 'CoC 7e'})`,
+                                  selectedTrpgData ? selectedTrpgTab : (trpgInfo.activeSystem ?? undefined),
+                                )
+                              }
+                              className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                            >
+                              <div className="font-medium">可打印车卡表</div>
+                              <div className="text-[10px] text-content-muted">
+                                {trpgInfo.hasDual
+                                  ? `当前：${selectedTrpgTab === 'dnd5e' ? 'D&D 5e' : 'CoC 7e'} · HTML`
+                                  : 'HTML / 打印 PDF'}
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleExport(
+                                  'trpg_sheet_md',
+                                  `跑团车卡 Markdown (${selectedTrpgTab === 'dnd5e' ? 'D&D 5e' : 'CoC 7e'})`,
+                                  selectedTrpgData ? selectedTrpgTab : (trpgInfo.activeSystem ?? undefined),
+                                )
+                              }
+                              className="rounded-sm border border-line bg-surface px-2 py-1.5 text-left hover:border-accent hover:text-accent"
+                            >
+                              <div className="font-medium">车卡笔记 MD</div>
+                              <div className="text-[10px] text-content-muted">
+                                {trpgInfo.hasDual
+                                  ? `当前：${selectedTrpgTab === 'dnd5e' ? 'D&D 5e' : 'CoC 7e'} · MD`
+                                  : 'CoC / D&D 表格'}
+                              </div>
+                            </button>
+                          </div>
+                          {trpgInfo.hasDual && (
+                            <div className="flex flex-wrap items-center justify-between gap-1 rounded-sm border border-line-subtle bg-canvas px-2 py-1 text-[10px]">
+                              <span className="text-content-muted">指定双规则车卡导出：</span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleExport('trpg_sheet_html', 'CoC 7e 可打印车卡表 HTML', 'coc7e')}
+                                  className="rounded border border-line bg-surface px-1.5 py-0.5 text-content-secondary hover:border-accent hover:text-accent"
+                                >
+                                  CoC HTML
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExport('trpg_sheet_html', 'D&D 5e 可打印车卡表 HTML', 'dnd5e')}
+                                  className="rounded border border-line bg-surface px-1.5 py-0.5 text-content-secondary hover:border-accent hover:text-accent"
+                                >
+                                  D&amp;D HTML
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExport('trpg_sheet_md', 'CoC 7e 车卡 MD', 'coc7e')}
+                                  className="rounded border border-line bg-surface px-1.5 py-0.5 text-content-secondary hover:border-accent hover:text-accent"
+                                >
+                                  CoC MD
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExport('trpg_sheet_md', 'D&D 5e 车卡 MD', 'dnd5e')}
+                                  className="rounded border border-line bg-surface px-1.5 py-0.5 text-content-secondary hover:border-accent hover:text-accent"
+                                >
+                                  D&amp;D MD
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1732,11 +1870,11 @@ export function CardDetailPanel({
 
           <div className="rounded-md border border-line-subtle bg-canvas p-3">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-content-primary">
+              <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-content-primary">
                 <Dice5 className="h-3.5 w-3.5 text-accent" />
                 <span>TRPG 规则面板属性 (CoC 7e / D&amp;D 5e)</span>
                 <span className="rounded bg-subtle px-1.5 py-0.5 text-[10px] font-normal text-content-muted">
-                  已豁免精简 · 支持手工修改
+                  支持双规则共存 · 已豁免精简 · 支持手工修改
                 </span>
               </div>
               {canUpdate && (
@@ -1748,7 +1886,11 @@ export function CardDetailPanel({
                     className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
                   >
                     {busyAction === 'trpg-coc7e' && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
-                    {busyAction === 'trpg-coc7e' ? '推演中...' : 'AI 推演 CoC 7e'}
+                    {busyAction === 'trpg-coc7e'
+                      ? '推演中...'
+                      : trpgInfo.coc7e
+                        ? '重新推演 CoC 7e'
+                        : 'AI 推演 CoC 7e'}
                   </button>
                   <button
                     type="button"
@@ -1757,10 +1899,88 @@ export function CardDetailPanel({
                     className="inline-flex items-center gap-1 rounded-sm border border-line bg-surface px-2 py-1 text-[11px] font-medium text-content-primary hover:border-accent hover:text-accent disabled:opacity-50"
                   >
                     {busyAction === 'trpg-dnd5e' && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
-                    {busyAction === 'trpg-dnd5e' ? '推演中...' : 'AI 推演 D&D 5e'}
+                    {busyAction === 'trpg-dnd5e'
+                      ? '推演中...'
+                      : trpgInfo.dnd5e
+                        ? '重新推演 D&D 5e'
+                        : 'AI 推演 D&D 5e'}
                   </button>
                 </div>
               )}
+            </div>
+
+            {/* Dual-system Tabs + Default Rule Switcher */}
+            <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2 border-b border-line-subtle pb-2">
+              <div className="inline-flex rounded-sm border border-line bg-surface p-0.5 text-[11px]">
+                {(
+                  [
+                    { key: 'coc7e' as const, label: 'CoC 7e 调查员', exists: Boolean(trpgInfo.coc7e) },
+                    { key: 'dnd5e' as const, label: 'D&D 5e 冒险者', exists: Boolean(trpgInfo.dnd5e) },
+                  ] as const
+                ).map((tab) => {
+                  const isSelected = selectedTrpgTab === tab.key;
+                  const isActiveDefault = trpgInfo.activeSystem === tab.key;
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setSelectedTrpgTab(tab.key)}
+                      className={`inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 font-medium transition ${
+                        isSelected
+                          ? 'bg-accent text-content-inverse'
+                          : 'text-content-secondary hover:text-content-primary'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      {tab.exists ? (
+                        <span
+                          className={`rounded px-1 py-0 text-[9.5px] ${
+                            isSelected
+                              ? 'bg-white/20 text-content-inverse'
+                              : isActiveDefault
+                                ? 'bg-accent/15 text-accent'
+                                : 'bg-subtle text-content-muted'
+                          }`}
+                        >
+                          {isActiveDefault ? '当前默认' : '已生成'}
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[9.5px] ${
+                            isSelected ? 'text-content-inverse/80' : 'text-content-muted'
+                          }`}
+                        >
+                          未生成
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-2 text-[11px]">
+                {selectedTrpgData && isSelectedTrpgActive && (
+                  <span className="inline-flex items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10.5px] font-medium text-accent">
+                    <Check className="h-3 w-3" />
+                    当前默认规则（试聊与默认导出优先使用）
+                  </span>
+                )}
+                {selectedTrpgData && !isSelectedTrpgActive && canUpdate && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={() => void handleSwitchActiveTrpg(selectedTrpgTab)}
+                    className="inline-flex items-center gap-1 rounded-sm border border-accent/50 bg-surface px-2 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/10 disabled:opacity-50"
+                  >
+                    {busyAction === `switch-trpg-${selectedTrpgTab}` ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Check className="h-3 w-3" />
+                    )}
+                    设为当前默认规则
+                  </button>
+                )}
+              </div>
             </div>
 
             {(busyAction === 'trpg-coc7e' ||
@@ -1825,18 +2045,36 @@ export function CardDetailPanel({
               </div>
             )}
 
-            {typeof card.content.extensions.trpg === 'object' &&
-            card.content.extensions.trpg !== null ? (
+            {selectedTrpgData ? (
               <TrpgPanelView
-                trpg={card.content.extensions.trpg as Record<string, unknown>}
+                key={`${card.id}-${selectedTrpgTab}`}
+                systemKind={selectedTrpgTab}
+                trpg={selectedTrpgData}
                 canEdit={canUpdate && !editing && busyAction === null}
                 saving={busyAction === 'save-trpg'}
-                onSave={handleSaveTrpg}
+                onSave={(nextTrpg) => handleSaveTrpg(selectedTrpgTab, nextTrpg)}
               />
             ) : (
-              <p className="text-xs text-content-muted">
-                当前角色尚未绑定 TRPG 数值面板。点击右上角「AI 推演 CoC 7e / D&amp;D 5e」可根据人设自动生成真实属性并解锁跑团车卡表、手动编辑与 Foundry VTT 导出。
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-dashed border-line bg-surface p-3 text-xs text-content-muted">
+                <span>
+                  尚未生成{' '}
+                  <strong className="text-content-secondary">
+                    {selectedTrpgTab === 'coc7e' ? 'CoC 7e 调查员' : 'D&D 5e 冒险者'}
+                  </strong>{' '}
+                  规则面板（可与另一套规则共存保存）。
+                </span>
+                {canUpdate && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={() => void handleGenerateTrpg(selectedTrpgTab)}
+                    className="inline-flex items-center gap-1 rounded-sm border border-accent/50 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    AI 推演 {selectedTrpgTab === 'coc7e' ? 'CoC 7e' : 'D&D 5e'}
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -2712,21 +2950,24 @@ export function CardDetailPanel({
 }
 
 function TrpgPanelView({
+  systemKind,
   trpg,
   canEdit,
   saving,
   onSave,
 }: {
+  systemKind?: TrpgSystemKey;
   trpg: Record<string, unknown>;
   canEdit: boolean;
   saving: boolean;
   onSave: (nextTrpg: Record<string, unknown>) => Promise<void>;
 }) {
   const sysText = String(trpg.system ?? '');
-  const isCoc =
-    sysText.toLowerCase().includes('cthulhu') ||
-    sysText.toLowerCase().includes('coc') ||
-    (typeof trpg.characteristics === 'object' && trpg.characteristics !== null);
+  const isCoc = systemKind
+    ? systemKind === 'coc7e'
+    : sysText.toLowerCase().includes('cthulhu') ||
+      sysText.toLowerCase().includes('coc') ||
+      (typeof trpg.characteristics === 'object' && trpg.characteristics !== null);
 
   const asRec = (val: unknown): Record<string, unknown> =>
     typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -2747,7 +2988,7 @@ function TrpgPanelView({
     setEditingTrpg(false);
     setJsonMode(false);
     setTrpgEditError(null);
-  }, [trpg]);
+  }, [trpg, systemKind]);
 
   const handleEnterEdit = () => {
     setTrpgDraft(structuredClone(trpg));

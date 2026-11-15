@@ -10,7 +10,7 @@ import {
   type SourceEntry,
 } from '@rolecard/shared';
 import { completeStructuredJson } from './llm/json-repair.js';
-import { applyTrpgPresetFields } from './lorebook.js';
+import { applyTrpgPresetFields, mergeTrpgSystemData, trpgSystemToCardType } from './lorebook.js';
 import {
   clipToTokenBudget,
   fetchUserReferenceUrl,
@@ -410,6 +410,7 @@ export async function generateTrpgAttributesForCard(
   deps: {
     llmPort: LlmCompletionPort;
     llmSlot: LlmSlotRuntimeConfig;
+    activate?: boolean;
     onStrategyDowngraded?: (strategy: 'prompt') => void | Promise<void>;
     onProgress?: (event: { step: string; message: string }) => void | Promise<void>;
     onReasoningDelta?: (delta: string) => void | Promise<void>;
@@ -482,16 +483,24 @@ export async function generateTrpgAttributesForCard(
     return completion;
   }
 
-  const nextContent = applyTrpgPresetFields(targetCardType, {
-    ...content,
-    extensions: {
-      ...content.extensions,
-      trpg: completion.value.data.trpg,
+  const nextContent = mergeTrpgSystemData(
+    content,
+    system,
+    completion.value.data.trpg,
+    {
+      activate: deps.activate ?? true,
+      fallbackCardType: deps.activate === false ? undefined : targetCardType,
     },
-  });
+  );
+
+  const nextActiveSystem =
+    nextContent.extensions.activeTrpgSystem === 'coc7e' ||
+    nextContent.extensions.activeTrpgSystem === 'dnd5e'
+      ? nextContent.extensions.activeTrpgSystem
+      : system;
 
   return ok({
-    cardType: targetCardType,
+    cardType: deps.activate === false ? trpgSystemToCardType(nextActiveSystem) : targetCardType,
     content: nextContent,
   });
 }

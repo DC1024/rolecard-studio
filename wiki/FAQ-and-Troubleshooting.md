@@ -86,6 +86,10 @@
 - **TRPG 面板豁免**：自 `v1.7.0` 起，`extensions`（含 CoC 7e / D&D 5e 规则面板）不参与 `tokenCount` 计算且在精简时自动剥离并原样恢复，不会被压缩破坏。
 - **随时撤回**：每次 AI 生成、微调、精简或手动保存前都会保存一份历史快照，随时可在详情页顶部点击 **「撤回上一版」** 或从历史快照列表恢复。
 
+### Q10.2：同一张角色卡可以同时拥有 CoC 7e 和 D&D 5e 两套数值吗？旧卡如何兼容？
+- **支持双规则共存**：自 `v1.8.0` 起，系统将两套规则数据分别存入 `extensions.trpgSystems.coc7e` 与 `extensions.trpgSystems.dnd5e`，并保留 `extensions.trpg` 作为当前激活规则的兼容镜像。你可以为同一角色分别推演、编辑两套车卡数据，并在详情页一键切换默认激活规则，或直接定向导出 `CoC 7e` / `D&D 5e` 车卡表，在「快速试聊」中也能独立指定本次对话注入哪套规则。
+- **旧卡无感兼容**：升级前仅保存了 `extensions.trpg` 的旧卡会自动被识别归入对应规则桶，无需任何手工迁移。
+
 ### Q11：日常运维有哪些必须注意的安全事项？
 1. **严禁丢失 `.master.key`**：`ROLECARD_DATA_DIR/.master.key` 负责解密所有入库密钥，备份时必须与 `rolecard.db`、`.db-wal`、`uploads/` 打包保存在一起。
 2. **公网部署务必检查访问策略**：公网环境建议将 `apiAccessMode` 保持为 **`authenticated`**，如需私密使用可将 `siteAccessMode` 设为 **`login_required`**，并始终为外部系统签发最小作用域的 External API Key。

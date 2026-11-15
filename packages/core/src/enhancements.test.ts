@@ -16,7 +16,13 @@ import {
   extractJsonCandidate,
   repairTruncatedJson,
 } from './llm/json-repair.js';
-import { applyTrpgPresetFields } from './lorebook.js';
+import {
+  applyTrpgPresetFields,
+  extractTrpgSystems,
+  mergeTrpgSystemData,
+  reconcileTrpgExtensionsOnEdit,
+  switchActiveTrpgSystem,
+} from './lorebook.js';
 import {
   buildNotificationMessage,
   deliverNotificationsInParallel,
@@ -29,6 +35,7 @@ import {
   mergeCardTagsDedupe,
   refineRoleCard,
   regenerateRoleCard,
+  runPlaytestTurn,
   selectSourcesForGeneration,
 } from './playtest.js';
 import { layeredRetrieve, queryMediaWikiSite, testSearchConnectivity } from './retrieval.js';
@@ -2071,6 +2078,240 @@ describe('Tags append-dedupe, TRPG exempt compress, TRPG thinking stream, and re
     expect(res.ok).toBe(true);
     expect(thoughts.join('')).toContain('先评估阿米娅的精神力与学识');
     expect(progressMsgs.some((m) => m.includes('gpt-4o-mini') && m.includes('CoC 7e'))).toBe(true);
+  });
+});
+
+describe('Dual TRPG system coexistence, switching, targeted export & playtest injection', () => {
+  const llmSlot = {
+    provider: 'openai' as const,
+    apiKey: 'sk-test',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    jsonModeStrategy: 'auto' as const,
+  };
+
+  it('stores CoC 7e and D&D 5e in separate buckets, supports active switching, targeted export, and edit reconciliation', async () => {
+    // 1. Generate CoC 7e (activates coc7e)
+    const cocRes = await generateTrpgAttributesForCard(sampleContent, 'coc7e', {
+      llmSlot,
+      activate: true,
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          trpg: {
+            system: 'Call of Cthulhu 7e',
+            occupation: '战术指挥官',
+            era: '近代架空',
+            characteristics: { STR: 45, CON: 55, SIZ: 45, DEX: 70, APP: 75, INT: 85, POW: 90, EDU: 80 },
+            derived: { HP: 10, MP: 18, SAN: 85, Luck: 65, Move: 8 },
+            keySkills: ['心理学 75%', '说服 80%'],
+          },
+        }),
+      }),
+    });
+    expect(cocRes.ok).toBe(true);
+    if (!cocRes.ok) return;
+
+    // 2. Generate D&D 5e with activate=false -> both coexist and coc7e stays active
+    const dndRes = await generateTrpgAttributesForCard(cocRes.value.content, 'dnd5e', {
+      llmSlot,
+      activate: false,
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          trpg: {
+            system: 'D&D 5e',
+            race: '卡特斯',
+            className: '吟游诗人',
+            alignment: '守序善良',
+            level: 6,
+            abilityScores: { STR: 8, DEX: 14, CON: 12, INT: 16, WIS: 14, CHA: 18 },
+            combat: { AC: 15, MaxHP: 42, Speed: '30 ft', ProficiencyBonus: 3 },
+            proficiencies: ['奥秘', '说服'],
+            featuresAndTraits: ['奇美拉共鸣'],
+          },
+        }),
+      }),
+    });
+    expect(dndRes.ok).toBe(true);
+    if (!dndRes.ok) return;
+
+    const dualContent = dndRes.value.content;
+    expect(dndRes.value.cardType).toBe('trpg_coc7');
+    const extracted = extractTrpgSystems(dualContent);
+    expect(extracted.activeSystem).toBe('coc7e');
+    expect(extracted.systems.coc7e?.occupation).toBe('战术指挥官');
+    expect(extracted.systems.dnd5e?.className).toBe('吟游诗人');
+    expect((dualContent.extensions.trpg as { occupation?: string }).occupation).toBe('战术指挥官');
+
+    // 3. Foundry D&D 5e export still resolves dnd5e bucket even while CoC 7e is active!
+    const actor = exportCardToFoundryDnd5eActor(dualContent, {
+      cardType: 'trpg_coc7',
+      workName: '明日方舟',
+    }) as { system: { abilities: { cha: { value: number } } }; items: Array<{ name: string }> };
+    expect(actor.system.abilities.cha.value).toBe(18);
+    expect(actor.items.map((i) => i.name)).toContain('奇美拉共鸣');
+
+    // Targeted sheet export selects requested rule
+    const cocMd = exportCardToTrpgSheetMarkdown(dualContent, { trpgSystem: 'coc7e' });
+    const dndMd = exportCardToTrpgSheetMarkdown(dualContent, { trpgSystem: 'dnd5e' });
+    expect(cocMd).toContain('CoC 7e');
+    expect(cocMd).toContain('战术指挥官');
+    expect(dndMd).toContain('D&D 5e');
+    expect(dndMd).toContain('吟游诗人');
+
+    const dndHtml = exportCardToTrpgSheetHtml(dualContent, { trpgSystem: 'dnd5e' });
+    expect(dndHtml).toContain('奇美拉共鸣');
+
+    // 4. Switch active system to dnd5e
+    const switched = switchActiveTrpgSystem(dualContent, 'dnd5e');
+    expect(switched).not.toBeNull();
+    expect(switched?.extensions.activeTrpgSystem).toBe('dnd5e');
+    expect((switched?.extensions.trpg as { className?: string }).className).toBe('吟游诗人');
+
+    // 5. Reconcile manual edit on inactive bucket without wiping active bucket
+    const legacyMerged = mergeTrpgSystemData(
+      sampleContent,
+      'coc7e',
+      { occupation: '研究员', characteristics: { STR: 40 } },
+      { activate: true },
+    );
+    const dualMerged = mergeTrpgSystemData(
+      legacyMerged,
+      'dnd5e',
+      { className: '法师', abilityScores: { INT: 18 } },
+      { activate: false },
+    );
+    const editedInactive: RoleCardContent = {
+      ...dualMerged,
+      extensions: {
+        ...dualMerged.extensions,
+        trpgSystems: {
+          ...(dualMerged.extensions.trpgSystems as Record<string, unknown>),
+          dnd5e: {
+            ...((dualMerged.extensions.trpgSystems as Record<string, Record<string, unknown>>).dnd5e ?? {}),
+            className: '大法师',
+          },
+        },
+      },
+    };
+    const reconciled = reconcileTrpgExtensionsOnEdit(dualMerged, editedInactive, 'trpg_coc7');
+    expect(reconciled.activeSystem).toBe('coc7e');
+    expect(
+      ((reconciled.content.extensions.trpgSystems as Record<string, Record<string, unknown>>).dnd5e)
+        ?.className,
+    ).toBe('大法师');
+    expect((reconciled.content.extensions.trpg as { occupation?: string }).occupation).toBe('研究员');
+
+    // 6. refineRoleCard preserves both trpgSystems buckets
+    const refined = await refineRoleCard(dualContent, '补充一句话简介', {
+      llmSlot,
+      llmPort: async () => ({
+        status: 200,
+        content: JSON.stringify({
+          ...dualContent,
+          summary: '补充后的简介',
+          extensions: {},
+        }),
+      }),
+    });
+    expect(refined.ok).toBe(true);
+    if (!refined.ok) return;
+    const afterRefine = extractTrpgSystems(refined.value.content);
+    expect(afterRefine.systems.coc7e?.occupation).toBe('战术指挥官');
+    expect(afterRefine.systems.dnd5e?.className).toBe('吟游诗人');
+  });
+
+  it('injects selected TRPG system stats into runPlaytestTurn and supports trpgSystem="none"', async () => {
+    const cocContent = mergeTrpgSystemData(
+      sampleContent,
+      'coc7e',
+      {
+        system: 'Call of Cthulhu 7e',
+        occupation: '神秘学调查员',
+        characteristics: { STR: 45, CON: 50, SIZ: 50, DEX: 65, APP: 70, INT: 85, POW: 90, EDU: 80 },
+        derived: { HP: 10, MP: 18, SAN: 85, Luck: 60, Move: 8 },
+        keySkills: ['心理学 75%', '克苏鲁神话 15%'],
+      },
+      { activate: true },
+    );
+    const dualContent = mergeTrpgSystemData(
+      cocContent,
+      'dnd5e',
+      {
+        system: 'D&D 5e',
+        race: '卡特斯',
+        className: '吟游诗人',
+        level: 6,
+        abilityScores: { STR: 8, DEX: 14, CON: 12, INT: 16, WIS: 14, CHA: 18 },
+        combat: { AC: 15, MaxHP: 42, Speed: '30 ft', ProficiencyBonus: 3 },
+        proficiencies: ['奥秘'],
+        featuresAndTraits: ['奇美拉共鸣'],
+      },
+      { activate: false },
+    );
+
+    const capturedSystemPrompts: string[] = [];
+    const mockPort: LlmCompletionPort = async (req) => {
+      capturedSystemPrompts.push(req.messages[0]?.content ?? '');
+      return { status: 200, content: '收到，准备检定。' };
+    };
+
+    // Default -> uses active (coc7e)
+    const autoTurn = await runPlaytestTurn(
+      dualContent,
+      {
+        message: '我观察走廊尽头的壁画',
+        history: [],
+        userName: 'KP',
+        userPersona: '',
+        greetingIndex: 0,
+      },
+      { llmSlot, llmPort: mockPort },
+    );
+    expect(autoTurn.ok).toBe(true);
+    if (!autoTurn.ok) return;
+    expect(autoTurn.value.trpgSystemInjected).toBe('coc7e');
+    expect(capturedSystemPrompts[0]).toContain('神秘学调查员');
+    expect(capturedSystemPrompts[0]).not.toContain('奇美拉共鸣');
+
+    // Explicit dnd5e override
+    const dndTurn = await runPlaytestTurn(
+      dualContent,
+      {
+        message: '我准备施放法术',
+        history: [],
+        userName: 'DM',
+        userPersona: '',
+        greetingIndex: 0,
+        trpgSystem: 'dnd5e',
+      },
+      { llmSlot, llmPort: mockPort },
+    );
+    expect(dndTurn.ok).toBe(true);
+    if (!dndTurn.ok) return;
+    expect(dndTurn.value.trpgSystemInjected).toBe('dnd5e');
+    expect(capturedSystemPrompts[1]).toContain('吟游诗人');
+    expect(capturedSystemPrompts[1]).toContain('奇美拉共鸣');
+    expect(capturedSystemPrompts[1]).not.toContain('神秘学调查员');
+
+    // Explicit none
+    const noneTurn = await runPlaytestTurn(
+      dualContent,
+      {
+        message: '普通日常对话',
+        history: [],
+        userName: '博士',
+        userPersona: '',
+        greetingIndex: 0,
+        trpgSystem: 'none',
+      },
+      { llmSlot, llmPort: mockPort },
+    );
+    expect(noneTurn.ok).toBe(true);
+    if (!noneTurn.ok) return;
+    expect(noneTurn.value.trpgSystemInjected).toBeNull();
+    expect(capturedSystemPrompts[2]).not.toContain('TRPG 规则面板');
   });
 });
 

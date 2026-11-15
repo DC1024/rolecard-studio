@@ -8,12 +8,16 @@ export const PlaytestHistoryItemSchema = z.object({
 });
 export type PlaytestHistoryItem = z.infer<typeof PlaytestHistoryItemSchema>;
 
+export const PlaytestTrpgSystemSchema = z.enum(['coc7e', 'dnd5e', 'none']);
+export type PlaytestTrpgSystem = z.infer<typeof PlaytestTrpgSystemSchema>;
+
 export const PlaytestRequestSchema = z.object({
   message: z.string().trim().min(1, '试聊消息不能为空').max(8_000),
   history: z.array(PlaytestHistoryItemSchema).max(40).default([]),
   userName: z.string().trim().min(1).max(40).default('旅行者'),
   userPersona: z.string().trim().max(400).default(''),
   greetingIndex: z.number().int().min(0).max(50).default(0),
+  trpgSystem: PlaytestTrpgSystemSchema.optional(),
   modelOverride: z
     .object({
       provider: LlmProviderSchema.optional(),
@@ -42,6 +46,7 @@ export interface PlaytestResponse {
   greetingText: string;
   hitLorebooks: HitLorebookDebugItem[];
   metaInjected: boolean;
+  trpgSystemInjected?: 'coc7e' | 'dnd5e' | null;
 }
 
 export const AdoptMesExampleSchema = z.object({

@@ -25,11 +25,14 @@ import {
   layeredRetrieve,
   mergeLorebooksToCharacterBook,
   preserveLockedFields,
+  reconcileTrpgExtensionsOnEdit,
   refineRoleCard,
   regenerateRoleCard,
   resolveProviderBaseUrl,
   runPlaytestTurn,
+  switchActiveTrpgSystem,
   toCharaCardV3,
+  trpgSystemToCardType,
   validatePublicUrl,
 } from '@rolecard/core';
 import {
@@ -45,6 +48,9 @@ import {
   RefineCardRequestSchema,
   RegenerateCardRequestSchema,
   SearchCardSourcesRequestSchema,
+  SwitchTrpgSystemSchema,
+  type TrpgSystemKey,
+  TrpgSystemKeySchema,
   UpdateCardContentSchema,
   type RoleCardContent,
   type SourceEntry,
@@ -141,15 +147,26 @@ cardM1Routes.put('/cards/:id', zValidator('json', UpdateCardContentSchema), asyn
 
   const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
   const lockedFields = input.lockedFields ?? parseJsonArray<string>(row.lockedFieldsJson);
-  const nextContent = preserveLockedFields(currentContent, input.content, lockedFields);
+  const preservedContent = preserveLockedFields(currentContent, input.content, lockedFields);
   const nextTags = [
-    ...new Set((input.tags ?? nextContent.tags).map((t) => t.trim()).filter(Boolean)),
+    ...new Set((input.tags ?? preservedContent.tags).map((t) => t.trim()).filter(Boolean)),
   ];
-  nextContent.tags = nextTags;
+  preservedContent.tags = nextTags;
+
+  const reconciled = reconcileTrpgExtensionsOnEdit(currentContent, preservedContent, row.cardType);
+  const nextContent = reconciled.content;
+  const nextCardType =
+    reconciled.activeSystem &&
+    (row.cardType === 'trpg_coc7' ||
+      row.cardType === 'trpg_dnd5e' ||
+      currentContent.extensions.activeTrpgSystem !== nextContent.extensions.activeTrpgSystem)
+      ? trpgSystemToCardType(reconciled.activeSystem)
+      : row.cardType;
 
   const nextContentJson = JSON.stringify(nextContent);
   const nextTagsJson = JSON.stringify(nextTags);
-  const contentOrTagsChanged = row.contentJson !== nextContentJson || row.tagsJson !== nextTagsJson;
+  const contentOrTagsChanged =
+    row.contentJson !== nextContentJson || row.tagsJson !== nextTagsJson || row.cardType !== nextCardType;
 
   const nowIso = getNow(ctx).toISOString();
   const diffSummary = computeCardDiffSummary(currentContent, nextContent);
@@ -166,6 +183,7 @@ cardM1Routes.put('/cards/:id', zValidator('json', UpdateCardContentSchema), asyn
   await ctx.db
     .update(roleCards)
     .set({
+      cardType: nextCardType,
       characterName: nextContent.name,
       tagsJson: nextTagsJson,
       contentJson: nextContentJson,
@@ -719,6 +737,18 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
     );
   }
   const format = formatParse.data;
+  const rawTrpgSystem = c.req.query('trpgSystem');
+  let requestedTrpgSystem: TrpgSystemKey | undefined;
+  if (rawTrpgSystem !== undefined && rawTrpgSystem !== '') {
+    const trpgParse = TrpgSystemKeySchema.safeParse(rawTrpgSystem);
+    if (!trpgParse.success) {
+      return c.json(
+        { error: { code: 'INVALID_TRPG_SYSTEM', message: '不支持的 TRPG 规则系统参数' } },
+        400,
+      );
+    }
+    requestedTrpgSystem = trpgParse.data;
+  }
   const ctx = c.get('ctx');
 
   const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
@@ -782,6 +812,7 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
     const filename = safeDownloadFilename(`${content.name}.trpg-sheet`, 'md');
     const sheetMd = exportCardToTrpgSheetMarkdown(content, {
       cardType: row.cardType,
+      trpgSystem: requestedTrpgSystem,
       workName: row.workName,
       version: row.version,
       sources,
@@ -795,6 +826,7 @@ cardM1Routes.get('/cards/:id/export', async (c) => {
     const filename = safeDownloadFilename(`${content.name}.trpg-sheet`, 'html');
     const sheetHtml = exportCardToTrpgSheetHtml(content, {
       cardType: row.cardType,
+      trpgSystem: requestedTrpgSystem,
       workName: row.workName,
       version: row.version,
       sources,
@@ -908,6 +940,7 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
     lorebooks: playtestLorebooks,
     enableMetaInChat: row.enableMetaInChat,
     metaReputationSummary: metaSummary,
+    fallbackCardType: row.cardType,
   });
 
   if (!turnResult.ok) {
@@ -1190,7 +1223,7 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
   if (denied) return denied;
 
   const id = c.req.param('id');
-  const { system } = c.req.valid('json');
+  const { system, activate } = c.req.valid('json');
   const ctx = c.get('ctx');
   const actorUserId = c.get('actor')?.userId ?? 'guest';
 
@@ -1230,6 +1263,7 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
     const result = await generateTrpgAttributesForCard(currentContent, system, {
       llmPort,
       llmSlot: runtime.primaryLlm,
+      activate,
       onProgress: hooks?.onProgress,
       onReasoningDelta: hooks?.onReasoningDelta,
       onStrategyDowngraded: async () => {
@@ -1274,10 +1308,11 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
       createdBy: actorUserId,
     });
 
+    const nextCardType = activate === false ? row.cardType : result.value.cardType;
     await ctx.db
       .update(roleCards)
       .set({
-        cardType: result.value.cardType,
+        cardType: nextCardType,
         contentJson: JSON.stringify(result.value.content),
         diffSummary,
         tokenCount,
@@ -1381,6 +1416,68 @@ cardM1Routes.post('/cards/:id/trpg', zValidator('json', GenerateTrpgStatsSchema)
   }
   return c.json(outcome.payload);
 });
+
+cardM1Routes.patch(
+  '/cards/:id/trpg/active',
+  zValidator('json', SwitchTrpgSystemSchema),
+  async (c) => {
+    const denied = guardPermission(c, 'card:update');
+    if (denied) return denied;
+
+    const id = c.req.param('id');
+    const { system } = c.req.valid('json');
+    const ctx = c.get('ctx');
+
+    const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    const row = rows[0];
+    if (!row) {
+      return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
+    }
+
+    const currentContent = JSON.parse(row.contentJson) as RoleCardContent;
+    const switched = switchActiveTrpgSystem(currentContent, system, row.cardType);
+    if (!switched) {
+      return c.json(
+        {
+          error: {
+            code: 'TRPG_SYSTEM_NOT_FOUND',
+            message: `该角色尚未生成 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} 规则面板，请先执行 AI 推演`,
+          },
+        },
+        400,
+      );
+    }
+
+    const nowIso = getNow(ctx).toISOString();
+    const nextCardType = trpgSystemToCardType(system);
+    const diffSummary = `切换当前默认 TRPG 规则为 ${system === 'coc7e' ? 'CoC 7e' : 'D&D 5e'}`;
+
+    await ctx.db
+      .update(roleCards)
+      .set({
+        cardType: nextCardType,
+        contentJson: JSON.stringify(switched),
+        diffSummary,
+        tokenCount: estimateCardTokens(switched),
+        updatedAt: nowIso,
+      })
+      .where(eq(roleCards.id, id));
+
+    await publishSyncEvent(ctx, {
+      eventType: 'card.updated',
+      targetType: 'card',
+      targetId: id,
+      version: row.version,
+      payload: {
+        characterName: row.characterName,
+        diffSummary,
+      },
+    });
+
+    const updatedRows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
+    return c.json({ card: serializeCardRow(updatedRows[0]!) });
+  },
+);
 
 cardM1Routes.post(
   '/cards/:id/regenerate',

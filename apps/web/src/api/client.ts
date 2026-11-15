@@ -45,6 +45,7 @@ import type {
   SyncScheduleDto,
   SyncSubscriptionDto,
   TokenCrop,
+  TrpgSystemKey,
   CreateSyncSubscriptionRequest,
   UpdateCardContentRequest,
   UpdateLorebookRequest,
@@ -675,8 +676,9 @@ export const api = {
     return requestJson(`/cards/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
-  getExportUrl(id: string, format: ExportFormat): string {
-    return `/api/v1/cards/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+  getExportUrl(id: string, format: ExportFormat, trpgSystem?: TrpgSystemKey): string {
+    const base = `/api/v1/cards/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`;
+    return trpgSystem ? `${base}&trpgSystem=${encodeURIComponent(trpgSystem)}` : base;
   },
 
   getPortraitSourceUrl(id: string): string {
@@ -708,18 +710,29 @@ export const api = {
 
   generateCardTrpgStatsSse(
     id: string,
-    system: 'coc7e' | 'dnd5e',
+    system: TrpgSystemKey,
     callbacks: {
       onProgress?: (message: string, step?: string) => void;
       onThinking?: (delta: string) => void;
     },
+    activate = true,
   ): Promise<{ card: RoleCardDto }> {
     return consumeSsePost<{ card: RoleCardDto }>(
       `/cards/${encodeURIComponent(id)}/trpg`,
-      { system },
+      { system, activate },
       callbacks,
       'TRPG 规则属性推演失败',
     );
+  },
+
+  switchActiveTrpgSystem(
+    id: string,
+    system: TrpgSystemKey,
+  ): Promise<{ card: RoleCardDto }> {
+    return requestJson(`/cards/${encodeURIComponent(id)}/trpg/active`, {
+      method: 'PATCH',
+      body: JSON.stringify({ system }),
+    });
   },
 
   regenerateCardSse(

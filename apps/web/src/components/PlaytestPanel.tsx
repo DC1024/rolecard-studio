@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { PlaytestHistoryItem, PlaytestResponse } from '@rolecard/shared';
-import { BookOpen, BookmarkPlus, Loader2, Send, Sparkles } from 'lucide-react';
+import type { PlaytestHistoryItem, PlaytestResponse, PlaytestTrpgSystem } from '@rolecard/shared';
+import { BookOpen, BookmarkPlus, Dice5, Loader2, Send, Sparkles } from 'lucide-react';
 import { api, type RoleCardDto } from '../api/client';
+import { extractCardTrpgSystems } from '../utils/trpg';
 
 interface PlaytestPanelProps {
   cards: RoleCardDto[];
@@ -15,7 +16,10 @@ interface PlaytestPanelProps {
 interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
-  debug?: Pick<PlaytestResponse, 'hitLorebooks' | 'metaInjected' | 'usedModel'>;
+  debug?: Pick<
+    PlaytestResponse,
+    'hitLorebooks' | 'metaInjected' | 'trpgSystemInjected' | 'usedModel'
+  >;
 }
 
 export function PlaytestPanel({
@@ -30,6 +34,7 @@ export function PlaytestPanel({
   const [userName, setUserName] = useState('旅行者');
   const [userPersona, setUserPersona] = useState('');
   const [modelOverride, setModelOverride] = useState('');
+  const [trpgMode, setTrpgMode] = useState<'auto' | PlaytestTrpgSystem>('auto');
   const [messages, setMessages] = useState<ChatTurn[]>([]);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
@@ -45,6 +50,7 @@ export function PlaytestPanel({
 
   useEffect(() => {
     setGreetingIndex(0);
+    setTrpgMode('auto');
     setMessages([]);
     setError(null);
   }, [selectedCard?.id]);
@@ -62,6 +68,7 @@ export function PlaytestPanel({
   }
 
   const activeGreeting = greetings[greetingIndex] ?? greetings[0] ?? '';
+  const trpgInfo = extractCardTrpgSystems(selectedCard.content, selectedCard.cardType);
 
   const handleSend = async (e: FormEvent) => {
     e.preventDefault();
@@ -85,6 +92,7 @@ export function PlaytestPanel({
         userName: userName.trim() || '旅行者',
         userPersona: userPersona.trim(),
         greetingIndex,
+        ...(trpgMode !== 'auto' ? { trpgSystem: trpgMode } : {}),
         modelOverride: modelOverride.trim() ? { model: modelOverride.trim() } : undefined,
       });
 
@@ -96,6 +104,7 @@ export function PlaytestPanel({
           debug: {
             hitLorebooks: res.hitLorebooks,
             metaInjected: res.metaInjected,
+            trpgSystemInjected: res.trpgSystemInjected,
             usedModel: res.usedModel,
           },
         },
@@ -131,7 +140,7 @@ export function PlaytestPanel({
   return (
     <section className="flex flex-col rounded-lg border border-line bg-surface shadow-sm">
       {/* Control Header */}
-      <div className="grid gap-2.5 border-b border-line-subtle bg-subtle/60 p-4 sm:grid-cols-4">
+      <div className="grid gap-2.5 border-b border-line-subtle bg-subtle/60 p-4 sm:grid-cols-2 lg:grid-cols-5">
         <div>
           <label className="mb-1 block text-[11px] font-medium text-content-secondary">
             试聊角色卡
@@ -196,6 +205,30 @@ export function PlaytestPanel({
             className="h-8 w-full rounded-sm border border-line bg-surface px-2.5 font-mono text-xs text-content-primary outline-none focus:border-accent"
           />
         </div>
+
+        <div>
+          <label className="mb-1 block text-[11px] font-medium text-content-secondary">
+            TRPG 规则注入
+          </label>
+          <select
+            value={trpgMode}
+            onChange={(e) => setTrpgMode(e.target.value as 'auto' | PlaytestTrpgSystem)}
+            className="h-8 w-full rounded-sm border border-line bg-surface px-2 text-xs text-content-primary outline-none focus:border-accent"
+          >
+            <option value="auto">
+              {trpgInfo.activeSystem
+                ? `自动（默认：${trpgInfo.activeSystem === 'coc7e' ? 'CoC 7e' : 'D&D 5e'}）`
+                : '自动（无绑定规则）'}
+            </option>
+            <option value="coc7e" disabled={!trpgInfo.coc7e}>
+              CoC 7e 调查员{trpgInfo.coc7e ? '' : '（未生成）'}
+            </option>
+            <option value="dnd5e" disabled={!trpgInfo.dnd5e}>
+              D&amp;D 5e 冒险者{trpgInfo.dnd5e ? '' : '（未生成）'}
+            </option>
+            <option value="none">不注入 TRPG 数值</option>
+          </select>
+        </div>
       </div>
 
       {/* Chat Stream */}
@@ -250,6 +283,12 @@ export function PlaytestPanel({
                   {turn.debug?.metaInjected && (
                     <span className="rounded bg-accent-secondary/15 px-1.5 py-0.5 text-[10px] text-accent-secondary">
                       Meta 彩蛋已注入
+                    </span>
+                  )}
+                  {turn.debug?.trpgSystemInjected && (
+                    <span className="inline-flex items-center gap-1 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                      <Dice5 className="h-2.5 w-2.5" />
+                      {turn.debug.trpgSystemInjected === 'coc7e' ? 'CoC 7e' : 'D&D 5e'} 规则已注入
                     </span>
                   )}
                 </div>

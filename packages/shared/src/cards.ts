@@ -96,10 +96,19 @@ export const UpdateCardTagsSchema = z.object({
 });
 export type UpdateCardTagsRequest = z.infer<typeof UpdateCardTagsSchema>;
 
+export const TrpgSystemKeySchema = z.enum(['coc7e', 'dnd5e']);
+export type TrpgSystemKey = z.infer<typeof TrpgSystemKeySchema>;
+
 export const GenerateTrpgStatsSchema = z.object({
-  system: z.enum(['coc7e', 'dnd5e']),
+  system: TrpgSystemKeySchema,
+  activate: z.boolean().optional().default(true),
 });
 export type GenerateTrpgStatsRequest = z.infer<typeof GenerateTrpgStatsSchema>;
+
+export const SwitchTrpgSystemSchema = z.object({
+  system: TrpgSystemKeySchema,
+});
+export type SwitchTrpgSystemRequest = z.infer<typeof SwitchTrpgSystemSchema>;
 
 export const CardGeneratableFieldSchema = z.enum([
   'summary',
