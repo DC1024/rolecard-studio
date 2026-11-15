@@ -2,8 +2,8 @@ import type { RoleCardContent } from './cards.js';
 
 /**
  * Lightweight, zero-WASM cross-platform token estimator.
- * CJK characters average ~0.67 tokens/char (~1.5 chars/token),
- * Latin/ASCII characters average ~0.25 tokens/char (~4 chars/token).
+ * CJK characters average ~0.72 tokens/code point,
+ * other characters average ~0.28 tokens/code point.
  */
 export function estimateTokens(text: string): number {
   if (!text) {
@@ -12,12 +12,21 @@ export function estimateTokens(text: string): number {
   let cjkCount = 0;
   let otherCount = 0;
 
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
+  for (let i = 0; i < text.length; ) {
+    const code = text.codePointAt(i)!;
+    i += code > 0xffff ? 2 : 1;
     if (
+      (code >= 0x3000 && code <= 0x30ff) || // CJK punctuation and Japanese kana
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK Extension A
       (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0x3040 && code <= 0x30ff) ||
-      (code >= 0xac00 && code <= 0xd7af)
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) || // CJK compatibility ideographs
+      (code >= 0xff01 && code <= 0xff60) || // Fullwidth forms
+      (code >= 0xff66 && code <= 0xff9f) || // Halfwidth katakana
+      (code >= 0x20000 && code <= 0x2a6df) || // CJK Extension B
+      (code >= 0x2a700 && code <= 0x2ee5f) || // CJK Extensions C–F and I
+      (code >= 0x2f800 && code <= 0x2fa1f) || // CJK compatibility supplement
+      (code >= 0x30000 && code <= 0x3347f) // CJK Extensions G, H and J
     ) {
       cjkCount += 1;
     } else {
