@@ -49,6 +49,7 @@ jobs:
       - name: 4. OpenHands 零凭证隔离沙箱定位与修复
         id: openhands
         if: steps.gate.outputs.proceed == 'true' && steps.triage.outputs.should_code == 'true'
+        continue-on-error: true
         run: python3 -B /opt/oh-config/oh_workflow_steps.py openhands
 
       - name: 5. 宿主机三道 Guard 安全与测试审计
