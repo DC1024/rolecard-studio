@@ -633,6 +633,19 @@ export const api = {
     return `/api/v1/cards/${encodeURIComponent(id)}/portrait-source`;
   },
 
+  getImageProxyUrl(url: string): string {
+    return `/api/v1/images/proxy?url=${encodeURIComponent(url)}`;
+  },
+
+  resolveImageDisplayUrl(url: string | null | undefined): string | null {
+    const trimmed = url?.trim();
+    if (!trimmed) return null;
+    if (/^https?:\/\//i.test(trimmed)) {
+      return `/api/v1/images/proxy?url=${encodeURIComponent(trimmed)}`;
+    }
+    return trimmed;
+  },
+
   generateCardTrpgStats(
     id: string,
     system: 'coc7e' | 'dnd5e',

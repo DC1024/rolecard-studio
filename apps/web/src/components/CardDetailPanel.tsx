@@ -450,7 +450,7 @@ export function CardDetailPanel({
           <div className="relative flex shrink-0 flex-col items-center gap-1.5">
             {card.imageUrl ? (
               <img
-                src={card.imageUrl}
+                src={api.resolveImageDisplayUrl(card.imageUrl) ?? card.imageUrl}
                 alt={card.characterName}
                 referrerPolicy="no-referrer"
                 className="aspect-[2/3] w-24 rounded-md border border-line object-cover shadow-sm"

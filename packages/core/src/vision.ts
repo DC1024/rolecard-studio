@@ -198,7 +198,7 @@ export async function searchWikimediaCommonsImages(
   targetUrl.searchParams.set('gsrlimit', String(Math.max(1, Math.min(limit, 12))));
   targetUrl.searchParams.set('prop', 'imageinfo');
   targetUrl.searchParams.set('iiprop', 'url|mime');
-  targetUrl.searchParams.set('iiurlwidth', '480');
+  targetUrl.searchParams.set('iiurlwidth', '640');
 
   const urlCheck = await validatePublicUrl(targetUrl.toString(), dnsLookup, {
     viaProxy: isUrlProxiedByFetch(fetchImpl, targetUrl.toString()),
@@ -266,6 +266,72 @@ export async function searchWikimediaCommonsImages(
   }
 
   return ok(items);
+}
+
+export async function fetchRemoteImageBuffer(
+  imageUrl: string,
+  deps: VisionDeps & { maxBytes?: number } = {},
+): Promise<Result<{ buffer: Buffer; contentType: string }, CoreError>> {
+  const fetchImpl = deps.fetchImpl ?? defaultHttpFetch;
+  const dnsLookup = deps.dnsLookup ?? defaultDnsLookup;
+  const maxBytes = deps.maxBytes ?? 12 * 1024 * 1024;
+
+  const ssrf = await validatePublicUrl(imageUrl, dnsLookup, {
+    viaProxy: isUrlProxiedByFetch(fetchImpl, imageUrl),
+    allowFakeIp: isFakeIpAllowedByFetch(fetchImpl),
+  });
+  if (!ssrf.ok) {
+    return ssrf;
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(ssrf.value.toString(), {
+      method: 'GET',
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        'User-Agent': 'RoleCardStudio/1.0 (+https://github.com/DC1024/rolecard-studio)',
+        Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8',
+      },
+    });
+  } catch (error) {
+    return err({
+      code: 'PORTRAIT_FETCH_FAILED',
+      message: `拉取外链图片失败: ${error instanceof Error ? error.message : '网络异常'}`,
+      status: 502,
+    });
+  }
+
+  if (!response.ok) {
+    return err({
+      code: 'PORTRAIT_FETCH_FAILED',
+      message: `拉取外链图片失败 (HTTP ${response.status})`,
+      status: response.status === 429 ? 429 : 502,
+    });
+  }
+
+  const buf = Buffer.from(await response.arrayBuffer());
+  if (buf.length === 0 || buf.length > maxBytes) {
+    const limitMb = Math.round((maxBytes / (1024 * 1024)) * 10) / 10;
+    return err({
+      code: 'IMAGE_TOO_LARGE',
+      message: `外链图片体积超出限制 (最大 ${limitMb}MB)`,
+      status: 400,
+    });
+  }
+
+  const detected = detectImageMagicBytes(buf);
+  if (!detected) {
+    return err({
+      code: 'INVALID_IMAGE_MAGIC',
+      message: '外链返回内容不是受支持的 PNG/JPEG/WEBP 图片',
+      status: 400,
+    });
+  }
+
+  const contentType =
+    detected === 'jpeg' ? 'image/jpeg' : detected === 'webp' ? 'image/webp' : 'image/png';
+  return ok({ buffer: buf, contentType });
 }
 
 export async function generatePortraitImage(

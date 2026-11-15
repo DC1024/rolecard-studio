@@ -8,7 +8,7 @@ import {
   RotateCcw,
   Sparkles,
 } from 'lucide-react';
-import type { RoleCardDto } from '../api/client';
+import { api, type RoleCardDto } from '../api/client';
 
 interface CardGalleryProps {
   cards: RoleCardDto[];
@@ -212,7 +212,7 @@ export function CardGallery({
               <div className="relative aspect-[2/3] w-full overflow-hidden bg-subtle">
                 {card.imageUrl ? (
                   <img
-                    src={card.imageUrl}
+                    src={api.resolveImageDisplayUrl(card.imageUrl) ?? card.imageUrl}
                     alt={card.characterName}
                     referrerPolicy="no-referrer"
                     className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"

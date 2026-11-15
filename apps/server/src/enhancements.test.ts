@@ -1527,4 +1527,98 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('proxies remote search thumbnails and portrait URLs via GET /api/v1/images/proxy', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const pngBuf = createDefaultPortraitPng();
+    const publicDns: DnsLookupPort = async (host) => {
+      if (host === '127.0.0.1' || host === 'localhost') {
+        return [{ address: '127.0.0.1', family: 4 }];
+      }
+      return [{ address: '93.184.216.34', family: 4 }];
+    };
+
+    const fetchImpl: HttpFetchPort = async (url) => {
+      if (url === 'https://upload.wikimedia.org/wikipedia/commons/thumb/amiya.png') {
+        return new Response(new Uint8Array(pngBuf), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        });
+      }
+      if (url === 'https://upload.wikimedia.org/wikipedia/commons/not-image.html') {
+        return new Response('<html>error</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        });
+      }
+      if (url === 'https://upload.wikimedia.org/wikipedia/commons/throttled.png') {
+        return new Response('rate limited', { status: 429 });
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      dnsLookup: publicDns,
+      fetchImpl,
+      env: {},
+    });
+
+    const loginRes = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const adminCookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // 1. Missing or invalid URL rejected
+    const missingUrlRes = await app.request('/api/v1/images/proxy', {
+      headers: { cookie: adminCookie },
+    });
+    expect(missingUrlRes.status).toBe(400);
+
+    // 2. Private IP SSRF rejected
+    const ssrfRes = await app.request(
+      `/api/v1/images/proxy?url=${encodeURIComponent('http://127.0.0.1:8080/secret.png')}`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(ssrfRes.status).toBe(400);
+
+    // 3. Valid remote image proxied with nosniff + cache headers
+    const okRes = await app.request(
+      `/api/v1/images/proxy?url=${encodeURIComponent('https://upload.wikimedia.org/wikipedia/commons/thumb/amiya.png')}`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(okRes.status).toBe(200);
+    expect(okRes.headers.get('content-type')).toBe('image/png');
+    expect(okRes.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(okRes.headers.get('cache-control')).toContain('max-age=600');
+    expect(Buffer.from(await okRes.arrayBuffer())).toEqual(pngBuf);
+
+    // 4. Non-image response rejected
+    const badMagicRes = await app.request(
+      `/api/v1/images/proxy?url=${encodeURIComponent('https://upload.wikimedia.org/wikipedia/commons/not-image.html')}`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(badMagicRes.status).toBe(400);
+
+    // 5. Upstream 429 propagated cleanly
+    const throttledRes = await app.request(
+      `/api/v1/images/proxy?url=${encodeURIComponent('https://upload.wikimedia.org/wikipedia/commons/throttled.png')}`,
+      { headers: { cookie: adminCookie } },
+    );
+    expect(throttledRes.status).toBe(429);
+
+    dbHandle.close();
+  });
 });

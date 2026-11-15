@@ -83,6 +83,18 @@ function resolveCropPixels(crop: TokenCrop, width: number, height: number) {
   return { sx, sy, side, clamped };
 }
 
+function canvasToSafeDataUrl(canvas: HTMLCanvasElement): string {
+  const pngUrl = canvas.toDataURL('image/png');
+  if (pngUrl.length <= 3_600_000) {
+    return pngUrl;
+  }
+  const webpUrl = canvas.toDataURL('image/webp', 0.92);
+  if (webpUrl.length <= 3_600_000) {
+    return webpUrl;
+  }
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
 function renderTokenDataUrlFromSource(
   source: HTMLImageElement | HTMLCanvasElement,
   srcW: number,
@@ -97,7 +109,7 @@ function renderTokenDataUrlFromSource(
   const ctx = out.getContext('2d');
   if (!ctx) return '';
   ctx.drawImage(source, sx, sy, side, side, 0, 0, outSize, outSize);
-  return out.toDataURL('image/png');
+  return canvasToSafeDataUrl(out);
 }
 
 function renderPortrait2By3DataUrl(
@@ -116,7 +128,7 @@ function renderPortrait2By3DataUrl(
   const dx = (targetW - drawW) / 2;
   const dy = (targetH - drawH) / 2;
   ctx.drawImage(img, dx, dy, drawW, drawH);
-  return canvas.toDataURL('image/png');
+  return canvasToSafeDataUrl(canvas);
 }
 
 function loadImageElement(src: string): Promise<HTMLImageElement> {
@@ -126,6 +138,37 @@ function loadImageElement(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error('图片加载失败'));
     img.src = src;
   });
+}
+
+async function localizeRemoteImageTo2By3AndToken(
+  remoteUrl: string,
+  fallbackUrl?: string,
+): Promise<{ portraitDataUrl: string; tokenDataUrl?: string }> {
+  let img: HTMLImageElement;
+  try {
+    img = await loadImageElement(api.getImageProxyUrl(remoteUrl));
+  } catch (primaryErr) {
+    if (fallbackUrl && fallbackUrl !== remoteUrl) {
+      img = await loadImageElement(api.getImageProxyUrl(fallbackUrl));
+    } else {
+      throw primaryErr;
+    }
+  }
+  const portraitDataUrl = renderPortrait2By3DataUrl(img, 600, 900);
+  if (!portraitDataUrl) {
+    throw new Error('立绘本地化编码失败');
+  }
+  const tokenDataUrl = renderTokenDataUrlFromSource(
+    img,
+    img.width,
+    img.height,
+    DEFAULT_TOKEN_CROP,
+    512,
+  );
+  return {
+    portraitDataUrl,
+    ...(tokenDataUrl ? { tokenDataUrl } : {}),
+  };
 }
 
 function buildInitialPrompt(card: RoleCardDto): string {
@@ -196,6 +239,8 @@ export function PortraitCropModal({
   const [searchQuery, setSearchQuery] = useState(cardName);
   const [searchResults, setSearchResults] = useState<ImageSearchItem[]>([]);
   const [searching, setSearching] = useState(false);
+  const [applyingSearchUrl, setApplyingSearchUrl] = useState<string | null>(null);
+  const [failedThumbUrls, setFailedThumbUrls] = useState<Record<string, boolean>>({});
   const [aiPrompt, setAiPrompt] = useState(() => buildInitialPrompt(card));
   const [stylePresets, setStylePresets] = useState<PortraitStylePresetDto[]>(FALLBACK_STYLE_PRESETS);
   const [selectedStyleId, setSelectedStyleId] = useState<string>(() => readSavedStyleId());
@@ -246,6 +291,8 @@ export function PortraitCropModal({
     setAiPromptNotes('');
     setAiInstruction('');
     setStyleActionMode('none');
+    setApplyingSearchUrl(null);
+    setFailedThumbUrls({});
     setTokenCrop(card.tokenCrop ?? DEFAULT_TOKEN_CROP);
     setError(null);
 
@@ -587,6 +634,7 @@ export function PortraitCropModal({
     const q = searchQuery.trim();
     if (!q) return;
     setSearching(true);
+    setFailedThumbUrls({});
     setError(null);
     try {
       const res = await api.searchImages({ query: q, limit: 6 });
@@ -939,7 +987,7 @@ export function PortraitCropModal({
                   {card.tokenImageUrl && (
                     <div className="mt-3 flex items-center gap-2 rounded-sm border border-line-subtle bg-subtle px-2.5 py-1.5 text-[11px] text-content-secondary">
                       <img
-                        src={card.tokenImageUrl}
+                        src={api.resolveImageDisplayUrl(card.tokenImageUrl) ?? card.tokenImageUrl}
                         alt="当前 1:1 Token"
                         className="h-7 w-7 rounded-full border border-line object-cover"
                       />
@@ -993,36 +1041,80 @@ export function PortraitCropModal({
               </button>
             </div>
 
+            <p className="text-[11px] text-content-muted">
+              缩略图经服务端同源媒体代理加载；点击任一结果将自动转存为本地 2:3 立绘与 1:1 Token。
+            </p>
+
             <div className="grid max-h-60 grid-cols-3 gap-2 overflow-y-auto">
-              {searchResults.map((item) => (
-                <button
-                  key={item.imageUrl}
-                  type="button"
-                  onClick={async () => {
-                    setSaving(true);
-                    setError(null);
-                    try {
-                      await onSaveUrl(item.imageUrl);
-                      onClose();
-                    } catch (err) {
-                      setError(err instanceof Error ? err.message : '应用搜索立绘失败');
-                    } finally {
-                      setSaving(false);
-                    }
-                  }}
-                  className="group overflow-hidden rounded-md border border-line bg-surface text-left hover:border-accent"
-                >
-                  <img
-                    src={item.thumbUrl}
-                    alt={item.title}
-                    referrerPolicy="no-referrer"
-                    className="aspect-[2/3] w-full object-cover"
-                  />
-                  <div className="truncate px-1.5 py-1 text-[10px] text-content-secondary group-hover:text-accent">
-                    {item.title}
-                  </div>
-                </button>
-              ))}
+              {searchResults.map((item) => {
+                const isApplying = applyingSearchUrl === item.imageUrl;
+                const thumbFailed = Boolean(failedThumbUrls[item.imageUrl]);
+                return (
+                  <button
+                    key={item.imageUrl}
+                    type="button"
+                    disabled={saving || applyingSearchUrl !== null}
+                    onClick={async () => {
+                      setSaving(true);
+                      setApplyingSearchUrl(item.imageUrl);
+                      setError(null);
+                      try {
+                        const localized = await localizeRemoteImageTo2By3AndToken(
+                          item.imageUrl,
+                          item.thumbUrl,
+                        );
+                        await onSaveUpload(localized.portraitDataUrl, {
+                          ...(localized.tokenDataUrl
+                            ? {
+                                tokenDataUrl: localized.tokenDataUrl,
+                                tokenCrop: DEFAULT_TOKEN_CROP,
+                              }
+                            : {}),
+                        });
+                        onClose();
+                      } catch (err) {
+                        setError(
+                          err instanceof Error
+                            ? err.message
+                            : '转存搜索立绘失败，请检查代理链路或改选其他结果',
+                        );
+                      } finally {
+                        setApplyingSearchUrl(null);
+                        setSaving(false);
+                      }
+                    }}
+                    className="group relative overflow-hidden rounded-md border border-line bg-surface text-left hover:border-accent disabled:cursor-wait disabled:opacity-75"
+                  >
+                    {thumbFailed ? (
+                      <div className="flex aspect-[2/3] w-full flex-col items-center justify-center gap-1 bg-subtle px-2 text-center text-[10px] text-content-muted">
+                        <span>缩略图加载失败</span>
+                        <span className="text-[9px] text-content-muted/80">仍可点击尝试转存</span>
+                      </div>
+                    ) : (
+                      <img
+                        src={api.getImageProxyUrl(item.thumbUrl)}
+                        alt={item.title}
+                        onError={() =>
+                          setFailedThumbUrls((prev) => ({
+                            ...prev,
+                            [item.imageUrl]: true,
+                          }))
+                        }
+                        className="aspect-[2/3] w-full object-cover"
+                      />
+                    )}
+                    {isApplying && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-canvas/75 text-[11px] font-medium text-content-primary backdrop-blur-[1px]">
+                        <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                        <span>拉取并转存中...</span>
+                      </div>
+                    )}
+                    <div className="truncate px-1.5 py-1 text-[10px] text-content-secondary group-hover:text-accent">
+                      {item.title}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1589,7 +1681,20 @@ export function PortraitCropModal({
                       });
                       onClose();
                     } else if (res.imageUrl) {
-                      await onSaveUrl(res.imageUrl, { imagePrompt: usedPrompt });
+                      try {
+                        const localized = await localizeRemoteImageTo2By3AndToken(res.imageUrl);
+                        await onSaveUpload(localized.portraitDataUrl, {
+                          imagePrompt: usedPrompt,
+                          ...(localized.tokenDataUrl
+                            ? {
+                                tokenDataUrl: localized.tokenDataUrl,
+                                tokenCrop: DEFAULT_TOKEN_CROP,
+                              }
+                            : {}),
+                        });
+                      } catch {
+                        await onSaveUrl(res.imageUrl, { imagePrompt: usedPrompt });
+                      }
                       onClose();
                     }
                   } catch (err) {

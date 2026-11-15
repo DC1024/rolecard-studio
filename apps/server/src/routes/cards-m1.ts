@@ -14,6 +14,7 @@ import {
   exportCardToMarkdown,
   exportCardToTrpgSheetHtml,
   exportCardToTrpgSheetMarkdown,
+  fetchRemoteImageBuffer,
   generateCardField,
   generateTrpgAttributesForCard,
   isFakeIpAllowedByFetch,
@@ -798,55 +799,19 @@ cardM1Routes.get('/cards/:id/portrait-source', async (c) => {
   }
 
   const mediaFetch = await loadScopedFetch(ctx, 'media');
-  const ssrf = await validatePublicUrl(row.imageUrl, ctx.dnsLookup, {
-    viaProxy: isUrlProxiedByFetch(mediaFetch, row.imageUrl),
-    allowFakeIp: isFakeIpAllowedByFetch(mediaFetch),
+  const result = await fetchRemoteImageBuffer(row.imageUrl, {
+    fetchImpl: mediaFetch,
+    dnsLookup: ctx.dnsLookup,
+    maxBytes: 12 * 1024 * 1024,
   });
-  if (!ssrf.ok) {
-    return sendCoreError(c, ssrf.error);
+  if (!result.ok) {
+    return sendCoreError(c, result.error);
   }
 
-  try {
-    const res = await mediaFetch(row.imageUrl, {
-      signal: AbortSignal.timeout(15_000),
-      headers: { Accept: 'image/png,image/jpeg,image/webp,image/*;q=0.8' },
-    });
-    if (!res.ok) {
-      return c.json(
-        { error: { code: 'PORTRAIT_FETCH_FAILED', message: `拉取外链立绘失败 (HTTP ${res.status})` } },
-        502,
-      );
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length === 0 || buf.length > 8 * 1024 * 1024) {
-      return c.json(
-        { error: { code: 'IMAGE_TOO_LARGE', message: '外链立绘体积超出限制 (最大 8MB)' } },
-        400,
-      );
-    }
-    const detected = detectImageMagicBytes(buf);
-    if (!detected) {
-      return c.json(
-        { error: { code: 'INVALID_IMAGE_MAGIC', message: '外链返回内容不是受支持的 PNG/JPEG/WEBP 图片' } },
-        400,
-      );
-    }
-    const contentType =
-      detected === 'jpeg' ? 'image/jpeg' : detected === 'webp' ? 'image/webp' : 'image/png';
-    c.header('Content-Type', contentType);
-    c.header('Cache-Control', 'private, max-age=300');
-    return c.body(new Uint8Array(buf));
-  } catch (err) {
-    return c.json(
-      {
-        error: {
-          code: 'PORTRAIT_FETCH_FAILED',
-          message: err instanceof Error ? err.message : '拉取外链立绘失败',
-        },
-      },
-      502,
-    );
-  }
+  c.header('Content-Type', result.value.contentType);
+  c.header('Cache-Control', 'private, max-age=300');
+  c.header('X-Content-Type-Options', 'nosniff');
+  return c.body(new Uint8Array(result.value.buffer));
 });
 
 cardM1Routes.post('/cards/:id/image', zValidator('json', CardImageUploadSchema), async (c) => {

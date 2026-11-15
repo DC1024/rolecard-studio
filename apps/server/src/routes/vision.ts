@@ -3,6 +3,7 @@ import { zValidator } from '@hono/zod-validator';
 import {
   analyzePortraitWithVision,
   createOpenAiCompatibleLlmPort,
+  fetchRemoteImageBuffer,
   generateOrOptimizePortraitPrompt,
   generatePortraitImage,
   resolveProviderBaseUrl,
@@ -130,6 +131,35 @@ visionRoutes.post(
     return c.json({ items: result.value });
   },
 );
+
+visionRoutes.get('/images/proxy', async (c) => {
+  const denied = guardPermission(c, 'card:read');
+  if (denied) return denied;
+
+  const rawUrl = c.req.query('url')?.trim() ?? '';
+  if (!rawUrl || rawUrl.length > 2048 || !/^https?:\/\//i.test(rawUrl)) {
+    return c.json(
+      { error: { code: 'INVALID_IMAGE_URL', message: '请提供合法的 http(s) 图片 URL' } },
+      400,
+    );
+  }
+
+  const ctx = c.get('ctx');
+  const mediaFetch = await loadScopedFetch(ctx, 'media');
+  const result = await fetchRemoteImageBuffer(rawUrl, {
+    fetchImpl: mediaFetch,
+    dnsLookup: ctx.dnsLookup,
+    maxBytes: 12 * 1024 * 1024,
+  });
+  if (!result.ok) {
+    return sendCoreError(c, result.error);
+  }
+
+  c.header('Content-Type', result.value.contentType);
+  c.header('Cache-Control', 'private, max-age=600');
+  c.header('X-Content-Type-Options', 'nosniff');
+  return c.body(new Uint8Array(result.value.buffer));
+});
 
 visionRoutes.post(
   '/images/generate',

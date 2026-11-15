@@ -1,6 +1,6 @@
 import type { CardType, GenerationMode } from '@rolecard/shared';
 import { MessageSquare, Search, X } from 'lucide-react';
-import type { CommonTagCount, RoleCardDto } from '../api/client';
+import { api, type CommonTagCount, type RoleCardDto } from '../api/client';
 
 interface SidebarProps {
   open: boolean;
@@ -164,7 +164,7 @@ export function Sidebar({
               >
                 {card.imageUrl ? (
                   <img
-                    src={card.imageUrl}
+                    src={api.resolveImageDisplayUrl(card.imageUrl) ?? card.imageUrl}
                     alt={card.characterName}
                     referrerPolicy="no-referrer"
                     className="aspect-[2/3] w-8 shrink-0 rounded-sm border border-line object-cover"

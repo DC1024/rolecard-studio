@@ -32,7 +32,11 @@ import {
   type RuntimeProxyConfig,
 } from './proxy.js';
 import { validatePublicUrl } from './ssrf.js';
-import { generateOrOptimizePortraitPrompt, searchWikimediaCommonsImages } from './vision.js';
+import {
+  fetchRemoteImageBuffer,
+  generateOrOptimizePortraitPrompt,
+  searchWikimediaCommonsImages,
+} from './vision.js';
 
 const publicDns: DnsLookupPort = async () => [{ address: '93.184.216.34', family: 4 }];
 
@@ -1140,6 +1144,113 @@ describe('Search connectivity probe, layered retrieval budget & single-field gen
     expect(capturedSystems[2]).toContain('ukiyo-e woodblock print portrait');
     expect(capturedSystems[2]).not.toContain('cel-shaded');
     expect(capturedSystems[2]).toContain('3d, photorealistic');
+  });
+
+  it('fetches remote images via fetchRemoteImageBuffer with SSRF, magic bytes, size limit, and Fake-IP handling', async () => {
+    const validPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    ]);
+    const validJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+
+    let capturedUserAgent = '';
+    const mockFetch: HttpFetchPort = async (url, init) => {
+      capturedUserAgent = new Headers(init?.headers).get('user-agent') ?? '';
+      if (url.includes('valid.png')) {
+        return new Response(new Uint8Array(validPng), { status: 200 });
+      }
+      if (url.includes('valid.jpg')) {
+        return new Response(new Uint8Array(validJpeg), { status: 200 });
+      }
+      if (url.includes('html-page')) {
+        return new Response('<html>not an image</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        });
+      }
+      if (url.includes('rate-limited')) {
+        return new Response('Too Many Requests', { status: 429 });
+      }
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const okPng = await fetchRemoteImageBuffer('https://upload.wikimedia.org/valid.png', {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    });
+    expect(okPng.ok).toBe(true);
+    if (okPng.ok) {
+      expect(okPng.value.contentType).toBe('image/png');
+      expect(okPng.value.buffer).toEqual(validPng);
+    }
+    expect(capturedUserAgent).toContain('RoleCardStudio/1.0');
+
+    const okJpg = await fetchRemoteImageBuffer('https://upload.wikimedia.org/valid.jpg', {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    });
+    expect(okJpg.ok).toBe(true);
+    if (okJpg.ok) {
+      expect(okJpg.value.contentType).toBe('image/jpeg');
+    }
+
+    const htmlRejected = await fetchRemoteImageBuffer('https://upload.wikimedia.org/html-page', {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    });
+    expect(htmlRejected.ok).toBe(false);
+    if (!htmlRejected.ok) {
+      expect(htmlRejected.error.code).toBe('INVALID_IMAGE_MAGIC');
+    }
+
+    const tooLarge = await fetchRemoteImageBuffer('https://upload.wikimedia.org/valid.png', {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+      maxBytes: 8,
+    });
+    expect(tooLarge.ok).toBe(false);
+    if (!tooLarge.ok) {
+      expect(tooLarge.error.code).toBe('IMAGE_TOO_LARGE');
+    }
+
+    const rateLimited = await fetchRemoteImageBuffer('https://upload.wikimedia.org/rate-limited', {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    });
+    expect(rateLimited.ok).toBe(false);
+    if (!rateLimited.ok) {
+      expect(rateLimited.error.status).toBe(429);
+    }
+
+    // Fake-IP 198.18.x.x respected via scoped media fetch allowFakeIp flag
+    const fakeIpDns: DnsLookupPort = async () => [{ address: '198.18.3.185', family: 4 }];
+    const baseProxyCfg: RuntimeProxyConfig = {
+      globalEnabled: false,
+      globalUrl: '',
+      bypassLocal: true,
+      allowFakeIp: false,
+      useEnvProxy: false,
+      overrides: {},
+    };
+    const fakeIpBlocked = await fetchRemoteImageBuffer('https://thumb.wikimedia.org/valid.png', {
+      fetchImpl: createScopedProxyFetch(baseProxyCfg, 'media', mockFetch, {}),
+      dnsLookup: fakeIpDns,
+    });
+    expect(fakeIpBlocked.ok).toBe(false);
+    if (!fakeIpBlocked.ok) {
+      expect(fakeIpBlocked.error.code).toBe('SSRF_IP_BLOCKED');
+    }
+
+    const fakeIpAllowed = await fetchRemoteImageBuffer('https://thumb.wikimedia.org/valid.png', {
+      fetchImpl: createScopedProxyFetch(
+        { ...baseProxyCfg, allowFakeIp: true },
+        'media',
+        mockFetch,
+        {},
+      ),
+      dnsLookup: fakeIpDns,
+    });
+    expect(fakeIpAllowed.ok).toBe(true);
   });
 });
 

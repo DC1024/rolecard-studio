@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.1）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.4.2）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
@@ -32,7 +32,7 @@ RoleCard Studio 旨在解决传统角色卡创作中「资料考据零散、提�
   - 支持 AI 推演 CoC 7e / D&D 5e 真实数值面板与技能特性，并导出标准车卡表（HTML / Markdown）及 Foundry VTT Actor JSON。
 - **统一 2:3 角色卡画廊与衍生 1:1 VTT Token**
   - 默认主视图为 **2:3 竖版立绘角色卡画廊**，左侧栏保留常驻检索、规格/模式筛选与常用标签联动。
-  - 支持本地图片 `600×900` 裁剪、**AI 文生图（固定 `1024x1536` 竖版 + 结合角色卡生成/优化英文提示词）**、Wikimedia 搜图代理与外链同源代理（`/api/v1/cards/:id/portrait-source`）。
+  - 支持本地图片 `600×900` 裁剪、**AI 文生图（固定 `1024x1536` 竖版 + 结合角色卡生成/优化英文提示词）**、Wikimedia 同源搜图代理（`/api/v1/images/proxy`，点选自动本地转存 2:3 立绘与 1:1 Token）与外链同源代理（`/api/v1/cards/:id/portrait-source`）。
   - 可直接从 `2:3` 主立绘交互裁剪衍生 **`1:1`（`512×512`）VTT Token**，自动同步用于 `vtt_token_png` 直接导出与 `foundry_dnd5e_json`。
 - **独立世界书（Lorebook）与快速试聊沙盒**
   - 世界书支持独立管理、与角色卡多对多绑定，支持 **蓝灯常驻（Constant）** 与 **绿灯关键词（Selective）** 规则，导出 CCV3 时自动合并至 `character_book`。
