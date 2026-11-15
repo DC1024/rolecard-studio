@@ -22,7 +22,7 @@ RoleCard Studio 不仅是一个独立网页工作台，还通过 **MCP Server**�
 ### 1.2 客户端接入配置示例（stdio）
 
 1. 先确保项目已构建（`pnpm build`），或确认你使用的脚本路径指向 `packages/mcp/dist/index.js`。
-2. 在管理员 **「设置 → API Key」** 创建一个 External API Key（当 `apiAccessMode` 为 `authenticated` 时必需）。
+2. 在管理员 **「设置 → 外部 API Key」** 创建一个 External API Key（当 `apiAccessMode` 为 `authenticated` 时必需，前缀为 `rc_ext_`）。
 3. 将如下配置添加到 MCP 客户端配置文件（如 `claude_desktop_config.json` 或 Cursor `.cursor/mcp.json`）：
 
 ```json
@@ -35,7 +35,7 @@ RoleCard Studio 不仅是一个独立网页工作台，还通过 **MCP Server**�
       ],
       "env": {
         "ROLECARD_API_URL": "http://127.0.0.1:3000",
-        "ROLECARD_API_KEY": "rc_live_请替换为你的External_API_Key"
+        "ROLECARD_API_KEY": "rc_ext_请替换为你的External_API_Key"
       }
     }
   }
@@ -55,7 +55,7 @@ RoleCard Studio 不仅是一个独立网页工作台，还通过 **MCP Server**�
    ```js
    window.RoleCardSync.updateConfig({
      serverUrl: 'http://127.0.0.1:3000',
-     apiToken: 'rc_live_xxx',
+     apiToken: 'rc_ext_xxx',
      autoApply: true,
    });
    window.RoleCardSync.startStream();
@@ -117,44 +117,69 @@ RoleCard Studio 支持通过纯 JSON Manifest 扩展功能，**无需编写或�
 
 ---
 
-## 5. External HTTP API 速查（含可运行示例）
+## 5. 鉴权模式与 External HTTP API 速查（含可运行示例）
 
-当 `apiAccessMode` 为 `authenticated` 时，所有 `/api/v1/external/*` 请求均需携带 `Authorization: Bearer <API Key>`。
+### 5.0 鉴权机制说明（两套接口严格隔离）
 
-### 5.1 列出与搜索角色卡
+RoleCard Studio 的 API 分为 **对外生态接口** 与 **工作台内部接口** 两套隔离的鉴权通道，**Token 不可混用**：
+
+1. **对外生态接口（`/api/v1/external/*`）—— 使用 External API Key（`rc_ext_...`）**：
+   - 当管理员在 **「设置 → 访问策略」** 将 `apiAccessMode` 设为 `authenticated`（默认，顶栏显示「鉴权」）时，必须携带 `Authorization: Bearer rc_ext_...` 请求头；不认网页登录 Cookie 或用户会话 Token。
+   - **获取方式**：
+     - **网页端创建（默认全权限 `["*"]`）**：管理员登录 → 打开 **「设置 → 外部 API Key」** → 输入备注名并点击 **「生成 Key」**（明文仅展示一次，服务端仅存 SHA-256 哈希）。
+     - **接口创建（可指定最小 Scope，如仅只读）**：使用管理员会话调用 `POST /api/v1/admin/api-keys`，传入 `{"name": "ReadOnly", "scopes": ["cards:read"]}`。
+   - **端点所需 Scope 与错误码**：
+     - 全部 `GET /api/v1/external/*`（卡片列表、详情、CCV3、世界书、增量同步）均需 `cards:read`（或 `*`）。
+     - `POST /api/v1/external/generate` 需 `cards:write`（或 `*`）。
+     - 未携带有效 Key 返回 **`401 API_UNAUTHORIZED`**；Key 缺少对应 Scope 返回 **`403 API_FORBIDDEN`**。
+2. **工作台内部接口（`/api/v1/cards/*`、`/api/v1/lorebooks/*`、`/api/v1/admin/*` 等）—— 使用用户会话 Token**：
+   - 受 `siteAccessMode` 与用户 RBAC 权限控制；服务端显式排除 `rc_ext_` 前缀，因此 **External API Key 不可调用内部接口**。
+   - 需先调用登录接口获取会话 Token（同时种下 `rc_session` HttpOnly Cookie，有效期 7 天），再通过 `Authorization: Bearer <token>` 或 Cookie 调用：
+     ```bash
+     # 1) 登录获取会话 token 与 Cookie
+     curl -s -c cookies.txt -X POST "http://127.0.0.1:3000/api/v1/auth/login" \
+       -H "Content-Type: application/json" \
+       -d '{"username":"admin","password":"你的密码"}'
+
+     # 2) 使用会话 token（或 -b cookies.txt）调用内部接口
+     curl -s -H "Authorization: Bearer <login返回的token>" \
+       "http://127.0.0.1:3000/api/v1/admin/api-keys"
+     ```
+
+### 5.1 列出与搜索角色卡（Scope: `cards:read`）
 
 ```bash
-curl -s -H "Authorization: Bearer rc_live_你的密钥" \
+curl -s -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/cards?q=凯尔希"
 ```
 
-### 5.2 获取单卡详情（支持 ETag）
+### 5.2 获取单卡详情（支持 ETag，Scope: `cards:read`）
 
 ```bash
-curl -i -H "Authorization: Bearer rc_live_你的密钥" \
+curl -i -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/cards/<cardId>"
 ```
 
-### 5.3 导出 CCV3 JSON（含合并世界书）
+### 5.3 导出 CCV3 JSON（含合并世界书，Scope: `cards:read`）
 
 ```bash
-curl -s -H "Authorization: Bearer rc_live_你的密钥" \
+curl -s -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/cards/<cardId>/ccv3" \
   -o character.ccv3.json
 ```
 
-### 5.4 列出全部独立世界书
+### 5.4 列出全部独立世界书（Scope: `cards:read`）
 
 ```bash
-curl -s -H "Authorization: Bearer rc_live_你的密钥" \
+curl -s -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/lorebooks"
 ```
 
-### 5.5 通过外部 API 触发生成（需要 `cards:write` 或 `*` 作用域）
+### 5.5 通过外部 API 触发生成（Scope: `cards:write` 或 `*`）
 
 ```bash
 curl -s -X POST "http://127.0.0.1:3000/api/v1/external/generate" \
-  -H "Authorization: Bearer rc_live_你的密钥" \
+  -H "Authorization: Bearer rc_ext_你的密钥" \
   -H "Content-Type: application/json" \
   -d '{
     "mode": "A",
@@ -165,14 +190,14 @@ curl -s -X POST "http://127.0.0.1:3000/api/v1/external/generate" \
   }'
 ```
 
-### 5.6 增量同步事件流（SSE / 轮询）
+### 5.6 增量同步事件流（SSE / 轮询，Scope: `cards:read`）
 
 ```bash
 # SSE 实时流
-curl -N -H "Authorization: Bearer rc_live_你的密钥" \
+curl -N -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/sync/stream?since_cursor=0"
 
 # 增量 JSON 轮询
-curl -s -H "Authorization: Bearer rc_live_你的密钥" \
+curl -s -H "Authorization: Bearer rc_ext_你的密钥" \
   "http://127.0.0.1:3000/api/v1/external/sync/events?since_cursor=0"
 ```

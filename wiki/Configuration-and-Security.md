@@ -102,8 +102,8 @@
   - `public`（默认）：允许未登录访客按 `guestPermissions`（默认仅 `['card:read']`）浏览角色卡库与世界书。
   - `login_required`：未登录状态禁止访问网页业务数据，强制要求登录。
 - **外部 API 模式（`apiAccessMode`）**：
-  - `authenticated`（默认）：调用 `/api/v1/external/*` 必须携带有效的 `Authorization: Bearer <API Key>`。
-  - `public`：允许匿名读取只读外部接口（适合纯局域网个人实验环境；公网部署强烈建议保持 `authenticated`）。
+  - `authenticated`（默认）：调用 `/api/v1/external/*` 必须携带有效的 `Authorization: Bearer rc_ext_...` External API Key（在 **「设置 → 外部 API Key」** 创建；该 Key 仅作用于外部接口，不可用于登录工作台内部接口）。
+  - `public`：允许匿名读取/调用外部接口（适合纯局域网个人实验环境；公网部署强烈建议保持 `authenticated`）。
 
 ### 5.2 7 项细粒度用户权限
 
@@ -122,5 +122,5 @@
 ### 5.3 密码学与网络安全基线
 
 - **凭据加密**：所有大模型 API Key、搜索 Key、代理 URL、通知秘钥、Webhook Secret 均采用 **AES-256-GCM**（随机 IV + Auth Tag）配合 `ROLECARD_DATA_DIR/.master.key` 加密存储在 SQLite 中，前端读取接口永远只返回后 4 位脱敏掩码（如 `****abcd`）。
-- **密码哈希**：用户密码使用随机盐 + **PBKDF2-SHA512** 哈希存储；会话 Token 与 External API Key（前缀 `rc_live_`）在数据库中均只保存 **SHA-256 哈希**，明文 Key 仅在创建时展示一次。
+- **密码哈希**：用户密码使用随机盐 + **PBKDF2-SHA512** 哈希存储；会话 Token 与 External API Key（前缀 `rc_ext_`）在数据库中均只保存 **SHA-256 哈希**，明文 Key 仅在创建时展示一次。
 - **SSRF 防护**：所有参考 URL、外链图片探测、Webhook 目标均会解析 DNS 并拦截内网网段（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`127.0.0.0/8`、`169.254.0.0/16`、`::1` 等）；仅当请求显式通过用户配置的网络代理转发时豁免本地 DNS 检查。

@@ -7,7 +7,7 @@
 ```js
 window.RoleCardSync.updateConfig({
   serverUrl: 'http://127.0.0.1:3000',
-  apiToken: 'rc_live_xxx',
+  apiToken: 'rc_ext_xxx',
   autoApply: true,
 });
 window.RoleCardSync.startStream();
