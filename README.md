@@ -197,7 +197,7 @@ pnpm bundle
 pnpm build       # 构建所有 workspace 包与前端生产资源
 pnpm typecheck   # 先构建 shared/core 类型产物，再对全仓执行 tsc --noEmit
 pnpm lint        # 使用 ESLint 检查 packages/ 与 apps/
-pnpm test        # 运行 Vitest 全仓单元与集成测试（11 个测试文件，74 项测试）
+pnpm test        # 运行 Vitest 全仓单元与集成测试（12 个测试文件，98 项测试）
 pnpm bundle      # 打包独立运行产物至 release/bundle/
 ```
 
