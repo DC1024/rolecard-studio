@@ -1,84 +1,107 @@
-name: Bug 报告
-description: 报告一个「该对但不对」的问题。写得越具体，修得越快。
+name: Bug 报告 / Bug report
+description: 报告一个「本该正常、却没正常工作」的问题。写得越具体，修得越快。Report something that should work but doesn't — the more specific, the faster it gets fixed.
 title: "[bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        ### 发之前先看一眼
+        ### 发之前先看一眼 / Before you post
 
-        1. **一个 issue 只讲一件事**（三个问题请开三个 issue）
-        2. **截图不能代替文字** —— 报错、堆栈、数值请抄进下面的输入框
-        3. **别贴密钥 / token / 密码**
-        4. 用法问题请先看 README，issue 只收「该对但不对」的问题
+        1. **一个 issue 只讲一件事。** 三个不相关的问题请发三次。/ One issue, one problem.
+        2. **请用文字描述，不要只发截图。** 图里的字没法被搜索，也没法被引用。/ Describe it in words. A screenshot alone can't be searched or quoted.
+        3. **不要贴密码、密钥、账号。** / Never paste passwords, keys or account details.
+        4. **「怎么用 X」请去 Discussions 提问。** / "How do I use X?" belongs in Discussions.
 
-        完整说明见 [`ISSUE_GUIDE.md`](https://github.com/DC1024/rolecard-studio/blob/main/ISSUE_GUIDE.md)。
+        完整说明 / Full guide: [`ISSUE_GUIDE.md`](https://github.com/DC1024/rolecard-studio/blob/main/ISSUE_GUIDE.md)
 
   - type: textarea
     id: symptom
     attributes:
-      label: 现象
-      description: 哪个功能/命令，在什么场景下，给出了什么结果。有报错就贴完整原文（前 10 行足够）。
+      label: 现象 / What happened
+      description: |
+        你点了什么、看到了什么。用大白话写就行，不需要任何技术名词。
+        What you clicked and what you saw. Plain words are enough — no technical terms needed.
       placeholder: |
-        调用 estimateTokens() 时，`⿰⿱⿲` 被算成 1 个 token，应该是 3 个。
-        报错/输出原文：
-          expected 3, received 1
+        示例（请换成你自己的情况）：
+        我在「快速试聊」里输入了一句话，点了发送，等了十几秒都没有回复。
+        页面上没有任何提示，输入框也还在，就好像按了没反应。
+
+        Example (please replace with your own case):
+        I typed a message in Quick Test Chat and pressed Send. Nothing came back
+        for more than ten seconds. No error, no spinner — the page just sat there.
     validations:
       required: true
 
   - type: textarea
     id: repro
     attributes:
-      label: 复现
-      description: 能照抄的命令，或一段可以直接运行的最小代码。这是最有用的一段。
+      label: 怎么重现 / Steps to reproduce
+      description: |
+        让别人照着做，也能看到同样的问题。一步一步写，不用讲原理。
+        Steps someone else can follow to see the same thing. One step per line.
       placeholder: |
-        1. pnpm install
-        2. pnpm exec vitest run packages/shared/src/token.test.ts
-        3. 第 4 条用例失败
+        示例：
+        1. 登录后点右上角的「设置」
+        2. 打开「模型槽位」，随便填一个模型，点「测试连接」
+        3. 按钮一直转圈，既不显示成功，也不显示失败
 
-        或者：
-
-        import { estimateTokens } from './token.js';
-        estimateTokens('⿰⿱⿲');   // 实际 1，期望 3
+        Example:
+        1. Sign in, click Settings in the top right corner
+        2. Open "Model Slots", pick any model, click "Test connection"
+        3. The button spins forever — neither success nor failure shows up
     validations:
       required: true
 
   - type: textarea
     id: expect
     attributes:
-      label: 期望 vs 实际
-      description: 一两行就够，决定修复方向对不对。
+      label: 本来应该是怎样 / What you expected
+      description: |
+        一两句话就够。这一栏决定「修得对不对」。
+        One or two sentences. This is what tells us whether a fix is the right fix.
       placeholder: |
-        - 期望：每个 CJK 字符按 1 个 token 计
-        - 实际：按西文 0.28 计，向上取整后偏差明显
+        示例：
+        点「测试连接」之后，几秒内应该显示「连接成功」，
+        而不是一直转圈、什么都不说。
+
+        Example:
+        After clicking "Test connection", it should say "Connected" within a
+        few seconds — instead of spinning forever with no message.
     validations:
       required: true
 
   - type: textarea
     id: scope
     attributes:
-      label: 线索（可选）
-      description: 怀疑的文件、相关的包、从哪个版本开始出现、有没有相关资料。不确定就留空。
+      label: 补充信息（可选）/ Anything else (optional)
+      description: |
+        版本号、浏览器、操作系统，或者你猜是哪个功能出的问题。不确定就留空。
+        Version, browser, OS, or which feature you suspect. Leave it blank if unsure.
       placeholder: |
-        怀疑 packages/shared/src/token.ts；1.8.x 之后开始出现
+        示例：
+        v1.9.0，Chrome 浏览器，Windows 11；只有联网考据模式会这样。
+
+        Example:
+        v1.9.0, Chrome on Windows 11; only happens in online-research mode.
 
   - type: textarea
     id: acceptance
     attributes:
-      label: 验收标准（可选，但写了会快很多）
-      description: 修完之后怎么算修好了。
+      label: 怎样算修好（可选）/ How to know it's fixed (optional)
+      description: |
+        留成默认的两条就可以，也可以按你的情况改写。
+        The two defaults are fine — edit them if you like.
       value: |
-        - [ ] 补充或新增单测覆盖该场景
-        - [ ] pnpm typecheck && pnpm lint && pnpm test 全绿
-        - [ ] 现有用例不回归
+        - [ ] 按上面的步骤再操作一次，问题不再出现 / Following the steps above, the problem no longer happens
+        - [ ] 其他功能没有被弄坏 / Other features still work as before
 
   - type: checkboxes
     id: confirm
     attributes:
-      label: 确认
+      label: 确认 / Please confirm
       options:
-        - label: 我已经搜过现有 issue，没有重复
+        - label: 我搜过现有的 issue，没有找到重复 / I searched existing issues and found no duplicate
           required: true
-        - label: 这个问题不是用法疑问，而是「该对但不对」
+        - label: 这不是「怎么用」的疑问，而是「本该正常却没正常工作」/ This is a bug, not a question about how to use something
           required: true

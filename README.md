@@ -198,7 +198,7 @@ pnpm bundle
 
 | 我要…… | 去哪里 | 说明 |
 | --- | --- | --- |
-| 报告一个 Bug | [**结构化 Bug 表单**](https://github.com/DC1024/rolecard-studio/issues/new?template=bug-report.yml) | 现象 / 复现 / 期望 vs 实际 三段必填，约 30 秒 |
+| 报告一个 Bug | [**结构化 Bug 表单**](https://github.com/DC1024/rolecard-studio/issues/new?template=bug-report.yml) | 现象 / 怎么重现 / 本来应该怎样 三段必填，约 30 秒（中英双语） |
 | 问「怎么用 X」、提想法 | [Discussions](https://github.com/DC1024/rolecard-studio/discussions) | 用法疑问与功能设想不进 issue 列表 |
 | 看提交规范全文 | [`ISSUE_GUIDE.md`](ISSUE_GUIDE.md) | 四段式模板、完整好例子、会被打回的写法、提交之后的流程 |
 
