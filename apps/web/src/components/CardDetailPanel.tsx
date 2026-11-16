@@ -1336,7 +1336,7 @@ export function CardDetailPanel({
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5">
                                 {idx === 0 && (
-                                  <span className="rounded bg-accent/15 px-1 py-0.5 text-[10px] font-semibold text-accent">
+                                  <span className="shrink-0 whitespace-nowrap rounded bg-accent/15 px-1 py-0.5 text-[10px] font-semibold text-accent">
                                     上一版
                                   </span>
                                 )}
