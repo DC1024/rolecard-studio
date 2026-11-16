@@ -19,6 +19,12 @@ describe('estimateTokens', () => {
     ['Bopomofo', 'ㄅㄆㄇㄈ\u3100\u312f'],
     ['Bopomofo Extended', 'ㆠㆡㆢ\u31a0\u31bf'],
     ['Enclosed CJK Letters and Months', '㊀㊁\u3200\u32ff'],
+    ['Ideographic Description Characters', '⿰⿱⿲\u2ff0\u2fff'],
+    ['Kanbun', '㆐㆑\u3190\u319f'],
+    ['CJK Strokes and Katakana Phonetic Extensions', '㇀㇁ㇰㇱ\u31c0\u31ef\u31f0\u31ff'],
+    ['Vertical Forms', '︐︑︒\ufe10\ufe1f'],
+    ['CJK Compatibility Forms', '︰︱︲\ufe30\ufe4f'],
+    ['Enclosed Ideographic Supplement', '🈀🈁🈂\u{1F200}\u{1F2FF}'],
   ])('counts %s at the CJK rate', (_name, text) => {
     expect(estimateTokens(text)).toBe(Math.ceil(Array.from(text).length * 0.72));
   });
