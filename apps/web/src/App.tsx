@@ -215,148 +215,147 @@ function StudioApp() {
         onLogout={handleLogout}
       />
 
-      <div className="flex">
-        <Sidebar
-          open={sidebarOpen}
-          cards={cards}
-          total={total}
-          commonTags={commonTags}
-          selectedCardId={selectedCard?.id ?? null}
-          searchQuery={searchQuery}
-          selectedTags={selectedTags}
-          filterCardType={filterCardType}
-          filterMode={filterMode}
-          loading={loadingCards}
-          onSearchChange={setSearchQuery}
-          onToggleTag={(tag) =>
-            setSelectedTags((prev) =>
-              prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
-            )
-          }
-          onClearTags={() => setSelectedTags([])}
-          onFilterCardTypeChange={setFilterCardType}
-          onFilterModeChange={setFilterMode}
-          onSelectCard={(card) => {
-            setSelectedCard(card);
-            setView('detail');
-          }}
-          onQuickPlaytest={(card) => {
-            setSelectedCard(card);
-            setView('playtest');
-          }}
-        />
+      <Sidebar
+        open={sidebarOpen}
+        cards={cards}
+        total={total}
+        commonTags={commonTags}
+        selectedCardId={selectedCard?.id ?? null}
+        searchQuery={searchQuery}
+        selectedTags={selectedTags}
+        filterCardType={filterCardType}
+        filterMode={filterMode}
+        loading={loadingCards}
+        onSearchChange={setSearchQuery}
+        onToggleTag={(tag) =>
+          setSelectedTags((prev) =>
+            prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+          )
+        }
+        onClearTags={() => setSelectedTags([])}
+        onFilterCardTypeChange={setFilterCardType}
+        onFilterModeChange={setFilterMode}
+        onSelectCard={(card) => {
+          setSelectedCard(card);
+          setView('detail');
+        }}
+        onQuickPlaytest={(card) => {
+          setSelectedCard(card);
+          setView('playtest');
+        }}
+        onClose={() => setSidebarOpen(false)}
+      />
 
-        <main className="min-w-0 flex-1 p-4 sm:p-6">
-          <div className={view === 'gallery' ? 'mx-auto max-w-7xl space-y-4' : 'mx-auto max-w-5xl space-y-4'}>
-            {view === 'gallery' && (
-              <CardGallery
-                cards={cards}
-                total={total}
-                loading={loadingCards}
-                canCreate={hasPerm('card:create')}
-                hasActiveFilters={hasActiveFilters}
-                searchQuery={searchQuery}
-                selectedTags={selectedTags}
-                filterCardType={filterCardType}
-                filterMode={filterMode}
-                onResetFilters={resetFilters}
-                onSelectCard={(card) => {
-                  setSelectedCard(card);
-                  setView('detail');
-                }}
-                onQuickPlaytest={(card) => {
-                  setSelectedCard(card);
-                  setView('playtest');
-                }}
-                onGoGenerate={() => setView('generate')}
-                onOpenImport={() => setImportOpen(true)}
-              />
-            )}
+      <main className="min-w-0 w-full p-4 sm:p-6">
+        <div className={view === 'gallery' ? 'mx-auto max-w-7xl space-y-4' : 'mx-auto max-w-5xl space-y-4'}>
+          {view === 'gallery' && (
+            <CardGallery
+              cards={cards}
+              total={total}
+              loading={loadingCards}
+              canCreate={hasPerm('card:create')}
+              hasActiveFilters={hasActiveFilters}
+              searchQuery={searchQuery}
+              selectedTags={selectedTags}
+              filterCardType={filterCardType}
+              filterMode={filterMode}
+              onResetFilters={resetFilters}
+              onSelectCard={(card) => {
+                setSelectedCard(card);
+                setView('detail');
+              }}
+              onQuickPlaytest={(card) => {
+                setSelectedCard(card);
+                setView('playtest');
+              }}
+              onGoGenerate={() => setView('generate')}
+              onOpenImport={() => setImportOpen(true)}
+            />
+          )}
 
-            {view === 'generate' && (
-              <GenerateForm
-                cardType={preset}
-                canCreate={hasPerm('card:create')}
-                isConfigured={Boolean(config?.configured && config.primaryLlm)}
-                generating={generating}
-                progressStep={progressStep}
-                progressText={progressText}
-                progressLogs={progressLogs}
-                thinkingText={thinkingText}
-                errorText={generateError}
-                onCardTypeChange={setPreset}
-                onSubmit={handleGenerate}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
-            )}
+          {view === 'generate' && (
+            <GenerateForm
+              cardType={preset}
+              canCreate={hasPerm('card:create')}
+              isConfigured={Boolean(config?.configured && config.primaryLlm)}
+              generating={generating}
+              progressStep={progressStep}
+              progressText={progressText}
+              progressLogs={progressLogs}
+              thinkingText={thinkingText}
+              errorText={generateError}
+              onCardTypeChange={setPreset}
+              onSubmit={handleGenerate}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
+          )}
 
-            {view === 'detail' && (
-              <CardDetailPanel
-                card={selectedCard}
-                canUpdate={hasPerm('card:update')}
-                canDelete={hasPerm('card:delete')}
-                canExport={hasPerm('card:export')}
-                canPlaytest={hasPerm('playtest:use')}
-                onCardUpdated={handleCardUpdated}
-                onCardDeleted={handleCardDeleted}
-                onOpenPlaytest={(card) => {
-                  setSelectedCard(card);
-                  setView('playtest');
-                }}
-                onOpenPortraitModal={() => {
-                  setPortraitInitialTab('upload');
-                  setPortraitOpen(true);
-                }}
-                onOpenTokenModal={() => {
-                  setPortraitInitialTab('token');
-                  setPortraitOpen(true);
-                }}
-                onBackToGallery={() => setView('gallery')}
-              />
-            )}
+          {view === 'detail' && (
+            <CardDetailPanel
+              card={selectedCard}
+              canUpdate={hasPerm('card:update')}
+              canDelete={hasPerm('card:delete')}
+              canExport={hasPerm('card:export')}
+              canPlaytest={hasPerm('playtest:use')}
+              onCardUpdated={handleCardUpdated}
+              onCardDeleted={handleCardDeleted}
+              onOpenPlaytest={(card) => {
+                setSelectedCard(card);
+                setView('playtest');
+              }}
+              onOpenPortraitModal={() => {
+                setPortraitInitialTab('upload');
+                setPortraitOpen(true);
+              }}
+              onOpenTokenModal={() => {
+                setPortraitInitialTab('token');
+                setPortraitOpen(true);
+              }}
+              onBackToGallery={() => setView('gallery')}
+            />
+          )}
 
-            {view === 'playtest' && (
-              <PlaytestPanel
-                cards={cards}
-                selectedCard={selectedCard}
-                canPlaytest={hasPerm('playtest:use')}
-                canUpdate={hasPerm('card:update')}
-                onSelectCard={setSelectedCard}
-                onCardUpdated={handleCardUpdated}
-                onNotify={showToast}
-              />
-            )}
+          {view === 'playtest' && (
+            <PlaytestPanel
+              cards={cards}
+              selectedCard={selectedCard}
+              canPlaytest={hasPerm('playtest:use')}
+              canUpdate={hasPerm('card:update')}
+              onSelectCard={setSelectedCard}
+              onCardUpdated={handleCardUpdated}
+              onNotify={showToast}
+            />
+          )}
 
-            {view === 'lorebooks' && (
-              <LorebookPanel
-                cards={cards}
-                canCreate={hasPerm('card:create')}
-                canUpdate={hasPerm('card:update')}
-                canDelete={hasPerm('card:delete')}
-                canExport={hasPerm('card:export')}
-                onNotify={showToast}
-              />
-            )}
+          {view === 'lorebooks' && (
+            <LorebookPanel
+              cards={cards}
+              canCreate={hasPerm('card:create')}
+              canUpdate={hasPerm('card:update')}
+              canDelete={hasPerm('card:delete')}
+              canExport={hasPerm('card:export')}
+              onNotify={showToast}
+            />
+          )}
 
-            {view === 'plugins' && (
-              <PluginPanel
-                selectedCard={selectedCard}
-                canExport={hasPerm('card:export')}
-              />
-            )}
+          {view === 'plugins' && (
+            <PluginPanel
+              selectedCard={selectedCard}
+              canExport={hasPerm('card:export')}
+            />
+          )}
 
-            {view === 'reviews' && (
-              <ReviewSyncPanel
-                canResolveReview={hasPerm('review:resolve')}
-                canUpdate={hasPerm('card:update')}
-                canDelete={hasPerm('card:delete')}
-                onNotify={showToast}
-                onRefreshCards={refreshCards}
-              />
+          {view === 'reviews' && (
+            <ReviewSyncPanel
+              canResolveReview={hasPerm('review:resolve')}
+              canUpdate={hasPerm('card:update')}
+              canDelete={hasPerm('card:delete')}
+              onNotify={showToast}
+              onRefreshCards={refreshCards}
+            />
             )}
           </div>
-        </main>
-      </div>
+      </main>
 
       <ImportCardModal
         open={importOpen}
