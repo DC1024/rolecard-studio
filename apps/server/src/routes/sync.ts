@@ -29,6 +29,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getNow, type ServerContext } from '../context.js';
 import { notificationChannels, syncEvents, syncSubscriptions } from '../db/schema.js';
 import {
+  guardAdmin,
   guardExternalApi,
   guardPermission,
   sendCoreError,
@@ -303,7 +304,7 @@ async function querySyncEvents(
 }
 
 syncRoutes.get('/sync/events', async (c) => {
-  const denied = guardPermission(c, 'card:read');
+  const denied = guardAdmin(c);
   if (denied) return denied;
 
   const sinceCursor = Math.max(0, Number.parseInt(c.req.query('since_cursor') ?? '0', 10) || 0);
@@ -415,7 +416,7 @@ syncRoutes.get('/external/sync/stream', async (c) => {
 });
 
 syncRoutes.get('/sync/subscriptions', async (c) => {
-  const denied = guardPermission(c, 'card:read');
+  const denied = guardAdmin(c);
   if (denied) return denied;
 
   const ctx = c.get('ctx');
@@ -503,7 +504,7 @@ syncRoutes.delete('/sync/subscriptions/:id', async (c) => {
 });
 
 syncRoutes.get('/notifications/channels', async (c) => {
-  const denied = guardPermission(c, 'card:read');
+  const denied = guardAdmin(c);
   if (denied) return denied;
 
   const ctx = c.get('ctx');
