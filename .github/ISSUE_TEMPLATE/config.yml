@@ -1,0 +1,14 @@
+# 仓库 issue 入口配置
+# 放到 .github/ISSUE_TEMPLATE/config.yml 后提交即生效。
+# 作用：关掉「空白 issue」，只留结构化表单 + 讨论区入口。
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: 报一个 Bug（结构化表单，推荐）
+    url: https://github.com/DC1024/rolecard-studio/issues/new?template=bug-report.yml
+    about: 现象 / 复现 / 期望 vs 实际 三段必填，填不全发不出去。约 30 秒。
+
+  - name: 用法疑问 / 想法讨论
+    url: https://github.com/DC1024/rolecard-studio/discussions
+    about: 「怎么用 X」「能不能支持 Y」请到讨论区；issue 只收「该对但不对」的问题。

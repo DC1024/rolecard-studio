@@ -13,6 +13,7 @@
 - [安装与部署](#安装与部署)
 - [5 分钟快速入门](#5-分钟快速入门)
 - [Wiki 专题文档导航](#wiki-专题文档导航)
+- [问题反馈与协作](#问题反馈与协作)
 - [开发与验证命令](#开发与验证命令)
 - [安全与数据说明](#安全与数据说明)
 
@@ -188,6 +189,26 @@ pnpm bundle
 | [配置项、代理、通知与安全](wiki/Configuration-and-Security.md) | 管理员 / 高级用户 | 四路模型与 JSON 策略、双层检索、两级 7 作用域代理、9 大通知渠道、RBAC 权限与加密机制 |
 | [开放生态：MCP、插件与 API](wiki/Ecosystem-API-MCP-Plugins.md) | 开发者 / 极客玩家 | `@rolecard/mcp` 接入、SillyTavern/Obsidian 同步扩展、Webhook 验签、声明式插件与 External API 示例 |
 | [常见问题与注意事项](wiki/FAQ-and-Troubleshooting.md) | 排查问题时 | 常见报错处理、`.master.key` 与数据库升级注意事项、SSRF/外链代理与硬拦截说明 |
+
+---
+
+## 问题反馈与协作
+
+遇到问题请按用途走对应入口（本仓库已关闭空白 issue）——**issue 会被自动分析**：机器人定位相关代码、给出根因与修复方案，维护者确认后才进入改码与开 PR。所以报告越像一张工单，处理越快。
+
+| 我要…… | 去哪里 | 说明 |
+| --- | --- | --- |
+| 报告一个 Bug | [**结构化 Bug 表单**](https://github.com/DC1024/rolecard-studio/issues/new?template=bug-report.yml) | 现象 / 复现 / 期望 vs 实际 三段必填，约 30 秒 |
+| 问「怎么用 X」、提想法 | [Discussions](https://github.com/DC1024/rolecard-studio/discussions) | 用法疑问与功能设想不进 issue 列表 |
+| 看提交规范全文 | [`ISSUE_GUIDE.md`](ISSUE_GUIDE.md) | 四段式模板、完整好例子、会被打回的写法、提交之后的流程 |
+
+三条硬要求（`ISSUE_GUIDE.md` 里有完整解释与正反例）：
+
+1. **贴文字，不贴截图** —— 报错原文、堆栈、数值请抄成代码块，读不了图。
+2. **给复现** —— 能照抄的命令或最小可运行片段，这一条最关键。
+3. **一个 issue 只讲一件事** —— 三个不相关的问题请开三个 issue。
+
+补充信息请直接在该 issue 下评论，不要另开新 issue。
 
 ---
 

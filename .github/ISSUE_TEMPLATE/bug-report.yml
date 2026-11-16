@@ -1,0 +1,84 @@
+name: Bug 报告
+description: 报告一个「该对但不对」的问题。写得越具体，修得越快。
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### 发之前先看一眼
+
+        1. **一个 issue 只讲一件事**（三个问题请开三个 issue）
+        2. **截图不能代替文字** —— 报错、堆栈、数值请抄进下面的输入框
+        3. **别贴密钥 / token / 密码**
+        4. 用法问题请先看 README，issue 只收「该对但不对」的问题
+
+        完整说明见 [`ISSUE_GUIDE.md`](https://github.com/DC1024/rolecard-studio/blob/main/ISSUE_GUIDE.md)。
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 哪个功能/命令，在什么场景下，给出了什么结果。有报错就贴完整原文（前 10 行足够）。
+      placeholder: |
+        调用 estimateTokens() 时，`⿰⿱⿲` 被算成 1 个 token，应该是 3 个。
+        报错/输出原文：
+          expected 3, received 1
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现
+      description: 能照抄的命令，或一段可以直接运行的最小代码。这是最有用的一段。
+      placeholder: |
+        1. pnpm install
+        2. pnpm exec vitest run packages/shared/src/token.test.ts
+        3. 第 4 条用例失败
+
+        或者：
+
+        import { estimateTokens } from './token.js';
+        estimateTokens('⿰⿱⿲');   // 实际 1，期望 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: 期望 vs 实际
+      description: 一两行就够，决定修复方向对不对。
+      placeholder: |
+        - 期望：每个 CJK 字符按 1 个 token 计
+        - 实际：按西文 0.28 计，向上取整后偏差明显
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 线索（可选）
+      description: 怀疑的文件、相关的包、从哪个版本开始出现、有没有相关资料。不确定就留空。
+      placeholder: |
+        怀疑 packages/shared/src/token.ts；1.8.x 之后开始出现
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准（可选，但写了会快很多）
+      description: 修完之后怎么算修好了。
+      value: |
+        - [ ] 补充或新增单测覆盖该场景
+        - [ ] pnpm typecheck && pnpm lint && pnpm test 全绿
+        - [ ] 现有用例不回归
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经搜过现有 issue，没有重复
+          required: true
+        - label: 这个问题不是用法疑问，而是「该对但不对」
+          required: true
