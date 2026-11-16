@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import type {
   ImpressionEventDto,
   NotificationChannelDto,
@@ -84,6 +84,42 @@ function createEmptyChannelSettings(): NotificationChannelSettings {
   };
 }
 
+/**
+ * 判断通知渠道表单的必填项是否已填写完整（与 handleSaveChannel 及原生 required 保持一致）。
+ * 编辑已有渠道时，若服务端已保存过敏感字段（masked），输入框留空视为有效。
+ */
+export function computeChannelFormValid(
+  name: string,
+  channelType: NotificationChannelType,
+  settings: NotificationChannelSettings,
+  editingChannelMasked: NotificationChannelDto['settingsMasked'] | null = null,
+): boolean {
+  if (!name.trim()) return false;
+  const filled = (value: string | undefined) => Boolean(value && value.trim());
+
+  switch (channelType) {
+    case 'smtp':
+      return filled(settings.smtpHost) && filled(settings.smtpFrom) && filled(settings.smtpTo);
+    case 'telegram':
+      return (
+        filled(settings.telegramChatId) &&
+        (filled(settings.telegramBotToken) || Boolean(editingChannelMasked?.hasTelegramBotToken))
+      );
+    case 'bark':
+      return (
+        filled(settings.barkServerUrl) &&
+        (filled(settings.barkDeviceKey) || Boolean(editingChannelMasked?.hasBarkDeviceKey))
+      );
+    case 'serverchan':
+      return (
+        filled(settings.serverChanSendKey) || Boolean(editingChannelMasked?.hasServerChanSendKey)
+      );
+    default:
+      // feishu / wecom / dingtalk / discord / webhook 均依赖 Webhook URL
+      return filled(settings.webhookUrl);
+  }
+}
+
 function dtoToEditableSettings(ch: NotificationChannelDto): NotificationChannelSettings {
   return {
     smtpHost: ch.settingsMasked.smtpHost,
@@ -138,6 +174,12 @@ export function ReviewSyncPanel({
     createEmptyChannelSettings,
   );
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
+
+  const channelFormValid = useMemo(
+    () => computeChannelFormValid(chName, chType, chSettings, editingChannelMasked),
+    [chName, chType, chSettings, editingChannelMasked],
+  );
+  const canSubmitChannel = channelFormValid && chEvents.length > 0;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -906,7 +948,7 @@ export function ReviewSyncPanel({
 
                 <button
                   type="submit"
-                  disabled={busy || chEvents.length === 0}
+                  disabled={busy || !canSubmitChannel}
                   className="inline-flex h-8 items-center gap-1 rounded-sm bg-accent px-3 text-xs font-medium text-content-inverse hover:bg-accent-hover disabled:opacity-50"
                 >
                   <Plus className="h-3.5 w-3.5" />
