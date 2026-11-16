@@ -1,0 +1,33 @@
+name: Stale Approval Sweep (7-day reminder)
+
+# 兜底：awaiting-approval 挂了 7 天还没批复的 issue，补一条提醒评论 + 邮件 + stale 标签。
+# 只提醒一次 —— 扫到已经带 stale 的直接跳过，不会每天骚扰。
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 每天 02:00 UTC = 北京时间 10:00
+  workflow_dispatch:
+
+concurrency:
+  group: oh-stale-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Sweep awaiting-approval issues
+    runs-on: [self-hosted, Linux, X64, z4pro, openhands]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OH_STAGE_KIND: stale
+
+    steps:
+      - name: 1. 扫描超期待审批并补发提醒
+        id: stale
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py stale_check
+
+      - name: 2. 写入观测记录
+        if: always()
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py observe
