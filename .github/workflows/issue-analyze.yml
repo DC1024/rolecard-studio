@@ -1,0 +1,70 @@
+name: Issue Analyze & Approval Request (OpenHands on Z4Pro)
+
+# 链路：issue 新建 → 只读分析 → 报告守卫 → issue 评论 + 邮件汇报 + awaiting-approval
+# 本 workflow 全程不改代码、不建分支、不开 PR，职责只有一个：产出「值不值得修、怎么修」。
+on:
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "要分析的 Issue 编号 (例如: 12)"
+        required: true
+        type: string
+
+concurrency:
+  group: oh-issue-analyze-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    name: Read-only Feasibility Analysis
+    runs-on: [self-hosted, Linux, X64, z4pro, openhands]
+    # 预算拆解：克隆 1-2min + 分析 agent 15min + 基线 typecheck&test 5min + 余量
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+      # 分析链只认 ai-fix（人工要求重跑分析）；ai-approve 属于修复链，不能在这里触发
+      OH_STAGE_KIND: analyze
+      OH_GATE_LABELS: ai-fix
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+
+    steps:
+      - name: 1. 闸门检查 (幂等 / 频控 / 权限 / 排除标签)
+        id: gate
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py gate
+
+      - name: 2. 前置意图分类 (Triage)
+        id: triage
+        if: steps.gate.outputs.proceed == 'true'
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py triage
+
+      - name: 3. 检出代码 (只读分析也要干净工作区)
+        if: steps.gate.outputs.proceed == 'true' && steps.triage.outputs.should_code == 'true'
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py checkout
+
+      - name: 4. OpenHands 只读可行性分析 (禁写源码)
+        id: analyze
+        if: steps.gate.outputs.proceed == 'true' && steps.triage.outputs.should_code == 'true'
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py analyze
+
+      - name: 5. 报告守卫 (只读性 / schema / 反幻觉校验)
+        id: report_guard
+        if: steps.analyze.outputs.analyzed == 'true'
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py report_guard
+
+      - name: 6. 汇报：issue 评论 + 打 awaiting-approval + 邮件
+        id: notify
+        if: steps.analyze.outputs.analyzed == 'true'
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py notify
+
+      - name: 7. 写入观测记录 (JSONL + Step Summary)
+        if: always()
+        run: python3 -B /opt/oh-config/oh_workflow_steps.py observe
