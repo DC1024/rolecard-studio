@@ -13,6 +13,12 @@ describe('estimateTokens', () => {
     ['unified ideographs', '中文'],
     ['Japanese kana', 'あいうアイウ'],
     ['Hangul syllables', '한글'],
+    ['Hangul Jamo', '\u1100\u115f\u1160\u11ff'],
+    ['CJK Radicals Supplement', '⺀⺁⺂\u2e80\u2eff'],
+    ['Kangxi Radicals', '⼀⼁⼂\u2f00\u2fdf'],
+    ['Bopomofo', 'ㄅㄆㄇㄈ\u3100\u312f'],
+    ['Bopomofo Extended', 'ㆠㆡㆢ\u31a0\u31bf'],
+    ['Enclosed CJK Letters and Months', '㊀㊁\u3200\u32ff'],
   ])('counts %s at the CJK rate', (_name, text) => {
     expect(estimateTokens(text)).toBe(Math.ceil(Array.from(text).length * 0.72));
   });
