@@ -389,6 +389,11 @@ configRoutes.get('/config', async (c) => {
     );
   }
 
+  // Service config belongs to the global owner; only that owner/admin may read details.
+  const canReadDetails = Boolean(
+    actor && actor.isActive && (actor.role === 'admin' || actor.userId === GLOBAL_CONFIG_USER_ID),
+  );
+
   const rows = await ctx.db
     .select({ updatedAt: userServiceConfigs.updatedAt })
     .from(userServiceConfigs)
@@ -396,6 +401,12 @@ configRoutes.get('/config', async (c) => {
     .limit(1);
 
   const runtime = await loadRuntimeServiceConfig(ctx);
+
+  if (!canReadDetails) {
+    // Guests / regular users only learn whether the service is configured.
+    return c.json({ configured: Boolean(runtime) });
+  }
+
   return c.json(buildMaskedResponse(rows[0]?.updatedAt ?? null, runtime, ctx.env));
 });
 
