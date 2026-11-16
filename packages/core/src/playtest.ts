@@ -165,8 +165,9 @@ export async function runPlaytestTurn(
   const rawGreeting = resolveCardGreeting(card, request.greetingIndex);
   const greetingText = replaceCardPlaceholders(rawGreeting, card.name, request.userName);
 
+  const windowedHistory = request.history.slice(-40);
   const recentText = [
-    ...request.history.slice(-4).map((h) => h.content),
+    ...windowedHistory.slice(-4).map((h) => h.content),
     request.message,
   ].join('\n');
 
@@ -231,7 +232,7 @@ export async function runPlaytestTurn(
   const messages: LlmMessage[] = [
     { role: 'system', content: systemParts.join('\n') },
     { role: 'assistant', content: greetingText },
-    ...request.history.map((item) => ({
+    ...windowedHistory.map((item) => ({
       role: item.role,
       content: replaceCardPlaceholders(item.content, card.name, request.userName),
     })),

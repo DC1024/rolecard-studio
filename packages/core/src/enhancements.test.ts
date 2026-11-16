@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   FREE_STARTER_PRESETS,
   LLM_PROVIDER_DEFAULTS,
+  PlaytestRequestSchema,
   type LlmProvider,
   type LlmSlotPurpose,
   type RoleCardContent,
@@ -2314,6 +2315,79 @@ describe('Dual TRPG system coexistence, switching, targeted export & playtest in
     expect(capturedSystemPrompts[2]).not.toContain('TRPG 规则面板');
   });
 });
+
+describe('Playtest sliding window (40-message context cap) & schema limit', () => {
+  it('accepts up to 200 history items in PlaytestRequestSchema and slices to latest 40 turns for LLM & lorebook scan', async () => {
+    const history55 = Array.from({ length: 55 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: i < 15 ? `早期对话-${i}-密道口令` : `近期对话-${i}`,
+    }));
+
+    const parsed = PlaytestRequestSchema.safeParse({
+      message: '继续当前对话',
+      history: history55,
+      userName: '博士',
+      userPersona: '指挥官',
+      greetingIndex: 0,
+    });
+    expect(parsed.success).toBe(true);
+
+    let capturedMessages: Array<{ role: string; content: string }> = [];
+    const turn = await runPlaytestTurn(
+      sampleContent,
+      {
+        message: '继续当前对话',
+        history: history55,
+        userName: '博士',
+        userPersona: '指挥官',
+        greetingIndex: 0,
+      },
+      {
+        llmSlot: {
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+        lorebooks: [
+          {
+            id: 'lb-1',
+            name: '秘密通道',
+            entries: [
+              {
+                uid: 'entry-secret',
+                keys: ['密道口令'],
+                secondary_keys: [],
+                content: '密道通向地下二层实验室。',
+                comment: '地下密道',
+                constant: false,
+                selective: true,
+                enabled: true,
+                insertion_order: 10,
+                position: 'before_char',
+                extensions: {},
+              },
+            ],
+          },
+        ],
+        llmPort: async (req) => {
+          capturedMessages = req.messages;
+          return { status: 200, content: '收到，继续推进。' };
+        },
+      },
+    );
+
+    expect(turn.ok).toBe(true);
+    if (!turn.ok) return;
+    // system (1) + greeting (1) + windowedHistory (40) + current user (1) = 43
+    expect(capturedMessages).toHaveLength(43);
+    expect(capturedMessages.some((m) => m.content.includes('早期对话-0'))).toBe(false);
+    expect(capturedMessages.some((m) => m.content.includes('近期对话-15'))).toBe(true);
+    expect(turn.value.hitLorebooks).toHaveLength(0);
+  });
+});
+
 
 
 

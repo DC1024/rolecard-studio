@@ -11,9 +11,71 @@ export type PlaytestHistoryItem = z.infer<typeof PlaytestHistoryItemSchema>;
 export const PlaytestTrpgSystemSchema = z.enum(['coc7e', 'dnd5e', 'none']);
 export type PlaytestTrpgSystem = z.infer<typeof PlaytestTrpgSystemSchema>;
 
+export const PlaytestTrpgModeSchema = z.enum(['auto', 'coc7e', 'dnd5e', 'none']);
+export type PlaytestTrpgMode = z.infer<typeof PlaytestTrpgModeSchema>;
+
+export const HitLorebookDebugItemSchema = z.object({
+  lorebookId: z.string(),
+  lorebookName: z.string(),
+  uid: z.string(),
+  comment: z.string(),
+  keys: z.array(z.string()),
+  mode: z.enum(['blue_constant', 'green_keyword']),
+  matchedKeyword: z.string().optional(),
+});
+
+export const PlaytestMessageDebugSchema = z.object({
+  hitLorebooks: z.array(HitLorebookDebugItemSchema),
+  metaInjected: z.boolean(),
+  trpgSystemInjected: z.enum(['coc7e', 'dnd5e']).nullable().optional(),
+  usedModel: z.string(),
+  usedProvider: z.string().optional(),
+});
+export type PlaytestMessageDebug = z.infer<typeof PlaytestMessageDebugSchema>;
+
+export const PlaytestStoredMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+  createdAt: z.string().optional(),
+  debug: PlaytestMessageDebugSchema.optional(),
+});
+export type PlaytestStoredMessage = z.infer<typeof PlaytestStoredMessageSchema>;
+
+export const UpdatePlaytestSessionSchema = z.object({
+  title: z.string().trim().min(1, '会话标题不能为空').max(120).optional(),
+  greetingIndex: z.number().int().min(0).max(50).optional(),
+  userName: z.string().trim().min(1).max(40).optional(),
+  userPersona: z.string().trim().max(400).optional(),
+  trpgMode: PlaytestTrpgModeSchema.optional(),
+  modelOverride: z.string().trim().max(160).optional(),
+});
+export type UpdatePlaytestSessionRequest = z.infer<typeof UpdatePlaytestSessionSchema>;
+
+export interface PlaytestSessionSummaryDto {
+  id: string;
+  cardId: string;
+  userId: string;
+  title: string;
+  greetingIndex: number;
+  userName: string;
+  userPersona: string;
+  trpgMode: PlaytestTrpgMode;
+  modelOverride: string;
+  messageCount: number;
+  lastMessagePreview: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlaytestSessionDto extends PlaytestSessionSummaryDto {
+  messages: PlaytestStoredMessage[];
+}
+
 export const PlaytestRequestSchema = z.object({
   message: z.string().trim().min(1, '试聊消息不能为空').max(8_000),
-  history: z.array(PlaytestHistoryItemSchema).max(40).default([]),
+  history: z.array(PlaytestHistoryItemSchema).max(200).default([]),
+  sessionId: z.string().trim().min(1).max(120).optional(),
+  saveSession: z.boolean().optional(),
   userName: z.string().trim().min(1).max(40).default('旅行者'),
   userPersona: z.string().trim().max(400).default(''),
   greetingIndex: z.number().int().min(0).max(50).default(0),
@@ -47,6 +109,7 @@ export interface PlaytestResponse {
   hitLorebooks: HitLorebookDebugItem[];
   metaInjected: boolean;
   trpgSystemInjected?: 'coc7e' | 'dnd5e' | null;
+  sessionId?: string;
 }
 
 export const AdoptMesExampleSchema = z.object({

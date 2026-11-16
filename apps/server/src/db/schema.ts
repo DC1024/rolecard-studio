@@ -278,3 +278,24 @@ export const roleCardRevisions = sqliteTable('role_card_revisions', {
   createdBy: text('created_by').notNull().default('guest'),
   createdAt: text('created_at').notNull(),
 });
+
+export const playtestSessions = sqliteTable('playtest_sessions', {
+  id: text('id').primaryKey(),
+  cardId: text('card_id')
+    .notNull()
+    .references(() => roleCards.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().default('guest'),
+  title: text('title').notNull().default('新试聊会话'),
+  greetingIndex: integer('greeting_index').notNull().default(0),
+  userName: text('user_name').notNull().default('旅行者'),
+  userPersona: text('user_persona').notNull().default(''),
+  trpgMode: text('trpg_mode', { enum: ['auto', 'coc7e', 'dnd5e', 'none'] })
+    .notNull()
+    .default('auto'),
+  modelOverride: text('model_override').notNull().default(''),
+  messagesJson: text('messages_json').notNull().default('[]'),
+  messageCount: integer('message_count').notNull().default(0),
+  lastMessagePreview: text('last_message_preview').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});

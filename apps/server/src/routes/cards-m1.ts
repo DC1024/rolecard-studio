@@ -66,6 +66,7 @@ import { saveCardRevisionSnapshot } from './card-revisions.js';
 import { serializeCardRow } from './cards.js';
 import { loadRuntimeServiceConfig, loadScopedFetch, resolveScopedFetch } from './config.js';
 import { loadLinkedLorebooksForCard } from './lorebooks.js';
+import { findAuthorizedPlaytestSession, persistPlaytestSessionTurn } from './playtest.js';
 import { publishSyncEvent } from './sync.js';
 
 export const cardM1Routes = new Hono<AppEnv>();
@@ -886,11 +887,30 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
   const id = c.req.param('id');
   const input = c.req.valid('json');
   const ctx = c.get('ctx');
+  const actor = c.get('actor');
+  const actorUserId = actor?.userId ?? 'guest';
 
   const rows = await ctx.db.select().from(roleCards).where(eq(roleCards.id, id)).limit(1);
   const row = rows[0];
   if (!row) {
     return c.json({ error: { code: 'CARD_NOT_FOUND', message: '角色卡不存在' } }, 404);
+  }
+
+  let existingSession: Awaited<ReturnType<typeof findAuthorizedPlaytestSession>> = null;
+  if (input.sessionId) {
+    existingSession = await findAuthorizedPlaytestSession(
+      ctx,
+      input.sessionId,
+      actorUserId,
+      actor?.role,
+      id,
+    );
+    if (!existingSession) {
+      return c.json(
+        { error: { code: 'PLAYTEST_SESSION_NOT_FOUND', message: '试聊会话不存在' } },
+        404,
+      );
+    }
   }
 
   const runtime = await loadRuntimeServiceConfig(ctx);
@@ -934,17 +954,49 @@ cardM1Routes.post('/cards/:id/playtest', zValidator('json', PlaytestRequestSchem
     entries: parseJsonArray<LorebookEntry>(lb.entriesJson),
   }));
 
-  const turnResult = await runPlaytestTurn(content, input, {
-    llmPort,
-    llmSlot: effectiveSlot,
-    lorebooks: playtestLorebooks,
-    enableMetaInChat: row.enableMetaInChat,
-    metaReputationSummary: metaSummary,
-    fallbackCardType: row.cardType,
-  });
+  let effectiveHistory = input.history;
+  if (effectiveHistory.length === 0 && existingSession) {
+    const stored = parseJsonArray<{ role: 'user' | 'assistant'; content: string }>(
+      existingSession.messagesJson,
+    );
+    effectiveHistory = stored
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+      .slice(-40)
+      .map((m) => ({ role: m.role, content: m.content }));
+  }
+
+  const turnResult = await runPlaytestTurn(
+    content,
+    {
+      ...input,
+      history: effectiveHistory,
+    },
+    {
+      llmPort,
+      llmSlot: effectiveSlot,
+      lorebooks: playtestLorebooks,
+      enableMetaInChat: row.enableMetaInChat,
+      metaReputationSummary: metaSummary,
+      fallbackCardType: row.cardType,
+    },
+  );
 
   if (!turnResult.ok) {
     return sendCoreError(c, turnResult.error);
+  }
+
+  if (input.saveSession !== false) {
+    const savedSessionId = await persistPlaytestSessionTurn(ctx, {
+      cardId: id,
+      actorUserId,
+      existingSession,
+      request: input,
+      response: turnResult.value,
+    });
+    return c.json({
+      ...turnResult.value,
+      sessionId: savedSessionId,
+    });
   }
 
   return c.json(turnResult.value);

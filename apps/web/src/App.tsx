@@ -323,6 +323,7 @@ function StudioApp() {
                 canUpdate={hasPerm('card:update')}
                 onSelectCard={setSelectedCard}
                 onCardUpdated={handleCardUpdated}
+                onNotify={showToast}
               />
             )}
 

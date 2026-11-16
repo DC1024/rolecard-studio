@@ -16,6 +16,7 @@ import { evolutionRoutes } from './routes/evolution.js';
 import { externalRoutes } from './routes/external.js';
 import { healthRoutes } from './routes/health.js';
 import { lorebookRoutes } from './routes/lorebooks.js';
+import { playtestRoutes } from './routes/playtest.js';
 import { pluginRoutes } from './routes/plugins.js';
 import { syncRoutes } from './routes/sync.js';
 import { visionRoutes } from './routes/vision.js';
@@ -50,6 +51,7 @@ export function createApp(ctx: ServerContext): Hono<AppEnv> {
   app.route('/api/v1', cardRevisionsRoutes);
   app.route('/api/v1', cardM2Routes);
   app.route('/api/v1', lorebookRoutes);
+  app.route('/api/v1', playtestRoutes);
   app.route('/api/v1', pluginRoutes);
   app.route('/api/v1', evolutionRoutes);
   app.route('/api/v1', syncRoutes);

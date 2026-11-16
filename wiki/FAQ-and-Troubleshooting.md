@@ -78,7 +78,7 @@
 ## 4. 安全、升级与数据备份注意事项
 
 ### Q10：跨版本升级后，旧数据库能直接兼容吗？
-- **可以**。服务端启动时会自动执行增量表结构与补表检查（`ensureColumnExists` / `CREATE TABLE IF NOT EXISTS`），例如升级至 `v1.3.0` 自动补齐 `token_image_url` 与 `token_crop_json` 列，升级至 `v1.7.0` 自动初始化 `role_card_revisions` 历史快照表，无需手动跑迁移脚本。
+- **可以**。服务端启动时会自动执行增量表结构与补表检查（`ensureColumnExists` / `CREATE TABLE IF NOT EXISTS`），例如升级至 `v1.3.0` 自动补齐 `token_image_url` 与 `token_crop_json` 列，升级至 `v1.7.0` 自动初始化 `role_card_revisions` 历史快照表，升级至 `v1.9.0` 自动初始化 `playtest_sessions` 试聊会话表及索引，无需手动跑迁移脚本。
 - 若旧卡原本仅有 `imageUrl` 尚未单独裁剪过 `1:1` Token，导出 `vtt_token_png` 或 `foundry_dnd5e_json` 时会自动回退到现有立绘；随时打开该卡片点击 **「1:1 Token」** 补裁即可。
 
 ### Q10.1：「语义精简」会丢失细节或破坏 TRPG 规则面板吗？如果不满意如何撤回？

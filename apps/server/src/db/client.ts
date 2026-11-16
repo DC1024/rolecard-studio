@@ -333,6 +333,25 @@ function initializeTables(sqlite: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_role_card_revisions_card ON role_card_revisions(card_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS playtest_sessions (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL REFERENCES role_cards(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL DEFAULT 'guest',
+      title TEXT NOT NULL DEFAULT '新试聊会话',
+      greeting_index INTEGER NOT NULL DEFAULT 0,
+      user_name TEXT NOT NULL DEFAULT '旅行者',
+      user_persona TEXT NOT NULL DEFAULT '',
+      trpg_mode TEXT NOT NULL DEFAULT 'auto',
+      model_override TEXT NOT NULL DEFAULT '',
+      messages_json TEXT NOT NULL DEFAULT '[]',
+      message_count INTEGER NOT NULL DEFAULT 0,
+      last_message_preview TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_playtest_sessions_card_user ON playtest_sessions(card_id, user_id, updated_at DESC);
   `);
 
   ensureColumnExists(sqlite, 'user_service_configs', 'image_config_encrypted', 'TEXT');

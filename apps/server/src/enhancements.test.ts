@@ -2713,6 +2713,336 @@ describe('Server Enhancements (Batches 2 & 3)', () => {
 
     dbHandle.close();
   });
+
+  it('supports playtest session persistence, continuation, isolation, rename/delete, and lorebook entry edit/toggle/delete', async () => {
+    const dbHandle = createSqliteDatabase(':memory:');
+    await seedInitialState(dbHandle.db, {
+      adminUsername: 'admin',
+      adminPassword: 'TestPassword123!',
+    });
+
+    const recordedHistories: Array<Array<{ role: string; content: string }>> = [];
+    const fetchImpl: HttpFetchPort = async (url, init) => {
+      if (url.endsWith('/chat/completions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ role: string; content: string }>;
+        };
+        const msgs = body.messages ?? [];
+        recordedHistories.push(msgs);
+        const lastUser = msgs[msgs.length - 1]?.content ?? '';
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: `凯尔希回应：${lastUser}` },
+                finish_reason: 'stop',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const app = createApp({
+      db: dbHandle.db,
+      masterKey: randomBytes(32),
+      dataDir: ':memory:',
+      deploymentMode: 'local',
+      memoryUploads: new Map(),
+      fetchImpl,
+    });
+
+    const loginAdmin = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'TestPassword123!' }),
+    });
+    const adminCookie = loginAdmin.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    await app.request('/api/v1/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        primaryLlm: {
+          provider: 'openai',
+          apiKey: 'sk-primary-test',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4o-mini',
+          jsonModeStrategy: 'auto',
+        },
+      }),
+    });
+
+    // Create a second user for isolation check
+    const createUserRes = await app.request('/api/v1/admin/users', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        username: 'player2',
+        password: 'AdminTestPassword!99',
+        role: 'user',
+        permissions: ['card:read', 'playtest:use'],
+      }),
+    });
+    expect(createUserRes.status).toBe(201);
+
+    const loginUser2 = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'player2', password: 'AdminTestPassword!99' }),
+    });
+    const user2Cookie = loginUser2.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    const importRes = await app.request('/api/v1/cards/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        filename: 'kaltsit.json',
+        format: 'json',
+        targetCardType: 'general',
+        jsonText: JSON.stringify({
+          name: baseCard.name,
+          description: baseCard.summary,
+          personality: baseCard.personality,
+          scenario: baseCard.scenario,
+          first_mes: baseCard.first_mes,
+          mes_example: baseCard.mes_example,
+          tags: baseCard.tags,
+        }),
+      }),
+    });
+    expect(importRes.status).toBe(201);
+    const cardId = ((await importRes.json()) as { card: { id: string } }).card.id;
+
+    // 1. Lorebook entries: create blue constant + green keyword + linked character entry, edit/toggle/delete
+    const lbCreateRes = await app.request('/api/v1/lorebooks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        name: '罗德岛档案馆',
+        description: '测试词条完整生命周期',
+        entries: [
+          {
+            uid: 'entry-blue',
+            keys: [],
+            secondary_keys: [],
+            content: '罗德岛陆行舰始终在泰拉大地上航行。',
+            comment: '罗德岛基础设定',
+            constant: true,
+            selective: true,
+            enabled: true,
+            insertion_order: 100,
+            position: 'before_char',
+            extensions: {},
+          },
+          {
+            uid: 'entry-green',
+            keys: ['Mon3tr'],
+            secondary_keys: [],
+            content: 'Mon3tr 是凯尔希的结晶生物伙伴。',
+            comment: 'Mon3tr 词条',
+            constant: false,
+            selective: true,
+            enabled: true,
+            insertion_order: 90,
+            position: 'before_char',
+            extensions: {},
+          },
+        ],
+      }),
+    });
+    expect(lbCreateRes.status).toBe(201);
+    const lorebookId = ((await lbCreateRes.json()) as { lorebook: { id: string } }).lorebook.id;
+
+    const linkRes = await app.request(`/api/v1/lorebooks/${lorebookId}/link-card`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ cardId, roleHint: '医疗总负责人' }),
+    });
+    expect(linkRes.status).toBe(200);
+    const linkedBook = ((await linkRes.json()) as {
+      lorebook: {
+        entries: Array<{
+          uid: string;
+          keys: string[];
+          content: string;
+          comment: string;
+          constant: boolean;
+          enabled: boolean;
+          insertion_order: number;
+        }>;
+        linkedCards: Array<{ cardId: string; generatedEntryUid: string }>;
+      };
+    }).lorebook;
+    expect(linkedBook.entries).toHaveLength(3);
+    expect(linkedBook.linkedCards).toHaveLength(1);
+
+    // Edit green entry, toggle blue -> green & disable, and delete blue entry
+    const editedEntries = linkedBook.entries
+      .filter((entry) => entry.uid !== 'entry-blue')
+      .map((entry) =>
+        entry.uid === 'entry-green'
+          ? { ...entry, constant: true, enabled: false, content: 'Mon3tr 已更新设定。' }
+          : entry,
+      );
+
+    const lbUpdateRes = await app.request(`/api/v1/lorebooks/${lorebookId}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        name: '罗德岛档案馆',
+        description: '测试词条完整生命周期',
+        entries: editedEntries,
+      }),
+    });
+    expect(lbUpdateRes.status).toBe(200);
+    const updatedBook = ((await lbUpdateRes.json()) as {
+      lorebook: {
+        entries: Array<{ uid: string; constant: boolean; enabled: boolean; content: string }>;
+      };
+    }).lorebook;
+    expect(updatedBook.entries.some((e) => e.uid === 'entry-blue')).toBe(false);
+    const updatedGreen = updatedBook.entries.find((e) => e.uid === 'entry-green');
+    expect(updatedGreen?.constant).toBe(true);
+    expect(updatedGreen?.enabled).toBe(false);
+    expect(updatedGreen?.content).toBe('Mon3tr 已更新设定。');
+
+    // Re-enable green entry and delete linked entry cleanly via unlink
+    const unlinkRes = await app.request(`/api/v1/lorebooks/${lorebookId}/links/${cardId}`, {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(unlinkRes.status).toBe(200);
+    const unlinkedJson = (await unlinkRes.json()) as {
+      lorebook: { entries: Array<{ uid: string }>; linkedCards: unknown[] };
+    };
+    expect(unlinkedJson.lorebook.linkedCards).toHaveLength(0);
+    expect(unlinkedJson.lorebook.entries.map((e) => e.uid)).toEqual(['entry-green']);
+
+    // Re-link card to verify lorebook hit in playtest (only enabled constant/matched entries)
+    await app.request(`/api/v1/lorebooks/${lorebookId}/link-card`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ cardId }),
+    });
+
+    // 2. Playtest Turn 1 creates persistent session automatically
+    const pt1Res = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        message: '你好，凯尔希医生，今天的体检安排是什么？',
+        userName: '博士',
+        userPersona: '失忆中的指挥官',
+        greetingIndex: 0,
+      }),
+    });
+    expect(pt1Res.status).toBe(200);
+    const pt1Json = (await pt1Res.json()) as { reply: string; sessionId?: string };
+    expect(pt1Json.sessionId).toBeTruthy();
+    const sessionId = pt1Json.sessionId!;
+
+    // 3. Playtest Turn 2 with sessionId & empty history automatically loads DB history and appends
+    const pt2Res = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        sessionId,
+        message: '另外，Mon3tr 今天状态还好吗？',
+        history: [],
+        userName: '博士',
+        userPersona: '失忆中的指挥官',
+        greetingIndex: 0,
+      }),
+    });
+    expect(pt2Res.status).toBe(200);
+    const pt2Json = (await pt2Res.json()) as { sessionId?: string };
+    expect(pt2Json.sessionId).toBe(sessionId);
+    // Turn 2 LLM prompt includes Turn 1 user + assistant messages loaded from DB
+    expect(
+      recordedHistories[1]?.some((m) => m.content.includes('今天的体检安排是什么')),
+    ).toBe(true);
+    expect(
+      recordedHistories[1]?.some((m) => m.content.includes('凯尔希回应：你好，凯尔希医生')),
+    ).toBe(true);
+
+    // 4. saveSession=false skips persistence
+    const ephemeralRes = await app.request(`/api/v1/cards/${cardId}/playtest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({
+        message: '这是一条临时试聊',
+        saveSession: false,
+      }),
+    });
+    expect(ephemeralRes.status).toBe(200);
+    const ephemeralJson = (await ephemeralRes.json()) as { sessionId?: string };
+    expect(ephemeralJson.sessionId).toBeUndefined();
+
+    // 5. List and get session detail
+    const listRes = await app.request(`/api/v1/cards/${cardId}/playtest/sessions`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(listRes.status).toBe(200);
+    const listJson = (await listRes.json()) as {
+      items: Array<{ id: string; messageCount: number; userName: string; userPersona: string }>;
+    };
+    expect(listJson.items).toHaveLength(1);
+    expect(listJson.items[0]?.id).toBe(sessionId);
+    expect(listJson.items[0]?.messageCount).toBe(4);
+    expect(listJson.items[0]?.userPersona).toBe('失忆中的指挥官');
+
+    const detailRes = await app.request(`/api/v1/playtest/sessions/${sessionId}`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(detailRes.status).toBe(200);
+    const detailJson = (await detailRes.json()) as {
+      session: {
+        messages: Array<{ role: string; content: string; debug?: { usedModel: string } }>;
+      };
+    };
+    expect(detailJson.session.messages).toHaveLength(4);
+    expect(detailJson.session.messages[1]?.debug?.usedModel).toBe('gpt-4o-mini');
+
+    // 6. Isolation: another user cannot list, view, rename, or delete admin's session
+    const user2ListRes = await app.request(`/api/v1/cards/${cardId}/playtest/sessions`, {
+      headers: { cookie: user2Cookie },
+    });
+    expect(user2ListRes.status).toBe(200);
+    expect(((await user2ListRes.json()) as { items: unknown[] }).items).toHaveLength(0);
+
+    const user2GetRes = await app.request(`/api/v1/playtest/sessions/${sessionId}`, {
+      headers: { cookie: user2Cookie },
+    });
+    expect(user2GetRes.status).toBe(404);
+
+    // 7. Rename and delete session
+    const renameRes = await app.request(`/api/v1/playtest/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ title: '罗德岛晨间体检续聊' }),
+    });
+    expect(renameRes.status).toBe(200);
+    expect(((await renameRes.json()) as { session: { title: string } }).session.title).toBe(
+      '罗德岛晨间体检续聊',
+    );
+
+    const deleteRes = await app.request(`/api/v1/playtest/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: { cookie: adminCookie },
+    });
+    expect(deleteRes.status).toBe(200);
+
+    const afterDeleteRes = await app.request(`/api/v1/playtest/sessions/${sessionId}`, {
+      headers: { cookie: adminCookie },
+    });
+    expect(afterDeleteRes.status).toBe(404);
+
+    dbHandle.close();
+  });
 });
+
 
 

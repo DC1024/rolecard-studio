@@ -26,6 +26,8 @@ import type {
   NotificationChannelDto,
   PlaytestRequest,
   PlaytestResponse,
+  PlaytestSessionDto,
+  PlaytestSessionSummaryDto,
   PortraitPromptRequest,
   PortraitPromptResponse,
   PortraitStylePresetDto,
@@ -52,6 +54,7 @@ import type {
   CreateLorebookRequest,
   UpdateMetaSettingsRequest,
   UpdateMyAccountRequest,
+  UpdatePlaytestSessionRequest,
   UpdatePortraitStylePresetInput,
   UpdateScheduleRequest,
   UpdateUserPermissionsRequest,
@@ -651,6 +654,30 @@ export const api = {
     return requestJson(`/cards/${encodeURIComponent(id)}/playtest`, {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  },
+
+  listPlaytestSessions(cardId: string): Promise<{ items: PlaytestSessionSummaryDto[] }> {
+    return requestJson(`/cards/${encodeURIComponent(cardId)}/playtest/sessions`);
+  },
+
+  getPlaytestSession(sessionId: string): Promise<{ session: PlaytestSessionDto }> {
+    return requestJson(`/playtest/sessions/${encodeURIComponent(sessionId)}`);
+  },
+
+  updatePlaytestSession(
+    sessionId: string,
+    input: UpdatePlaytestSessionRequest,
+  ): Promise<{ session: PlaytestSessionSummaryDto }> {
+    return requestJson(`/playtest/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  },
+
+  deletePlaytestSession(sessionId: string): Promise<{ ok: boolean; id: string }> {
+    return requestJson(`/playtest/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
     });
   },
 
