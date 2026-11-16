@@ -16,10 +16,16 @@ export function estimateTokens(text: string): number {
     const code = text.codePointAt(i)!;
     i += code > 0xffff ? 2 : 1;
     if (
+      (code >= 0x1100 && code <= 0x11ff) ||
+      (code >= 0x2e80 && code <= 0x2eff) ||
+      (code >= 0x2f00 && code <= 0x2fdf) ||
       (code >= 0x3000 && code <= 0x303f) ||
+      (code >= 0x3040 && code <= 0x30ff) ||
+      (code >= 0x3100 && code <= 0x312f) ||
+      (code >= 0x31a0 && code <= 0x31bf) ||
+      (code >= 0x3200 && code <= 0x32ff) ||
       (code >= 0x3400 && code <= 0x4dbf) ||
       (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0x3040 && code <= 0x30ff) ||
       (code >= 0xac00 && code <= 0xd7af) ||
       (code >= 0xf900 && code <= 0xfaff) ||
       (code >= 0xff01 && code <= 0xff60) ||
