@@ -1,6 +1,6 @@
 # RoleCard Studio（智能角色卡中枢）
 
-> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v1.9.0）**  
+> **Local-First AI 角色卡 & 世界书（Lorebook）工作台（v2.0.0）**  
 > 集 **A/B/C 三模式考据生成**、**2:3 统一立绘画廊 & 衍生 1:1 VTT Token**、**独立世界书与快速试聊沙盒**、**多格式导入导出（SillyTavern CCV3 / TRPG / Foundry VTT / Obsidian）**、**定时演化与单跳涟漪审核**、**细粒度 RBAC 与两级网络代理**，以及 **MCP / SillyTavern / Webhook 开放生态**于一体。
 
 ---
